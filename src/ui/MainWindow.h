@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Jon Hood, OpenPsalm.com
+
+#pragma once
+
+#include "app/Session.h"
+#include "audio/AudioEngine.h"
+#include "core/Library.h"
+
+#include <QMainWindow>
+
+QT_BEGIN_NAMESPACE
+class QLabel;
+class QTabWidget;
+QT_END_NAMESPACE
+
+namespace ope::ui {
+
+class HeaderPanel;
+class InspectorPanel;
+class LyricsPanel;
+class ProblemsPanel;
+class ScoreView;
+class SourcePanel;
+class TransportBar;
+
+class MainWindow : public QMainWindow {
+    Q_OBJECT
+public:
+    explicit MainWindow(QWidget *parent = nullptr);
+
+    /// Open a file directly (a path on the command line).
+    void openPath(const QString &path);
+    /// Select a centre tab by index: 0 score, 1 lyrics, 2 source.
+    void selectTab(int index);
+
+protected:
+    void closeEvent(QCloseEvent *event) override;
+
+private:
+    void buildMenus();
+    void buildLayout();
+    void updateWindowTitle();
+    void updateLanguageTabs();
+    void refreshPlaybackPlan();
+
+    void openSong();
+    void newSong();
+    void addTranslation();
+    void save();
+    void reloadFromDisk();
+    void editPreferences();
+    [[nodiscard]] bool confirmDiscard();
+    void navigateTo(const Finding &finding);
+
+    Library m_library;
+    Session m_session;
+    audio::AudioEngine m_audio;
+
+    ScoreView *m_score = nullptr;
+    LyricsPanel *m_lyrics = nullptr;
+    SourcePanel *m_source = nullptr;
+    HeaderPanel *m_header = nullptr;
+    InspectorPanel *m_inspector = nullptr;
+    ProblemsPanel *m_problems = nullptr;
+    TransportBar *m_transport = nullptr;
+    QTabWidget *m_centre = nullptr;
+    QTabWidget *m_languageTabs = nullptr;
+    QLabel *m_statusSummary = nullptr;
+    bool m_planStale = true;
+};
+
+} // namespace ope::ui

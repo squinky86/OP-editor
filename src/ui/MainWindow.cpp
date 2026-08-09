@@ -1,222 +1,473 @@
-// Copyright (C) 2026 Jon Hood, OpenPsalm.com
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Jon Hood, OpenPsalm.com
 
-#include "MainWindow.hpp"
-#include <QMenuBar>
-#include <QToolBar>
-#include <QStatusBar>
-#include <QFileDialog>
-#include <QMessageBox>
+#include "MainWindow.h"
+
+#include "Dialogs.h"
+#include "LyricsPanel.h"
+#include "Panels.h"
+#include "ScoreView.h"
+
+#include <QAbstractButton>
+#include <QAction>
 #include <QApplication>
-#include "../app/Settings.hpp"
+#include <QCloseEvent>
+#include <QDir>
+#include <QDockWidget>
+#include <QFileInfo>
+#include <QLabel>
+#include <QMenuBar>
+#include <QMessageBox>
+#include <QSettings>
+#include <QStatusBar>
+#include <QTabBar>
+#include <QTabWidget>
+#include <QToolBar>
+#include <QVBoxLayout>
 
-namespace OpenPsalm {
+namespace ope::ui {
+namespace {
 
-MainWindow::MainWindow(QWidget* parent)
-    : QMainWindow(parent),
-      m_document(new SongDocument(this))
+QString settingsKeyRoot() { return QStringLiteral("songsRoot"); }
+
+} // namespace
+
+MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_session(this), m_audio(this)
 {
-    resize(1280, 800);
-    setWindowTitle(QStringLiteral("OpenPsalm Editor"));
+    QSettings settings;
+    m_library.setRoot(settings.value(settingsKeyRoot()).toString());
+    if (!m_library.root().isEmpty())
+        m_library.rescan();
 
-    // Center tab widget
-    m_tabWidget = new QTabWidget(this);
-    m_scoreView = new ScoreView(m_document, this);
-    m_notesEditor = new NotesEditor(m_document, this);
-    m_lyricsEditor = new LyricsEditor(m_document, this);
-    m_metadataEditor = new MetadataEditor(m_document, this);
+    buildLayout();
+    buildMenus();
+    updateWindowTitle();
 
-    m_tabWidget->addTab(m_scoreView, QStringLiteral("Score"));
-    m_tabWidget->addTab(m_notesEditor, QStringLiteral("Notes (Text)"));
-    m_tabWidget->addTab(m_lyricsEditor, QStringLiteral("Lyrics"));
-    m_tabWidget->addTab(m_metadataEditor, QStringLiteral("Metadata"));
+    if (!m_audio.isAvailable())
+        m_transport->setUnavailable(m_audio.unavailableReason());
 
-    setCentralWidget(m_tabWidget);
+    connect(&m_session, &Session::documentChanged, this, [this] {
+        m_planStale = true;
+        updateWindowTitle();
+        m_statusSummary->setText(m_problems->summary());
+    });
+    connect(&m_session, &Session::dirtyChanged, this, &MainWindow::updateWindowTitle);
+    connect(&m_session, &Session::languageChanged, this, &MainWindow::updateLanguageTabs);
 
-    createActions();
-    createMenus();
-    createToolBars();
-    createDocks();
+    connect(&m_audio, &audio::AudioEngine::positionChanged, this, [this](double seconds) {
+        m_transport->setPosition(seconds, m_audio.duration());
+        m_score->setPlaybackTick(m_audio.plan().tickAt(seconds));
+    });
+    connect(&m_audio, &audio::AudioEngine::playingChanged, this, [this](bool playing) {
+        m_transport->setPlaying(playing);
+        if (!playing)
+            m_score->clearPlaybackTick();
+    });
+    connect(&m_audio, &audio::AudioEngine::finished, this, [this] {
+        m_transport->setPosition(0, m_audio.duration());
+        m_score->clearPlaybackTick();
+    });
 
-    connect(m_document, &SongDocument::documentModified, this, &MainWindow::onDocumentModified);
-    connect(m_document, &SongDocument::documentLoaded, this, &MainWindow::onDocumentLoaded);
-    connect(m_document, &SongDocument::documentSaved, this, &MainWindow::onDocumentModified);
-    connect(m_document, &SongDocument::diagnosticsChanged, this, &MainWindow::onDiagnosticsChanged);
-
-    connect(m_songBrowser, &SongBrowser::songSelected, this, &MainWindow::openSong);
-    connect(m_diagnosticsWidget, &DiagnosticsWidget::diagnosticSelected, this, &MainWindow::onDiagnosticClicked);
-
-    statusBar()->showMessage(QStringLiteral("Ready"));
+    resize(1280, 860);
 }
 
-void MainWindow::createActions() {
-    // Actions are hooked in menus and toolbars
-}
+void MainWindow::buildLayout()
+{
+    m_score = new ScoreView(&m_session, this);
+    m_lyrics = new LyricsPanel(&m_session, this);
+    m_source = new SourcePanel(&m_session, this);
 
-void MainWindow::createMenus() {
-    auto* fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
-    fileMenu->addAction(QStringLiteral("&New Song"), this, &MainWindow::newSong, QKeySequence::New);
-    fileMenu->addAction(QStringLiteral("&Open..."), this, &MainWindow::openFileDialog, QKeySequence::Open);
-    fileMenu->addAction(QStringLiteral("&Save"), this, &MainWindow::saveSong, QKeySequence::Save);
-    fileMenu->addAction(QStringLiteral("Save &As..."), this, &MainWindow::saveSongAs, QKeySequence::SaveAs);
-    fileMenu->addSeparator();
-    fileMenu->addAction(QStringLiteral("E&xit"), qApp, &QApplication::quit, QKeySequence::Quit);
+    m_centre = new QTabWidget(this);
+    m_centre->addTab(m_score, tr("Score"));
+    m_centre->addTab(m_lyrics, tr("Lyrics"));
+    m_centre->addTab(m_source, tr("Source"));
 
-    auto* editMenu = menuBar()->addMenu(QStringLiteral("&Edit"));
-    auto* undoAct = m_document->undoStack()->createUndoAction(this, QStringLiteral("&Undo"));
-    undoAct->setShortcut(QKeySequence::Undo);
-    auto* redoAct = m_document->undoStack()->createRedoAction(this, QStringLiteral("&Redo"));
-    redoAct->setShortcut(QKeySequence::Redo);
-    editMenu->addAction(undoAct);
-    editMenu->addAction(redoAct);
+    m_languageTabs = new QTabWidget(this);
+    m_languageTabs->setDocumentMode(true);
+    m_languageTabs->setTabPosition(QTabWidget::North);
+    m_languageTabs->hide();
 
-    auto* helpMenu = menuBar()->addMenu(QStringLiteral("&Help"));
-    helpMenu->addAction(QStringLiteral("&About OpenPsalm Editor"), this, &MainWindow::showAbout);
-}
+    m_transport = new TransportBar(&m_session, this);
 
-void MainWindow::createToolBars() {
-    auto* mainToolBar = addToolBar(QStringLiteral("Main Toolbar"));
-    mainToolBar->addAction(QStringLiteral("Open"), this, &MainWindow::openFileDialog);
-    mainToolBar->addAction(QStringLiteral("Save"), this, &MainWindow::saveSong);
-    mainToolBar->addSeparator();
+    auto *central = new QWidget(this);
+    auto *layout = new QVBoxLayout(central);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    layout->addWidget(m_languageTabs);
+    layout->addWidget(m_centre, 1);
+    layout->addWidget(m_transport);
+    setCentralWidget(central);
 
-    auto* undoAct = m_document->undoStack()->createUndoAction(this, QStringLiteral("Undo"));
-    auto* redoAct = m_document->undoStack()->createRedoAction(this, QStringLiteral("Redo"));
-    mainToolBar->addAction(undoAct);
-    mainToolBar->addAction(redoAct);
-}
+    m_header = new HeaderPanel(&m_session, this);
+    auto *headerDock = new QDockWidget(tr("Song"), this);
+    headerDock->setObjectName(QStringLiteral("songDock"));
+    headerDock->setWidget(m_header);
+    addDockWidget(Qt::RightDockWidgetArea, headerDock);
 
-void MainWindow::createDocks() {
-    // Left dock: Song Browser
-    auto* browserDock = new QDockWidget(QStringLiteral("Song Library"), this);
-    browserDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
-    m_songBrowser = new SongBrowser(browserDock);
-    browserDock->setWidget(m_songBrowser);
-    addDockWidget(Qt::LeftDockWidgetArea, browserDock);
-
-    // Set default songs path if present
-    m_songBrowser->setSongsDirectory(Settings::openPsalmSongsPath());
-
-    // Right dock: Inspector
-    auto* inspectorDock = new QDockWidget(QStringLiteral("Inspector"), this);
-    inspectorDock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
-    m_inspector = new InspectorWidget(m_document, inspectorDock);
+    m_inspector = new InspectorPanel(&m_session, this);
+    auto *inspectorDock = new QDockWidget(tr("Inspector"), this);
+    inspectorDock->setObjectName(QStringLiteral("inspectorDock"));
     inspectorDock->setWidget(m_inspector);
     addDockWidget(Qt::RightDockWidgetArea, inspectorDock);
+    tabifyDockWidget(headerDock, inspectorDock);
+    headerDock->raise();
 
-    // Bottom dock: Diagnostics
-    auto* diagDock = new QDockWidget(QStringLiteral("Diagnostics & Issues"), this);
-    diagDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
-    m_diagnosticsWidget = new DiagnosticsWidget(diagDock);
-    diagDock->setWidget(m_diagnosticsWidget);
-    addDockWidget(Qt::BottomDockWidgetArea, diagDock);
+    m_problems = new ProblemsPanel(&m_session, this);
+    auto *problemsDock = new QDockWidget(tr("Problems"), this);
+    problemsDock->setObjectName(QStringLiteral("problemsDock"));
+    problemsDock->setWidget(m_problems);
+    addDockWidget(Qt::BottomDockWidgetArea, problemsDock);
+
+    m_statusSummary = new QLabel(this);
+    statusBar()->addPermanentWidget(m_statusSummary);
+
+    connect(m_problems, &ProblemsPanel::navigate, this, &MainWindow::navigateTo);
+    connect(m_score, &ScoreView::statusMessage, this,
+        [this](const QString &message) { statusBar()->showMessage(message, 4000); });
+    connect(m_lyrics, &LyricsPanel::statusMessage, this,
+        [this](const QString &message) { statusBar()->showMessage(message, 4000); });
+    connect(m_score, &ScoreView::requestLyricEdit, this, [this](const QString &part, int slot) {
+        m_centre->setCurrentWidget(m_lyrics);
+        m_lyrics->focusSlot(part, slot);
+    });
+
+    connect(m_transport, &TransportBar::playRequested, this, [this] {
+        refreshPlaybackPlan();
+        m_audio.play(0.0);
+    });
+    connect(m_transport, &TransportBar::pauseRequested, this, [this] { m_audio.pause(); });
+    connect(m_transport, &TransportBar::stopRequested, this, [this] {
+        m_audio.stop();
+        m_score->clearPlaybackTick();
+    });
+    connect(m_transport, &TransportBar::optionsChanged, this, [this] { m_planStale = true; });
+    connect(m_transport, &TransportBar::verseChanged, this,
+        [this](int verse) { m_score->setActiveVerse(verse); });
+
+    connect(m_languageTabs, &QTabWidget::currentChanged, this, [this](int index) {
+        if (index < 0)
+            return;
+        const QString code = m_languageTabs->tabBar()->tabData(index).toString();
+        if (!code.isEmpty())
+            m_session.setCurrentLanguage(code);
+    });
 }
 
-void MainWindow::openSong(const QString& filePath) {
-    if (m_document->loadFromFile(filePath)) {
-        statusBar()->showMessage(QStringLiteral("Loaded: %1").arg(filePath), 4000);
-        updateTitle();
-    } else {
-        QMessageBox::critical(this, QStringLiteral("Error"), QStringLiteral("Failed to load song from %1").arg(filePath));
+void MainWindow::buildMenus()
+{
+    auto *fileMenu = menuBar()->addMenu(tr("&File"));
+    fileMenu->addAction(tr("&Open Song…"), QKeySequence::Open, this, &MainWindow::openSong);
+    fileMenu->addAction(tr("&New Song…"), QKeySequence::New, this, &MainWindow::newSong);
+    fileMenu->addAction(tr("Add &Translation…"), this, &MainWindow::addTranslation);
+    fileMenu->addSeparator();
+    fileMenu->addAction(tr("&Save"), QKeySequence::Save, this, &MainWindow::save);
+    fileMenu->addAction(tr("&Reload from Disk"), this, &MainWindow::reloadFromDisk);
+    fileMenu->addSeparator();
+    fileMenu->addAction(tr("&Preferences…"), this, &MainWindow::editPreferences);
+    fileMenu->addSeparator();
+    fileMenu->addAction(tr("E&xit"), QKeySequence::Quit, this, &QWidget::close);
+
+    auto *editMenu = menuBar()->addMenu(tr("&Edit"));
+    QAction *undo = m_session.undoStack()->createUndoAction(this, tr("&Undo"));
+    undo->setShortcut(QKeySequence::Undo);
+    QAction *redo = m_session.undoStack()->createRedoAction(this, tr("&Redo"));
+    redo->setShortcut(QKeySequence::Redo);
+    editMenu->addAction(undo);
+    editMenu->addAction(redo);
+
+    auto *viewMenu = menuBar()->addMenu(tr("&View"));
+    auto *phrased = viewMenu->addAction(tr("&Phrased line breaks"));
+    phrased->setCheckable(true);
+    phrased->setChecked(true);
+    connect(phrased, &QAction::toggled, this,
+        [this](bool on) { m_score->setPhrasedLayout(on); });
+    viewMenu->addSeparator();
+    viewMenu->addAction(tr("&Score"), QKeySequence(Qt::CTRL | Qt::Key_1), this,
+        [this] { m_centre->setCurrentWidget(m_score); });
+    viewMenu->addAction(tr("&Lyrics"), QKeySequence(Qt::CTRL | Qt::Key_2), this,
+        [this] { m_centre->setCurrentWidget(m_lyrics); });
+    viewMenu->addAction(tr("So&urce"), QKeySequence(Qt::CTRL | Qt::Key_3), this,
+        [this] { m_centre->setCurrentWidget(m_source); });
+
+    auto *playMenu = menuBar()->addMenu(tr("&Play"));
+    playMenu->addAction(tr("&Play / Pause"), QKeySequence(Qt::Key_Space), this, [this] {
+        if (m_audio.isPlaying()) {
+            m_audio.pause();
+        } else {
+            refreshPlaybackPlan();
+            m_audio.play(0.0);
+        }
+    });
+    playMenu->addAction(tr("&Stop"), this, [this] { m_audio.stop(); });
+
+    auto *helpMenu = menuBar()->addMenu(tr("&Help"));
+    helpMenu->addAction(tr("&Keyboard Reference"), this, [this] {
+        QMessageBox::information(this, tr("Keyboard Reference"),
+            tr("<b>In the score</b><br>"
+               "← →  previous / next note<br>"
+               "↑ ↓  pitch up / down one step<br>"
+               "Shift+↑↓  by a semitone &nbsp; Ctrl+↑↓  by an octave<br>"
+               "Alt+↑↓  move to the part above / below<br>"
+               "1 2 4 8 6 3  whole, half, quarter, eighth, 16th, 32nd<br>"
+               ".  add a dot &nbsp; R  rest &nbsp; P  spacer &nbsp; N  note<br>"
+               "T  tie &nbsp; S / Shift+S  slur start / end<br>"
+               "B / Shift+B  beam start / end &nbsp; D / Shift+D  dashed slur<br>"
+               "F  fermata &nbsp; K  staccato &nbsp; C  @c &nbsp; E  @e<br>"
+               "Ins / Del  insert / delete a note<br>"
+               "Ctrl+B  phrase break here &nbsp; Ctrl+Shift+B  optional &nbsp; "
+               "Alt+B  non-breaking<br>"
+               "Ctrl+Enter  copy this marking to every sounding voice<br>"
+               "Ctrl+wheel  zoom"));
+    });
+    helpMenu->addAction(tr("&About"), this, [this] { showAbout(this); });
+}
+
+void MainWindow::updateWindowTitle()
+{
+    QString title = tr("OpenPsalm Editor");
+    if (m_session.isOpen()) {
+        const SongDocument &doc = m_session.document();
+        const QString name = QFileInfo(doc.path).fileName();
+        title = QStringLiteral("%1 — %2 [%3]%4")
+                    .arg(doc.title.valueOr(tr("(untitled)")), name, m_session.currentLanguage(),
+                        m_session.isDirty() ? QStringLiteral(" •") : QString());
     }
+    setWindowTitle(title);
 }
 
-void MainWindow::newSong() {
-    // Reset to blank default template
-    SongData blank;
-    blank.title = QStringLiteral("New Song");
-    blank.verseCount = 1;
-    blank.keySignature = QStringLiteral("C");
-    blank.timeSigNumerator = 4;
-    blank.timeSigDenominator = 4;
-    blank.tempoBpm = 100;
-    blank.copyrights = {QStringLiteral("Copyright (C) 2026 Jon Hood, OpenPsalm.com")};
-
-    PartData sPart;
-    sPart.name = QStringLiteral("Soprano");
-    sPart.choralType = ChoralType::Soprano;
-    sPart.clef = Clef::Treble;
-    sPart.staffNumber = 1;
-    sPart.notesText = QStringLiteral("c'4 d'4 e'4 f'4 | g'1 |");
-    blank.parts.insert(sPart.name, sPart);
-
-    m_document->songData() = blank;
-    m_document->revalidate();
-    m_document->setDirty(false);
-    updateTitle();
-}
-
-void MainWindow::openFileDialog() {
-    QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Open OpenPsalm TOML Song"),
-                                                Settings::openPsalmSongsPath(),
-                                                QStringLiteral("OpenPsalm Song (*.toml);;All Files (*)"));
-    if (!path.isEmpty()) {
-        openSong(path);
+void MainWindow::updateLanguageTabs()
+{
+    m_languageTabs->blockSignals(true);
+    while (m_languageTabs->count() > 0)
+        m_languageTabs->removeTab(0);
+    const QStringList languages = m_session.languages();
+    for (const QString &code : languages) {
+        const LanguageInfo *info = i18n::lookup(code);
+        const QString label = info ? QStringLiteral("%1 (%2)").arg(info->nativeName, code) : code;
+        const int index = m_languageTabs->addTab(new QWidget(m_languageTabs), label);
+        m_languageTabs->tabBar()->setTabData(index, code);
+        if (code == m_session.currentLanguage())
+            m_languageTabs->setCurrentIndex(index);
     }
+    m_languageTabs->setVisible(languages.size() > 1);
+    m_languageTabs->blockSignals(false);
 }
 
-void MainWindow::saveSong() {
-    if (m_document->filePath().isEmpty()) {
-        saveSongAs();
+void MainWindow::refreshPlaybackPlan()
+{
+    if (!m_planStale)
+        return;
+    m_audio.setPlan(m_session.buildPlaybackPlan(m_transport->options()));
+    m_planStale = false;
+}
+
+void MainWindow::openPath(const QString &path)
+{
+    if (!confirmDiscard())
+        return;
+    if (auto opened = m_session.openSong(path); !opened) {
+        showParseError(this, opened.error());
         return;
     }
-    if (m_document->saveToFile()) {
-        statusBar()->showMessage(QStringLiteral("Saved: %1").arg(m_document->filePath()), 4000);
-        updateTitle();
-    } else {
-        QMessageBox::critical(this, QStringLiteral("Error"), QStringLiteral("Failed to save file."));
-    }
+    m_planStale = true;
+    updateLanguageTabs();
+    updateWindowTitle();
+    statusBar()->showMessage(tr("Opened %1").arg(path), 4000);
 }
 
-void MainWindow::saveSongAs() {
-    QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Save OpenPsalm TOML Song"),
-                                                m_document->filePath().isEmpty() ? Settings::openPsalmSongsPath() : m_document->filePath(),
-                                                QStringLiteral("OpenPsalm Song (*.toml);;All Files (*)"));
-    if (!path.isEmpty()) {
-        if (m_document->saveToFile(path)) {
-            statusBar()->showMessage(QStringLiteral("Saved as: %1").arg(path), 4000);
-            updateTitle();
-        } else {
-            QMessageBox::critical(this, QStringLiteral("Error"), QStringLiteral("Failed to save file."));
+void MainWindow::selectTab(int index)
+{
+    if (index >= 0 && index < m_centre->count())
+        m_centre->setCurrentIndex(index);
+}
+
+void MainWindow::openSong()
+{
+    if (m_library.root().isEmpty()) {
+        editPreferences();
+        if (m_library.root().isEmpty())
+            return;
+    }
+    m_library.rescan();
+    SongBrowser browser(&m_library, this);
+    if (browser.exec() == QDialog::Accepted && !browser.chosenPath().isEmpty())
+        openPath(browser.chosenPath());
+}
+
+void MainWindow::newSong()
+{
+    if (m_library.root().isEmpty()) {
+        editPreferences();
+        if (m_library.root().isEmpty())
+            return;
+    }
+    if (!confirmDiscard())
+        return;
+
+    m_library.rescan();
+    NewSongDialog dialog(&m_library, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString path = dialog.targetPath();
+    if (QFileInfo::exists(path)) {
+        QMessageBox::warning(this, tr("New Song"),
+            tr("%1 already exists. Pick a different song number.").arg(path));
+        return;
+    }
+    QDir().mkpath(QFileInfo(path).path());
+    m_session.adoptNewDocument(dialog.buildDocument());
+    updateLanguageTabs();
+    statusBar()->showMessage(tr("New song ready — nothing is written until you save."), 6000);
+}
+
+void MainWindow::addTranslation()
+{
+    if (!m_session.isOpen()) {
+        QMessageBox::information(this, tr("Add Translation"), tr("Open a song first."));
+        return;
+    }
+    const SongDocument *base = m_session.baseDocument();
+    if (!base) {
+        QMessageBox::information(this, tr("Add Translation"),
+            tr("Translations are added to a base song.toml."));
+        return;
+    }
+    if (m_session.isDirty()) {
+        QMessageBox::information(this, tr("Add Translation"),
+            tr("Save the current changes first — a new translation is written beside the "
+               "song on disk."));
+        return;
+    }
+
+    TranslationDialog dialog(*base, m_session.languages(), this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    const QString code = dialog.languageCode();
+    if (code.isEmpty())
+        return;
+
+    SongDocument overlay = dialog.buildOverlay();
+    const QByteArray bytes = io::serializeFresh(overlay);
+    if (auto written = io::writeAtomically(overlay.path, bytes); !written) {
+        QMessageBox::critical(this, tr("Add Translation"),
+            tr("Could not write %1: %2").arg(overlay.path, written.error()));
+        return;
+    }
+    openPath(base->path);
+    m_session.setCurrentLanguage(code);
+    updateLanguageTabs();
+    statusBar()->showMessage(tr("Created %1").arg(overlay.path), 6000);
+}
+
+void MainWindow::save()
+{
+    if (!m_session.isOpen())
+        return;
+
+    const int errors = countBySeverity(m_session.findings(), Severity::Error);
+    if (errors > 0) {
+        QStringList firstFew;
+        for (const Finding &finding : m_session.findings()) {
+            if (finding.severity != Severity::Error)
+                continue;
+            firstFew.append(QStringLiteral("• %1").arg(finding.formatted()));
+            if (firstFew.size() == 2)
+                break;
         }
+        QMessageBox box(this);
+        box.setIcon(QMessageBox::Warning);
+        box.setWindowTitle(tr("Save with errors?"));
+        box.setText(tr("%n error(s) would stop this song seeding, or make it seed wrongly.",
+            nullptr, errors));
+        box.setInformativeText(firstFew.join(u'\n'));
+        box.setStandardButtons(QMessageBox::Save | QMessageBox::Cancel);
+        box.setDefaultButton(QMessageBox::Cancel);
+        box.button(QMessageBox::Save)->setText(tr("Save anyway"));
+        if (box.exec() != QMessageBox::Save)
+            return;
+    }
+
+    if (auto saved = m_session.save(); !saved) {
+        QMessageBox::critical(this, tr("Save failed"), saved.error());
+        return;
+    }
+    statusBar()->showMessage(tr("Saved %1").arg(m_session.currentPath()), 4000);
+    updateWindowTitle();
+}
+
+void MainWindow::reloadFromDisk()
+{
+    if (!m_session.isOpen())
+        return;
+    if (!confirmDiscard())
+        return;
+    const SongDocument *base = m_session.baseDocument();
+    const QString path = base ? base->path : m_session.currentPath();
+    openPath(path);
+}
+
+void MainWindow::editPreferences()
+{
+    PreferencesDialog dialog(m_library.root(), this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    const QString root = dialog.songsRoot();
+    if (!root.isEmpty() && !Library::looksLikeSongsRoot(root)) {
+        QMessageBox::warning(this, tr("Preferences"),
+            tr("%1 has no numbered song directories in it. Point this at the OP-songs "
+               "checkout — the folder containing 1/, 2/, 3/ …")
+                .arg(root));
+    }
+    m_library.setRoot(root);
+    m_library.rescan();
+    QSettings().setValue(settingsKeyRoot(), root);
+}
+
+bool MainWindow::confirmDiscard()
+{
+    if (!m_session.isDirty())
+        return true;
+    const QMessageBox::StandardButton answer = QMessageBox::question(this,
+        tr("Unsaved changes"),
+        tr("%1 has unsaved changes. Save before continuing?")
+            .arg(QFileInfo(m_session.currentPath()).fileName()),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
+    if (answer == QMessageBox::Cancel)
+        return false;
+    if (answer == QMessageBox::Save) {
+        save();
+        return !m_session.isDirty();
+    }
+    return true;
+}
+
+void MainWindow::navigateTo(const Finding &finding)
+{
+    const SongDocument &doc = m_session.effectiveDocument();
+    if (!finding.lyricKey.isEmpty() && finding.measure < 0) {
+        m_centre->setCurrentWidget(m_lyrics);
+        m_lyrics->focusSlot(finding.partName, std::max(0, finding.slot));
+        return;
+    }
+    if (finding.measure > 0) {
+        int partIndex = 0;
+        for (int i = 0; i < doc.parts.size(); ++i) {
+            if (doc.parts.at(i).name == finding.partName)
+                partIndex = i;
+        }
+        m_centre->setCurrentWidget(m_score);
+        m_session.setSelection(Selection { partIndex, finding.measure - 1,
+            std::max(0, finding.eventIndex) });
     }
 }
 
-void MainWindow::onDocumentModified() {
-    updateTitle();
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (confirmDiscard())
+        event->accept();
+    else
+        event->ignore();
 }
 
-void MainWindow::onDocumentLoaded() {
-    updateTitle();
-}
-
-void MainWindow::onDiagnosticsChanged() {
-    m_diagnosticsWidget->setDiagnostics(m_document->diagnostics());
-}
-
-void MainWindow::onDiagnosticClicked(const Diagnostic& diag) {
-    if (!diag.partName.isEmpty()) {
-        m_tabWidget->setCurrentIndex(1); // Switch to Notes (Text)
-    }
-}
-
-void MainWindow::updateTitle() {
-    QString path = m_document->filePath();
-    QString title = m_document->songData().title;
-    if (title.isEmpty()) title = QStringLiteral("Untitled");
-
-    QString dirtyMarker = m_document->isDirty() ? QStringLiteral("*") : QString();
-    QString overlayMarker = m_document->isOverlay() ? QStringLiteral(" [Translation Overlay]") : QString();
-
-    setWindowTitle(QStringLiteral("%1%2%3 - OpenPsalm Editor").arg(title).arg(dirtyMarker).arg(overlayMarker));
-}
-
-void MainWindow::showAbout() {
-    QMessageBox::about(this, QStringLiteral("About OpenPsalm Editor"),
-                       QStringLiteral("<h3>OpenPsalm Editor v0.1.0</h3>"
-                                      "<p>Desktop SATB score and TOML editor for the OpenPsalm song corpus.</p>"
-                                      "<p><b>Copyright (C) 2026 Jon Hood, OpenPsalm.com</b><br>"
-                                      "Licensed under the GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later).</p>"));
-}
-
-} // namespace OpenPsalm
+} // namespace ope::ui

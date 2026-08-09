@@ -1,27 +1,13 @@
-# Copyright (C) 2026 Jon Hood, OpenPsalm.com
 # SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Jon Hood, OpenPsalm.com
 
-find_package(Qt6 REQUIRED COMPONENTS Test)
+set(OPE_TESTS FormatTests DocumentTests CorpusTests)
 
-set(TEST_NAMES
-    PitchTests
-    DurationTests
-    NoteParserTests
-    TomlLoaderTests
-    OverlayMergerTests
-    ValidatorTests
-)
-
-foreach(test_name IN LISTS TEST_NAMES)
-    add_executable(${test_name} ${test_name}.cpp)
-    target_include_directories(${test_name} PRIVATE
-        ${CMAKE_SOURCE_DIR}/src
-        ${CMAKE_SOURCE_DIR}
-    )
-    target_link_libraries(${test_name} PRIVATE
-        OpenPsalmCore
-        Qt6::Core
-        Qt6::Test
-    )
-    add_test(NAME ${test_name} COMMAND ${test_name})
+foreach(test IN LISTS OPE_TESTS)
+    qt_add_executable(${test} ${test}.cpp Fixtures.cpp)
+    target_link_libraries(${test} PRIVATE ope_core Qt6::Test ope_flags)
+    target_compile_definitions(${test} PRIVATE
+        OPE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    add_test(NAME ${test} COMMAND ${test})
+    set_tests_properties(${test} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endforeach()
