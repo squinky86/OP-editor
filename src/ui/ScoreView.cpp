@@ -22,6 +22,8 @@ ScoreView::ScoreView(SongDocument* doc, QWidget* parent)
     setRenderHint(QPainter::Antialiasing);
     setDragMode(QGraphicsView::ScrollHandDrag);
     setBackgroundBrush(Qt::white);
+    m_scene->setBackgroundBrush(Qt::white);
+    setStyleSheet(QStringLiteral("QGraphicsView { background-color: white; }"));
 
     connect(m_doc, &SongDocument::documentLoaded, this, &ScoreView::refreshScore);
     connect(m_doc, &SongDocument::documentModified, this, &ScoreView::refreshScore);
