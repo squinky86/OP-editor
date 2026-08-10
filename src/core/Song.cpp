@@ -331,6 +331,8 @@ bool SongDocument::effectiveConvergeVerses() const
 
 bool SongDocument::isDirty() const
 {
+    if (!removedTables.isEmpty())
+        return true;
     const auto anyDirty = [](auto &&...fields) { return (fields.dirty() || ...); };
     if (anyDirty(title, subtitle, active, declaredLanguage, keySignature, timeSigNumerator,
             timeSigDenominator, tempoBpm, verseCount, copyrights, commentary, convergeVerses,
@@ -358,6 +360,7 @@ bool SongDocument::isDirty() const
 
 void SongDocument::markClean()
 {
+    removedTables.clear();
     const auto clean = [](auto &...fields) { (fields.markClean(), ...); };
     clean(title, subtitle, active, declaredLanguage, keySignature, timeSigNumerator,
         timeSigDenominator, tempoBpm, verseCount, copyrights, commentary, convergeVerses,
@@ -375,6 +378,63 @@ void SongDocument::markClean()
                 event.dirty = false;
         }
     }
+}
+
+void SongDocument::removePartLyric(Part &part, const QString &key)
+{
+    const auto it = part.lyrics.constFind(key);
+    if (it == part.lyrics.constEnd())
+        return;
+    if (it->tableSpan.isValid())
+        removedTables.append(it->tableSpan);
+    part.lyrics.remove(key);
+}
+
+void SongDocument::removeGlobalLyric(const QString &key)
+{
+    const auto it = lyrics.constFind(key);
+    if (it == lyrics.constEnd())
+        return;
+    if (it->tableSpan.isValid())
+        removedTables.append(it->tableSpan);
+    lyrics.remove(key);
+}
+
+void SongDocument::setLyric(
+    QMap<QString, LyricSection> &map, const QString &key, const QString &text)
+{
+    if (const auto existing = map.constFind(key);
+        existing != map.constEnd() && existing->rawText == text)
+        return;
+    LyricSection &section = map[key];
+    section.rawText = text;
+    section.dirty = true;
+}
+
+QStringList SongDocument::orderedLyricKeys(const QStringList &keys)
+{
+    const auto rank = [](const QString &key) {
+        if (isVerseKey(key))
+            return 0;
+        if (isChorusKey(key))
+            return 1;
+        if (isCodaKey(key))
+            return 2;
+        if (isSharedKey(key))
+            return 3;
+        return 4;
+    };
+    QStringList sorted = keys;
+    std::stable_sort(sorted.begin(), sorted.end(), [&rank](const QString &a, const QString &b) {
+        if (rank(a) != rank(b))
+            return rank(a) < rank(b);
+        if (isVerseKey(a) && isVerseKey(b))
+            return a.toInt() < b.toInt();
+        if (isSharedKey(a) && isSharedKey(b))
+            return QStringView(a).sliced(1).toInt() < QStringView(b).sliced(1).toInt();
+        return a < b;
+    });
+    return sorted;
 }
 
 bool SongDocument::isChorusKey(QStringView key)
@@ -431,6 +491,7 @@ void loadLyricMap(QMap<QString, LyricSection> &target, const toml::Document &doc
             LyricSection section;
             section.rawText = text->value.string;
             section.span = text->value.span;
+            section.tableSpan = table->span;
             target.insert(key, section);
         }
     }
@@ -633,6 +694,26 @@ QByteArray emitLyricTable(const QStringList &path, const LyricSection &section)
     return header + "text = " + toml::emitBasicString(section.rawText) + "\n";
 }
 
+/// Where a brand-new lyric table should go: beside the ones it belongs with —
+/// after the last `[parts.X.lyrics.*]` of the same part, or after that part's
+/// own table, or after the last `[lyrics.*]` for a global section. Appending
+/// everything at the end of the file would be valid TOML and an unreadable diff.
+qsizetype lyricTableAnchor(const SongDocument &doc, const QStringList &path)
+{
+    const QStringList prefix = path.first(path.size() - 1);
+    qsizetype anchor = -1;
+    for (const toml::Table *table : doc.source.tablesUnder(prefix)) {
+        if (table->path.size() == prefix.size() + 1)
+            anchor = std::max(anchor, doc.source.lineEnd(table->span.end));
+    }
+    if (anchor < 0 && prefix.size() == 3) {
+        // parts.X.lyrics.KEY with no siblings yet: sit under the part itself.
+        if (const toml::Table *part = doc.source.table(prefix.first(2)))
+            anchor = doc.source.lineEnd(part->span.end);
+    }
+    return anchor < 0 ? doc.originalBytes.size() : anchor;
+}
+
 QByteArray emitTimeSigChanges(const QList<TimeSigChange> &changes)
 {
     QByteArray out;
@@ -766,15 +847,12 @@ QByteArray serialize(const SongDocument &doc)
         for (auto it = part.lyrics.constBegin(); it != part.lyrics.constEnd(); ++it) {
             if (!it->dirty)
                 continue;
-            if (it->span.isValid()) {
+            const QStringList path { QStringLiteral("parts"), part.name,
+                QStringLiteral("lyrics"), it.key() };
+            if (it->span.isValid())
                 edit.replace(it->span, toml::emitBasicString(it->rawText));
-            } else {
-                edit.insert(doc.originalBytes.size(),
-                    "\n"
-                        + emitLyricTable({ QStringLiteral("parts"), part.name,
-                                             QStringLiteral("lyrics"), it.key() },
-                            *it));
-            }
+            else
+                edit.insert(lyricTableAnchor(doc, path), "\n" + emitLyricTable(path, *it));
         }
     }
 
@@ -782,12 +860,32 @@ QByteArray serialize(const SongDocument &doc)
     for (auto it = doc.lyrics.constBegin(); it != doc.lyrics.constEnd(); ++it) {
         if (!it->dirty)
             continue;
-        if (it->span.isValid()) {
+        const QStringList path { QStringLiteral("lyrics"), it.key() };
+        if (it->span.isValid())
             edit.replace(it->span, toml::emitBasicString(it->rawText));
-        } else {
-            edit.insert(doc.originalBytes.size(),
-                "\n" + emitLyricTable({ QStringLiteral("lyrics"), it.key() }, *it));
+        else
+            edit.insert(lyricTableAnchor(doc, path), emitLyricTable(path, *it) + "\n");
+    }
+
+    // Deleted tables go last so their spans are not disturbed by the edits above
+    // (Edit sorts by position, so ordering here only decides ties).
+    for (const toml::Span &span : doc.removedTables) {
+        if (!span.isValid())
+            continue;
+        qsizetype from = doc.source.lineStart(span.begin);
+        qsizetype to = doc.source.lineEnd(span.end);
+        // A block owns one of the blank lines around it: the one after it, or —
+        // when it is the last thing in the file and there is no "after" — the one
+        // before. Without this, deleting a section leaves a widening gap where
+        // it used to be, and adding a section then deleting it again would not
+        // restore the file.
+        if (to < doc.originalBytes.size() && doc.originalBytes.at(to) == '\n') {
+            ++to;
+        } else if (from >= 2 && doc.originalBytes.at(from - 1) == '\n'
+            && doc.originalBytes.at(from - 2) == '\n') {
+            --from;
         }
+        edit.erase({ from, to });
     }
 
     return edit.apply(doc.originalBytes);
@@ -840,11 +938,11 @@ QByteArray serializeFresh(const SongDocument &doc)
     for (const Part *part : doc.partsInDisplayOrder()) {
         out += "\n";
         out += emitPartTable(*part);
-        for (auto it = part->lyrics.constBegin(); it != part->lyrics.constEnd(); ++it) {
+        for (const QString &key : SongDocument::orderedLyricKeys(part->lyrics.keys())) {
             out += "\n";
-            out += emitLyricTable({ QStringLiteral("parts"), part->name,
-                                      QStringLiteral("lyrics"), it.key() },
-                *it);
+            out += emitLyricTable(
+                { QStringLiteral("parts"), part->name, QStringLiteral("lyrics"), key },
+                part->lyrics.value(key));
         }
     }
 
@@ -884,6 +982,30 @@ std::expected<void, QString> writeAtomically(const QString &path, const QByteArr
 }
 
 } // namespace io
+
+void materialiseOverlayLyrics(
+    SongDocument &overlay, const SongDocument &merged, const QString &partName)
+{
+    if (!overlay.isOverlay)
+        return;
+    const QMap<QString, LyricSection> *inherited = nullptr;
+    QMap<QString, LyricSection> *target = nullptr;
+    if (partName.isEmpty()) {
+        inherited = &merged.lyrics;
+        target = &overlay.lyrics;
+    } else {
+        const Part *from = merged.part(partName);
+        Part *to = overlay.part(partName);
+        if (!from || !to)
+            return;
+        inherited = &from->lyrics;
+        target = &to->lyrics;
+    }
+    if (!target->isEmpty())
+        return;
+    for (auto it = inherited->constBegin(); it != inherited->constEnd(); ++it)
+        SongDocument::setLyric(*target, it.key(), it->rawText);
+}
 
 SongDocument mergeOverlay(const SongDocument &base, const SongDocument &overlay)
 {

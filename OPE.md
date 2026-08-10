@@ -275,6 +275,10 @@ This is the single most important engineering decision in the project.
 
 **Write safety:** write to `song.toml.tmp` in the same directory, `fsync`, `rename` over the target. `QFileSystemWatcher` detects external modification and offers reload/keep. Writes are confined to the configured songs root.
 
+**Deleting a table.** Adding and changing were enough until the lyrics panel needed *Revert to song default*, which removes a whole `[parts.X.lyrics.KEY]` block. A `LyricSection` therefore remembers its table's span as well as its value's, and the document carries a list of spans to erase. A block owns one of the blank lines around it — the one after it, or, when it is the last thing in the file, the one before — so a deletion neither leaves a widening gap nor swallows the separator its neighbour needs. The corpus gate covers it: for every file, add an override, write, re-read, delete it, and assert the original bytes come back.
+
+**Only what the user changed.** The header and part editors originally wrote every field they displayed on any edit. On a base song that is invisible; on a translation it is the format's central failure mode, because a field written into `song_{lang}.toml` stops tracking `song.toml` forever. Fixing a typo in a Spanish title would have frozen its tempo, metre, key, and verse count at whatever the base said that day. Both panels now diff field by field against the effective document and write only what moved. (The copyright and commentary boxes had the opposite bug — no `editingFinished` on a multi-line edit meant they were never committed at all unless the user afterwards touched some other field. They commit on focus-out.)
+
 **Gate (CI):** open every `songs/*/song.toml` and `song_*.toml`, save with no edits, assert byte equality. This test is the definition of "correct I/O" and runs on every commit.
 
 ---
@@ -435,6 +439,19 @@ Two views of the same data, live-bound.
 
 One text box per lyric key (`1…N`, `chorus`, `coda`, `sN`), showing the raw ` -- ` string — the fastest way to type or paste a stanza. Live gutter: syllable count vs. required slots, green/red. `@sN` chips are rendered inline and expand on hover. A character palette provides `‿`, `’`, and the accented characters translators reach for.
 
+**Implementation note — organised by section, not by part.** The plan's "one text box per lyric key" was built first as a part picker plus a flat list of boxes, and it was the worst thing in the program. Choosing "Alto" changed what the boxes contained but not what they looked like, so there was no way to tell the song's own `[lyrics.1]` from `[parts.Alto.lyrics.1]` except by reading a parenthetical in the group title; the counter compared the text against whichever part happened to be selected; and neither creating nor deleting an override was possible at all, which meant the format's per-part lyric feature was effectively read-only in an editor whose whole point is that feature.
+
+What shipped is one **card per lyric key**, holding every version of that section at once:
+
+- the song-wide text on top, blue-striped, labelled with the voices that actually sing it;
+- one amber-striped box under it per voice that overrides it, labelled `Alto only — parts.Alto.lyrics.1`, with *Revert to song default*;
+- a *Give one voice its own text* menu listing the voices that do not override it yet, which seeds the new override from the text that voice sings today rather than from a blank box;
+- a counter per box measured against **every** voice it applies to, separately — `30 syllables — Soprano 30 ✓ · Alto 28` — because an echo alto has a different slot count from the soprano and one number cannot answer for both.
+
+Two consequences fell out of building it. Deleting a table needed span-level support in the writer (§6), since the file layer could previously add and change tables but never remove one; and the page must not be torn down and rebuilt on every keystroke, so a rebuild happens only when the *structure* changes — which cards exist and which voices override them — and otherwise the boxes are synchronised in place, skipping any whose keystrokes have not reached the document yet.
+
+**Implementation note — the overlay's wholesale lyric map.** Because a translation's lyric map replaces the base's entirely (§3.6), typing into one verse of a `song_es.toml` that has no lyrics of its own would have deleted every other verse from the site while looking, in the editor, like a one-verse edit. Every write path into an overlay's lyrics therefore calls `materialiseOverlayLyrics` first, which copies the inherited map in before the edit lands.
+
 ### 9.2 Alignment grid — the translator's tool
 
 A table whose **columns are lyric slots** and whose **rows are lyric keys**:
@@ -521,6 +538,12 @@ One main window; no floating tool palettes.
 - **Inspector** (right dock) is context-sensitive: note properties when an event is selected, part properties when a staff is selected, song properties otherwise.
 - **Source tab** shows the exact bytes that will be written, with a live diff against the file on disk. Read-only, but it's what keeps the tool trustworthy: the user can always see the TOML.
 - **Song browser** is a modal-ish start screen / `Ctrl+O` panel: a searchable list of the 201 songs (id, title, subtitle, languages present, validation status from a background scan). Not a permanent sidebar.
+
+**Implementation note — the browser is a permanent sidebar after all.** "Not a permanent sidebar" was wrong. The job this program exists for is *work through a folder of hymns*: fix one, hear it, save it, open the next. A modal dialog put two clicks and a dismissed window between every song and the one after it, and it hid the fact that a songs folder was configured at all — the empty score said "File ▸ Open Song…" and nothing said where it would look. The list is now a left dock with the search field, a labelled **Refresh** button (`F5`) because the folder is a git checkout that changes underneath the editor, *New song…*, and *Folder…* for pointing it somewhere else. A click opens; the arrow keys only move the highlight, so keyboard browsing does not load two hundred songs on the way past.
+
+**Implementation note — spacing is grid-based, not proportional.** Notes were positioned across a measure in proportion to their ticks, which is fine for noteheads and unusable under lyrics: a bar of eighth notes rendered "Each day I'll do" as overlapping ink. Each measure now merges every voice's note starts into one tick grid and gives each position the larger of the room its duration wants (sublinear in the duration, as engravers space) and the room its widest syllable needs. All voices read the same grid, so they stay vertically aligned. The score also shows only the transport's verse plus the chorus and coda by default — *View ▸ Show all verses* brings the rest back — because five stacked verses is what the alignment grid is for.
+
+**Implementation note — the Play button.** It decided which signal to emit by testing whether its own label began with `"▶"`, written as `QLatin1String("▶")`: three UTF-8 bytes read as three Latin-1 characters, which never match the one character in the label. Play therefore emitted *pause*, every time, and the transport had never played a note. It now keeps a `bool`. The transport also reports the song's duration as soon as a song is open, rather than `0:00 / 0:00` until something plays.
 
 ### Flows
 

@@ -20,8 +20,10 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSpinBox>
-#include <QTreeWidget>
+#include <QTableWidget>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 namespace ope::ui {
 namespace {
@@ -36,69 +38,6 @@ QString arrangementLine()
 }
 
 } // namespace
-
-// -------------------------------------------------------------- SongBrowser ---
-
-SongBrowser::SongBrowser(Library *library, QWidget *parent)
-    : QDialog(parent), m_library(library)
-{
-    setWindowTitle(tr("Open Song"));
-    resize(760, 560);
-
-    auto *layout = new QVBoxLayout(this);
-    m_search = new QLineEdit(this);
-    m_search->setPlaceholderText(tr("Search by title, subtitle, or song number"));
-    m_search->setClearButtonEnabled(true);
-    layout->addWidget(m_search);
-
-    m_tree = new QTreeWidget(this);
-    m_tree->setColumnCount(4);
-    m_tree->setHeaderLabels({ tr("#"), tr("Title"), tr("Subtitle"), tr("Languages") });
-    m_tree->setRootIsDecorated(false);
-    m_tree->setAlternatingRowColors(true);
-    m_tree->header()->setSectionResizeMode(1, QHeaderView::Stretch);
-    layout->addWidget(m_tree);
-
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Open | QDialogButtonBox::Cancel, this);
-    layout->addWidget(buttons);
-
-    const auto accept = [this] {
-        if (QTreeWidgetItem *item = m_tree->currentItem()) {
-            m_chosenPath = item->data(0, Qt::UserRole).toString();
-            QDialog::accept();
-        }
-    };
-    connect(buttons, &QDialogButtonBox::accepted, this, accept);
-    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
-    connect(m_tree, &QTreeWidget::itemActivated, this, accept);
-    connect(m_search, &QLineEdit::textChanged, this, &SongBrowser::repopulate);
-
-    repopulate();
-    m_search->setFocus();
-}
-
-void SongBrowser::repopulate()
-{
-    m_tree->clear();
-    for (const SongEntry &entry : m_library->search(m_search->text())) {
-        auto *item = new QTreeWidgetItem(m_tree);
-        item->setText(0, QString::number(entry.id));
-        item->setText(1, entry.displayTitle());
-        item->setText(2, entry.subtitle);
-        item->setText(3, entry.allLanguages().join(QStringLiteral(", ")));
-        item->setData(0, Qt::UserRole, entry.basePath);
-        if (!entry.problem.isEmpty()) {
-            item->setForeground(1, QColor(0xd1, 0x24, 0x2f));
-            item->setToolTip(1, entry.problem);
-        } else if (!entry.active) {
-            item->setForeground(1, QColor(0x88, 0x88, 0x88));
-            item->setToolTip(1, tr("active = false; not loaded into the database"));
-        }
-    }
-    m_tree->resizeColumnToContents(0);
-    if (m_tree->topLevelItemCount() > 0)
-        m_tree->setCurrentItem(m_tree->topLevelItem(0));
-}
 
 // ------------------------------------------------------------ NewSongDialog ---
 
@@ -397,6 +336,83 @@ SongDocument TranslationDialog::buildOverlay() const
         overlay.lyrics.insert(it.key(), section);
     }
     return overlay;
+}
+
+// ----------------------------------------------------- TimeSigChangesDialog ---
+
+TimeSigChangesDialog::TimeSigChangesDialog(
+    QList<TimeSigChange> changes, int measureCount, QWidget *parent)
+    : QDialog(parent), m_measureCount(std::max(1, measureCount))
+{
+    setWindowTitle(tr("Time Signature Changes"));
+    resize(520, 320);
+
+    auto *layout = new QVBoxLayout(this);
+    auto *note = new QLabel(
+        tr("Each row changes the metre for <i>duration</i> measures starting at "
+           "<i>measure</i>. Measures outside every row keep the song's metre."),
+        this);
+    note->setWordWrap(true);
+    layout->addWidget(note);
+
+    m_table = new QTableWidget(this);
+    m_table->setColumnCount(4);
+    m_table->setHorizontalHeaderLabels(
+        { tr("Measure"), tr("Numerator"), tr("Denominator"), tr("Measures") });
+    m_table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_table->verticalHeader()->setVisible(false);
+    layout->addWidget(m_table, 1);
+
+    auto *buttonRow = new QHBoxLayout;
+    auto *add = new QPushButton(tr("Add"), this);
+    auto *remove = new QPushButton(tr("Remove"), this);
+    buttonRow->addWidget(add);
+    buttonRow->addWidget(remove);
+    buttonRow->addStretch();
+    layout->addLayout(buttonRow);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    connect(add, &QPushButton::clicked, this, [this] { addRow(TimeSigChange {}); });
+    connect(remove, &QPushButton::clicked, this, [this] {
+        const int row = m_table->currentRow();
+        if (row >= 0)
+            m_table->removeRow(row);
+    });
+
+    for (const TimeSigChange &change : changes)
+        addRow(change);
+}
+
+void TimeSigChangesDialog::addRow(const TimeSigChange &change)
+{
+    const int row = m_table->rowCount();
+    m_table->insertRow(row);
+    const auto spin = [this](int value, int minimum, int maximum) {
+        auto *box = new QSpinBox(m_table);
+        box->setRange(minimum, maximum);
+        box->setValue(value);
+        return box;
+    };
+    m_table->setCellWidget(row, 0, spin(change.measure, 1, std::max(1, m_measureCount)));
+    m_table->setCellWidget(row, 1, spin(change.numerator, 1, 32));
+    m_table->setCellWidget(row, 2, spin(change.denominator, 1, 32));
+    m_table->setCellWidget(row, 3, spin(change.duration, 1, std::max(1, m_measureCount)));
+}
+
+QList<TimeSigChange> TimeSigChangesDialog::changes() const
+{
+    QList<TimeSigChange> out;
+    for (int row = 0; row < m_table->rowCount(); ++row) {
+        const auto value = [this, row](int column) {
+            const auto *box = qobject_cast<QSpinBox *>(m_table->cellWidget(row, column));
+            return box ? box->value() : 1;
+        };
+        out.append(TimeSigChange { value(0), value(1), value(2), value(3) });
+    }
+    return out;
 }
 
 // -------------------------------------------------------- PreferencesDialog ---

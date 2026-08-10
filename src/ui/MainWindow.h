@@ -10,6 +10,7 @@
 #include <QMainWindow>
 
 QT_BEGIN_NAMESPACE
+class QDockWidget;
 class QLabel;
 class QTabWidget;
 QT_END_NAMESPACE
@@ -21,6 +22,7 @@ class InspectorPanel;
 class LyricsPanel;
 class ProblemsPanel;
 class ScoreView;
+class SongBrowser;
 class SourcePanel;
 class TransportBar;
 
@@ -43,8 +45,9 @@ private:
     void updateWindowTitle();
     void updateLanguageTabs();
     void refreshPlaybackPlan();
+    void updateTransportDuration();
 
-    void openSong();
+    void showBrowser();
     void newSong();
     void addTranslation();
     void save();
@@ -58,6 +61,9 @@ private:
     audio::AudioEngine m_audio;
 
     ScoreView *m_score = nullptr;
+    SongBrowser *m_browser = nullptr;
+    QDockWidget *m_browserDock = nullptr;
+    QDockWidget *m_songDock = nullptr;
     LyricsPanel *m_lyrics = nullptr;
     SourcePanel *m_source = nullptr;
     HeaderPanel *m_header = nullptr;

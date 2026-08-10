@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Jon Hood, OpenPsalm.com
 //
-// Opening a song, starting a new one, adding a translation, preferences, and
-// the dialog that refuses to open a file whose TOML does not parse.
+// Starting a new song, adding a translation, editing the time-signature map,
+// preferences, and the dialog that refuses to open a file whose TOML does not
+// parse. The song list is not here: it is a panel, in SongBrowser.h.
 
 #pragma once
 
@@ -17,26 +18,10 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QSpinBox;
-class QTreeWidget;
+class QTableWidget;
 QT_END_NAMESPACE
 
 namespace ope::ui {
-
-/// The searchable list of songs in the configured songs directory.
-class SongBrowser : public QDialog {
-    Q_OBJECT
-public:
-    explicit SongBrowser(Library *library, QWidget *parent = nullptr);
-    [[nodiscard]] QString chosenPath() const { return m_chosenPath; }
-
-private:
-    void repopulate();
-
-    Library *m_library = nullptr;
-    QLineEdit *m_search = nullptr;
-    QTreeWidget *m_tree = nullptr;
-    QString m_chosenPath;
-};
 
 /// Collects what a new song needs to be seedable, and nothing more.
 class NewSongDialog : public QDialog {
@@ -85,6 +70,24 @@ private:
     QCheckBox *m_copyVerses = nullptr;
     QCheckBox *m_templateCopyrights = nullptr;
     QLabel *m_warning = nullptr;
+};
+
+/// Edits `[[time_sig_changes]]`: the measure a metre change starts at, the new
+/// metre, and how many measures it lasts. Five songs in the corpus use it, and
+/// a wrong entry makes every measure in its range fail tick validation.
+class TimeSigChangesDialog : public QDialog {
+    Q_OBJECT
+public:
+    TimeSigChangesDialog(QList<TimeSigChange> changes, int measureCount,
+        QWidget *parent = nullptr);
+
+    [[nodiscard]] QList<TimeSigChange> changes() const;
+
+private:
+    void addRow(const TimeSigChange &change);
+
+    QTableWidget *m_table = nullptr;
+    int m_measureCount = 1;
 };
 
 class PreferencesDialog : public QDialog {

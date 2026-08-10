@@ -209,6 +209,47 @@ private Q_SLOTS:
         QVERIFY(!merged.lyrics.contains(QStringLiteral("2")));
     }
 
+    void editingOneVerseOfATranslationKeepsTheOthers()
+    {
+        // The overlay lyric map replaces wholesale. Typing in verse 2 of a
+        // translation that has no lyrics of its own must not delete verses 1,
+        // 3, and 4 — which is what writing only the edited key would do.
+        QTemporaryDir dir;
+        const SongDocument base = loadFrom(dir, QStringLiteral("song.toml"), baseSong());
+        SongDocument overlay
+            = loadFrom(dir, QStringLiteral("song_es.toml"), "title = \"Cara a cara\"\n");
+        QVERIFY(overlay.isOverlay);
+        QVERIFY(overlay.lyrics.isEmpty());
+
+        const SongDocument merged = mergeOverlay(base, overlay);
+        materialiseOverlayLyrics(overlay, merged, QString());
+        SongDocument::setLyric(overlay.lyrics, QStringLiteral("2"), QStringLiteral("tres cuatro"));
+
+        QCOMPARE(overlay.lyrics.size(), base.lyrics.size());
+        QCOMPARE(overlay.lyrics.value(QStringLiteral("1")).rawText, QStringLiteral("one two"));
+        QCOMPARE(overlay.lyrics.value(QStringLiteral("2")).rawText, QStringLiteral("tres cuatro"));
+
+        const SongDocument remerged = mergeOverlay(base, overlay);
+        QCOMPARE(remerged.lyrics.size(), 2);
+        QCOMPARE(remerged.lyrics.value(QStringLiteral("1")).rawText, QStringLiteral("one two"));
+    }
+
+    void materialisingIsANoOpOnABaseSongOrAnAlreadyDefinedMap()
+    {
+        QTemporaryDir dir;
+        SongDocument base = loadFrom(dir, QStringLiteral("song.toml"), baseSong());
+        const SongDocument other = base;
+        materialiseOverlayLyrics(base, other, QString());
+        QCOMPARE(base.lyrics.size(), 2);
+        QVERIFY(!base.isDirty());
+
+        SongDocument overlay = loadFrom(dir, QStringLiteral("song_es.toml"),
+            "title = \"Cara a cara\"\n\n[lyrics.1]\ntext = \"uno dos\"\n");
+        materialiseOverlayLyrics(overlay, mergeOverlay(base, overlay), QString());
+        QCOMPARE(overlay.lyrics.size(), 1);
+        QVERIFY(!overlay.isDirty());
+    }
+
     // -- saving ---------------------------------------------------------------
 
     void savingAnUntouchedDocumentIsByteIdentical()
@@ -263,6 +304,63 @@ private Q_SLOTS:
         const QByteArray written = io::serialize(doc);
         QVERIFY(written.contains("f''1"));
         QVERIFY(written.contains("d'1 | ees'1"));  // the alto is untouched
+    }
+
+    void aPerPartOverrideIsWrittenBesideItsPart()
+    {
+        // The editor's "give one voice its own text" button. A new table has to
+        // land next to the part it belongs to, not at the bottom of the file:
+        // these diffs are read by people.
+        QTemporaryDir dir;
+        SongDocument doc = loadFrom(dir, QStringLiteral("song.toml"), baseSong());
+        Part *alto = doc.part(QStringLiteral("Alto"));
+        SongDocument::setLyric(alto->lyrics, QStringLiteral("1"), QStringLiteral("one two more"));
+        const QByteArray written = io::serialize(doc);
+
+        QVERIFY(written.contains("[parts.Alto.lyrics.1]"));
+        QVERIFY(written.indexOf("[parts.Alto.lyrics.1]") > written.indexOf("[parts.Alto]"));
+        QVERIFY(written.indexOf("[parts.Alto.lyrics.1]") < written.indexOf("[lyrics.1]"));
+
+        const auto reparsed = toml::parse(written);
+        QVERIFY(reparsed.has_value());
+        const toml::Table *table = reparsed->table({ QStringLiteral("parts"),
+            QStringLiteral("Alto"), QStringLiteral("lyrics"), QStringLiteral("1") });
+        QVERIFY(table);
+        QCOMPARE(table->find(QStringLiteral("text"))->value.string,
+            QStringLiteral("one two more"));
+        // Nothing else moved.
+        QVERIFY(written.contains("[lyrics.2]\ntext = \"three four\""));
+    }
+
+    void removingAPerPartOverrideRestoresTheOriginalBytes()
+    {
+        // Adding an override and taking it away again must leave the file
+        // exactly as it was; otherwise "revert to song default" is a trap.
+        QTemporaryDir dir;
+        SongDocument doc = loadFrom(dir, QStringLiteral("song.toml"), baseSong());
+        Part *alto = doc.part(QStringLiteral("Alto"));
+        SongDocument::setLyric(alto->lyrics, QStringLiteral("1"), QStringLiteral("one two more"));
+        const QByteArray withOverride = io::serialize(doc);
+
+        // Round-trip through the file, as saving does, then delete the block.
+        SongDocument reloaded = loadFrom(dir, QStringLiteral("song2.toml"), withOverride);
+        Part *reloadedAlto = reloaded.part(QStringLiteral("Alto"));
+        QVERIFY(reloadedAlto->lyrics.contains(QStringLiteral("1")));
+        reloaded.removePartLyric(*reloadedAlto, QStringLiteral("1"));
+        QVERIFY(reloaded.isDirty());
+        QCOMPARE(io::serialize(reloaded), baseSong());
+    }
+
+    void deletingAGlobalSectionTakesItsWholeTable()
+    {
+        QTemporaryDir dir;
+        SongDocument doc = loadFrom(dir, QStringLiteral("song.toml"), baseSong());
+        doc.removeGlobalLyric(QStringLiteral("2"));
+        const QByteArray written = io::serialize(doc);
+        QVERIFY(!written.contains("[lyrics.2]"));
+        QVERIFY(!written.contains("three four"));
+        QVERIFY(written.contains("[lyrics.1]\ntext = \"one two\""));
+        QVERIFY(toml::parse(written).has_value());
     }
 
     void aMergedViewIsNeverWritten()

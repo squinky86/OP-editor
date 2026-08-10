@@ -76,8 +76,123 @@ void ScoreView::setPhrasedLayout(bool phrased)
 
 void ScoreView::setActiveVerse(int verse)
 {
-    m_verse = std::max(1, verse);
-    viewport()->update();
+    const int wanted = std::max(1, verse);
+    if (wanted == m_verse)
+        return;
+    m_verse = wanted;
+    // Which verse is showing changes both the row count and how wide the
+    // measures have to be to fit its syllables, so this is a relayout.
+    relayout();
+}
+
+void ScoreView::setShowAllVerses(bool all)
+{
+    if (all == m_allVerses)
+        return;
+    m_allVerses = all;
+    relayout();
+}
+
+bool ScoreView::showsSection(const AttachedSection &section) const
+{
+    return m_allVerses || section.isChorus || section.isCoda || section.verseNumber == m_verse;
+}
+
+QFont ScoreView::lyricFont() const
+{
+    QFont f = font();
+    f.setPointSizeF(m_staffSpace * 1.45);
+    f.setItalic(false);
+    f.setBold(false);
+    return f;
+}
+
+MeasureGrid ScoreView::buildGrid(int measureIndex) const
+{
+    const SongDocument &doc = m_session->effectiveDocument();
+    const qreal space = m_staffSpace;
+    const QFontMetricsF metrics(lyricFont());
+    const qreal syllableGap = 0.8 * space;
+
+    // 1. Every tick at which any voice starts a note, plus the barline.
+    QSet<int> tickSet { 0 };
+    int measureTicks = 0;
+    for (const Part &part : doc.parts) {
+        if (measureIndex >= part.stream.measureCount())
+            continue;
+        const Measure &measure = part.stream.measures().at(measureIndex);
+        int tick = 0;
+        for (const Event &event : measure.events) {
+            tickSet.insert(tick);
+            tick += event.playedTicks();
+        }
+        measureTicks = std::max(measureTicks, tick);
+    }
+    if (measureTicks <= 0)
+        measureTicks = std::max(1, doc.expectedTicksForMeasure(measureIndex + 1));
+
+    // 2. The widest syllable landing on each of those ticks, over shown verses.
+    QHash<int, qreal> syllableWidth;
+    for (const Part &part : doc.parts) {
+        const PartAlignment &alignment = m_session->alignment(part.name);
+        for (int slot = 0; slot < alignment.lyricSlots.size(); ++slot) {
+            const Slot &position = alignment.lyricSlots.at(slot);
+            if (position.measureIndex != measureIndex)
+                continue;
+            qreal widest = 0;
+            for (const AttachedSection &section : alignment.sections) {
+                if (!showsSection(section))
+                    continue;
+                const QString syllable = alignment.syllableAt(section, slot);
+                if (!syllable.isEmpty())
+                    widest = std::max(widest, metrics.horizontalAdvance(syllable));
+            }
+            if (widest > 0) {
+                qreal &stored = syllableWidth[position.tickInMeasure];
+                stored = std::max(stored, widest);
+            }
+        }
+    }
+
+    MeasureGrid grid;
+    grid.ticks = QList<int>(tickSet.constBegin(), tickSet.constEnd());
+    std::sort(grid.ticks.begin(), grid.ticks.end());
+    while (!grid.ticks.isEmpty() && grid.ticks.last() >= measureTicks)
+        grid.ticks.removeLast();
+    if (grid.ticks.isEmpty())
+        grid.ticks.append(0);
+
+    qreal offset = 0;
+    for (qsizetype i = 0; i < grid.ticks.size(); ++i) {
+        grid.offsets.append(offset);
+        const int next = i + 1 < grid.ticks.size() ? grid.ticks.at(i + 1) : measureTicks;
+        const int duration = std::max(1, next - grid.ticks.at(i));
+        // Longer notes get more room, but sublinearly — the engraver's rule, and
+        // the reason a whole note is not sixteen times the width of a sixteenth.
+        const qreal quarters = duration / static_cast<qreal>(ticks::Quarter);
+        const qreal natural = space * (2.0 + 2.6 * std::pow(quarters, 0.55));
+        const qreal words = syllableWidth.value(grid.ticks.at(i), 0.0) + syllableGap;
+        offset += std::max(natural, words);
+    }
+    grid.total = std::max<qreal>(offset, space);
+    return grid;
+}
+
+qreal MeasureGrid::offsetAt(int tick) const
+{
+    if (ticks.isEmpty())
+        return 0;
+    for (qsizetype i = ticks.size() - 1; i >= 0; --i) {
+        if (ticks.at(i) <= tick)
+            return offsets.at(i);
+    }
+    return offsets.first();
+}
+
+qreal ScoreView::xForTick(const MeasureBox &box, int tick) const
+{
+    const qreal usable = std::max<qreal>(1.0, box.width - 1.6 * m_staffSpace);
+    return box.x + 1.1 * m_staffSpace + box.grid.offsetAt(tick) * usable / box.grid.total;
 }
 
 void ScoreView::setPlaybackTick(int tick)
@@ -144,15 +259,11 @@ void ScoreView::relayout()
 
     // Measure widths follow their tick content, so a 4/4 bar of sixteenths gets
     // the room it needs and a whole-note bar does not waste any.
+    QList<MeasureGrid> grids;
     QList<qreal> measureWidths;
     for (int m = 0; m < measureCount; ++m) {
-        int events = 0;
-        for (const Part &part : doc.parts) {
-            if (m < part.stream.measureCount())
-                events = std::max<int>(events, static_cast<int>(
-                    part.stream.measures().at(m).events.size()));
-        }
-        measureWidths.append(std::max<qreal>(6.0, events * 3.4) * space);
+        grids.append(buildGrid(m));
+        measureWidths.append(std::min(available, grids.last().total + 1.6 * space));
     }
 
     // Break systems at phrase breaks when asked, otherwise fill the width.
@@ -201,6 +312,7 @@ void ScoreView::relayout()
             box.index = m;
             box.x = x;
             box.width = measureWidths.at(m) * scale;
+            box.grid = grids.at(m);
             box.expectedTicks = doc.expectedTicksForMeasure(m + 1);
             box.actualTicks = box.expectedTicks;
             for (const Part &part : doc.parts) {
@@ -228,7 +340,12 @@ void ScoreView::relayout()
         int lyricRows = 0;
         for (const Part &part : doc.parts) {
             const PartAlignment &alignment = m_session->alignment(part.name);
-            lyricRows = std::max<int>(lyricRows, static_cast<int>(alignment.sections.size()));
+            int rows = 0;
+            for (const AttachedSection &section : alignment.sections) {
+                if (showsSection(section))
+                    ++rows;
+            }
+            lyricRows = std::max(lyricRows, rows);
         }
         system.lyricRows = lyricRows;
         // The last staff occupies four spaces below its top; lyrics start under
@@ -268,7 +385,7 @@ void ScoreView::paintEvent(QPaintEvent *)
     if (!m_session->isOpen()) {
         painter.setPen(QColor(0x88, 0x88, 0x88));
         painter.drawText(viewport()->rect(), Qt::AlignCenter,
-            tr("No song open.\nFile ▸ Open Song…  (Ctrl+O)"));
+            tr("No song open.\nPick one from the Songs list on the left."));
         return;
     }
 
@@ -388,14 +505,12 @@ void ScoreView::paintPart(QPainter &painter, const SystemBox &system, const Staf
         if (measure.events.isEmpty())
             continue;
 
-        // Space events across the measure by their tick position.
-        const int measureTicks = std::max(1, measure.playedTicks());
-        const qreal usable = measureBox.width - 1.6 * space;
+        // Events sit on the measure's shared spacing grid, so voices line up
+        // vertically and every syllable has room.
         int tick = 0;
         for (int e = 0; e < measure.events.size(); ++e) {
             const Event &event = measure.events.at(e);
-            const qreal x = measureBox.x + 1.1 * space
-                + usable * (static_cast<qreal>(tick) / measureTicks);
+            const qreal x = xForTick(measureBox, tick);
             tick += event.playedTicks();
 
             const bool selected = selection.partIndex == partIndex
@@ -655,19 +770,20 @@ void ScoreView::paintLyrics(
         return;
 
     const qreal space = m_staffSpace;
-    QFont font = painter.font();
-    font.setPointSizeF(space * 1.45);
-    font.setItalic(false);
-    font.setBold(false);
+    const QFont font = lyricFont();
     painter.setFont(font);
+    const QFontMetricsF metrics(font);
 
     // Which slots fall inside this system? Slots carry their measure, so the
     // question is just which measures the system covers.
-    for (int row = 0; row < alignment.sections.size(); ++row) {
-        const AttachedSection &section = alignment.sections.at(row);
+    int row = -1;
+    for (const AttachedSection &section : alignment.sections) {
+        if (!showsSection(section))
+            continue;
+        ++row;
         const bool active = section.isChorus || section.isCoda
             || section.verseNumber == m_verse;
-        painter.setPen(active ? colorText() : QColor(0xaa, 0xaa, 0xaa));
+        painter.setPen(active ? colorText() : QColor(0x8a, 0x8a, 0x8a));
         const qreal y = system.lyricTop + row * LyricRowSpaces * space;
 
         for (int slot = section.slotOffset;
@@ -689,7 +805,6 @@ void ScoreView::paintLyrics(
             const QString syllable = alignment.syllableAt(section, slot);
             if (syllable.isEmpty())
                 continue;
-            const QFontMetricsF metrics(font);
             painter.drawText(
                 QPointF(box->head.x() - metrics.horizontalAdvance(syllable) / 2, y), syllable);
         }
@@ -744,11 +859,13 @@ void ScoreView::paintPhraseRuler(QPainter &painter, const SystemBox &system)
                 [measureIndex](const MeasureBox &m) { return m.index == measureIndex; });
             if (measureBox == system.measures.end())
                 continue;
+            // A break is written as the tick it falls *after*, so it lands on the
+            // grid position of the note that follows it — or at the barline.
+            const int internal = ticks::fromPhraseTicks(brk.tick);
             const int expected = std::max(1, doc.expectedTicksForMeasure(brk.measure));
-            const qreal fraction
-                = std::clamp<qreal>(static_cast<qreal>(ticks::fromPhraseTicks(brk.tick)) / expected,
-                    0.0, 1.0);
-            const qreal x = measureBox->x + measureBox->width * fraction;
+            const qreal x = internal >= expected
+                ? measureBox->x + measureBox->width
+                : xForTick(*measureBox, internal);
             painter.setPen(QPen(lanes[lane].color, 2.0));
             painter.drawLine(QPointF(x, y - 0.45 * space), QPointF(x, y + 0.45 * space));
         }

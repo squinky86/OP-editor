@@ -3,7 +3,10 @@
 
 #include "Panels.h"
 
+#include "Dialogs.h"
+
 #include <QCheckBox>
+#include <QEvent>
 #include <QComboBox>
 #include <QFontDatabase>
 #include <QFormLayout>
@@ -79,6 +82,15 @@ HeaderPanel::HeaderPanel(Session *session, QWidget *parent) : QWidget(parent), m
     m_verseCount = new QSpinBox(this);
     m_verseCount->setRange(0, 40);
     m_active = new QCheckBox(tr("Published (active)"), this);
+    m_converge = new QComboBox(this);
+    m_converge->addItem(tr("automatic"), QVariant());
+    m_converge->addItem(tr("always"), true);
+    m_converge->addItem(tr("never"), false);
+    m_converge->setToolTip(tr("converge_verses: print shared lines once instead of repeating "
+                              "them under every verse. Automatic turns it on when the song "
+                              "uses [lyrics.sN] sections."));
+    m_timeSigChanges = new QPushButton(this);
+    m_timeSigChanges->setToolTip(tr("Measures whose metre differs from the song's"));
     m_copyrights = new QPlainTextEdit(this);
     m_copyrights->setPlaceholderText(tr("One copyright line per row; the OpenPsalm arrangement "
                                         "line goes last"));
@@ -105,6 +117,8 @@ HeaderPanel::HeaderPanel(Session *session, QWidget *parent) : QWidget(parent), m
     layout->addRow(tr("Metre"), metre);
     layout->addRow(tr("Tempo"), m_tempo);
     layout->addRow(tr("Verses"), m_verseCount);
+    layout->addRow(tr("Metre changes"), m_timeSigChanges);
+    layout->addRow(tr("Converge verses"), m_converge);
     layout->addRow(QString(), m_active);
     layout->addRow(tr("Copyrights"), m_copyrights);
     layout->addRow(tr("Commentary"), m_commentary);
@@ -119,18 +133,41 @@ HeaderPanel::HeaderPanel(Session *session, QWidget *parent) : QWidget(parent), m
     connect(m_tempo, &QSpinBox::editingFinished, this, onEdit);
     connect(m_verseCount, &QSpinBox::editingFinished, this, onEdit);
     connect(m_active, &QCheckBox::toggled, this, onEdit);
-    connect(m_copyrights, &QPlainTextEdit::textChanged, this, [this] {
-        if (!m_loading)
-            m_copyrights->setProperty("pending", true);
-    });
-    connect(m_commentary, &QPlainTextEdit::textChanged, this, [this] {
-        if (!m_loading)
-            m_commentary->setProperty("pending", true);
-    });
+    connect(m_converge, &QComboBox::currentIndexChanged, this, onEdit);
+    connect(m_timeSigChanges, &QPushButton::clicked, this, &HeaderPanel::editTimeSigChanges);
+    // A multi-line box has no editingFinished, and polling textChanged would put
+    // one undo step on the stack per keystroke. Commit when focus leaves it.
+    m_copyrights->installEventFilter(this);
+    m_commentary->installEventFilter(this);
 
     connect(session, &Session::documentChanged, this, &HeaderPanel::refresh);
     connect(session, &Session::languageChanged, this, &HeaderPanel::refresh);
     refresh();
+}
+
+bool HeaderPanel::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event->type() == QEvent::FocusOut && (watched == m_copyrights || watched == m_commentary))
+        commit();
+    return QWidget::eventFilter(watched, event);
+}
+
+void HeaderPanel::editTimeSigChanges()
+{
+    if (!m_session->isOpen())
+        return;
+    const SongDocument &effective = m_session->effectiveDocument();
+    TimeSigChangesDialog dialog(
+        effective.timeSigChanges.valueOr({}), effective.measureCount(), this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    const QList<TimeSigChange> changes = dialog.changes();
+    m_session->mutate(tr("Edit metre changes"), [&changes](SongDocument &doc) {
+        if (changes.isEmpty())
+            doc.timeSigChanges.clear();
+        else
+            doc.timeSigChanges.set(changes);
+    });
 }
 
 void HeaderPanel::refresh()
@@ -153,8 +190,15 @@ void HeaderPanel::refresh()
     m_tempo->setValue(effective.tempoBpm.valueOr(100));
     m_verseCount->setValue(effective.verseCount.valueOr(0));
     m_active->setChecked(effective.active.valueOr(true));
+    m_converge->setCurrentIndex(!effective.convergeVerses.present() ? 0
+            : *effective.convergeVerses                             ? 1
+                                                                    : 2);
     m_copyrights->setPlainText(effective.copyrights.valueOr({}).join(u'\n'));
     m_commentary->setPlainText(effective.commentary.valueOr(QString()));
+
+    const int changes = static_cast<int>(effective.timeSigChanges.valueOr({}).size());
+    m_timeSigChanges->setText(changes == 0 ? tr("none — edit…")
+                                           : tr("%n change(s) — edit…", nullptr, changes));
 
     if (doc.isOverlay) {
         QStringList inherited;
@@ -193,47 +237,87 @@ void HeaderPanel::commit()
     const int tempo = m_tempo->value();
     const int verses = m_verseCount->value();
     const bool active = m_active->isChecked();
+    const QVariant converge = m_converge->currentData();
 
-    const SongDocument &current = m_session->document();
-    const bool changed = current.title.valueOr(QString()) != title
-        || current.subtitle.valueOr(QString()) != subtitle
-        || m_session->effectiveDocument().keySignature.valueOr(QString()) != key
-        || m_session->effectiveDocument().timeSigNumerator.valueOr(4) != numerator
-        || m_session->effectiveDocument().timeSigDenominator.valueOr(4) != denominator
-        || m_session->effectiveDocument().tempoBpm.valueOr(100) != tempo
-        || m_session->effectiveDocument().verseCount.valueOr(0) != verses
-        || m_session->effectiveDocument().active.valueOr(true) != active
-        || m_session->effectiveDocument().copyrights.valueOr({}) != copyrights
-        || m_session->effectiveDocument().commentary.valueOr(QString()) != commentary;
-    if (!changed)
+    // Compare against the *effective* value, but write only the fields that
+    // actually moved. On a translation every untouched field must stay absent:
+    // materialising the inherited tempo and metre into song_es.toml the moment
+    // someone fixes a typo in the title is exactly the silent divergence the
+    // overlay format exists to prevent.
+    const SongDocument &effective = m_session->effectiveDocument();
+    QStringList changed;
+    const auto differs = [&changed](bool condition, const char *name) {
+        if (condition)
+            changed.append(QString::fromLatin1(name));
+        return condition;
+    };
+    const bool titleChanged = differs(effective.title.valueOr(QString()) != title, "title");
+    const bool subtitleChanged
+        = differs(effective.subtitle.valueOr(QString()) != subtitle, "subtitle");
+    const bool keyChanged = differs(effective.keySignature.valueOr(QString()) != key, "key");
+    const bool metreChanged = differs(effective.timeSigNumerator.valueOr(4) != numerator
+            || effective.timeSigDenominator.valueOr(4) != denominator,
+        "metre");
+    const bool tempoChanged = differs(effective.tempoBpm.valueOr(100) != tempo, "tempo");
+    const bool versesChanged = differs(effective.verseCount.valueOr(0) != verses, "verses");
+    const bool activeChanged = differs(effective.active.valueOr(true) != active, "active");
+    const bool copyrightsChanged
+        = differs(effective.copyrights.valueOr({}) != copyrights, "copyrights");
+    const bool commentaryChanged
+        = differs(effective.commentary.valueOr(QString()) != commentary, "commentary");
+    const bool convergeChanged
+        = differs(effective.convergeVerses.opt() != (converge.isValid()
+                          ? std::optional<bool>(converge.toBool())
+                          : std::nullopt),
+            "converge_verses");
+    if (changed.isEmpty())
         return;
 
     m_session->mutate(tr("Edit song details"), [&](SongDocument &doc) {
-        doc.title.set(title);
-        if (subtitle.isEmpty())
-            doc.subtitle.clear();
-        else
-            doc.subtitle.set(subtitle);
-        doc.keySignature.set(key);
-        doc.timeSigNumerator.set(numerator);
-        doc.timeSigDenominator.set(denominator);
-        doc.tempoBpm.set(tempo);
-        if (verses > 0)
+        if (titleChanged)
+            doc.title.set(title);
+        if (subtitleChanged) {
+            if (subtitle.isEmpty())
+                doc.subtitle.clear();
+            else
+                doc.subtitle.set(subtitle);
+        }
+        if (keyChanged)
+            doc.keySignature.set(key);
+        if (metreChanged) {
+            doc.timeSigNumerator.set(numerator);
+            doc.timeSigDenominator.set(denominator);
+        }
+        if (tempoChanged)
+            doc.tempoBpm.set(tempo);
+        if (versesChanged && verses > 0)
             doc.verseCount.set(verses);
-        // `active` is only written when it is false: absent means true, and a
-        // gratuitous `active = true` would show up in every diff.
-        if (active)
-            doc.active.clear();
-        else
-            doc.active.set(false);
-        if (copyrights.isEmpty())
-            doc.copyrights.clear();
-        else
-            doc.copyrights.set(copyrights);
-        if (commentary.trimmed().isEmpty())
-            doc.commentary.clear();
-        else
-            doc.commentary.set(commentary);
+        if (activeChanged) {
+            // `active` is only written when it is false: absent means true, and
+            // a gratuitous `active = true` would show up in every diff.
+            if (active)
+                doc.active.clear();
+            else
+                doc.active.set(false);
+        }
+        if (copyrightsChanged) {
+            if (copyrights.isEmpty())
+                doc.copyrights.clear();
+            else
+                doc.copyrights.set(copyrights);
+        }
+        if (commentaryChanged) {
+            if (commentary.trimmed().isEmpty())
+                doc.commentary.clear();
+            else
+                doc.commentary.set(commentary);
+        }
+        if (convergeChanged) {
+            if (converge.isValid())
+                doc.convergeVerses.set(converge.toBool());
+            else
+                doc.convergeVerses.clear();
+        }
     });
 }
 
@@ -467,25 +551,50 @@ void InspectorPanel::commitPart()
         when.append(piece.trimmed().toLower());
 
     const QString name = m_partName;
+    const Part *effective = m_session->effectiveDocument().part(name);
+    if (!effective)
+        return;
+
+    // Only what moved, for the same reason as the song header: on a translation
+    // every field written here is a field that stops tracking song.toml.
+    const bool choralChanged = effective->choralType.valueOr(QString()) != choralType;
+    const bool clefChanged = effective->clef.valueOr(QStringLiteral("treble")) != clef;
+    const bool staffChanged = effective->staffNumber.valueOr(1) != staff;
+    const bool spliceChanged = effective->spliceLyricsInto.valueOr(QString()) != splice;
+    const bool suppressChanged = effective->suppressVerses.valueOr({}) != suppress;
+    const bool whenChanged = effective->suppressVersesWhen.valueOr({}) != when;
+    if (!choralChanged && !clefChanged && !staffChanged && !spliceChanged && !suppressChanged
+        && !whenChanged)
+        return;
+
     m_session->mutate(tr("Edit part"), [&](SongDocument &doc) {
         Part *part = doc.part(name);
         if (!part)
             return;
-        part->choralType.set(choralType);
-        part->clef.set(clef);
-        part->staffNumber.set(staff);
-        if (splice.isEmpty())
-            part->spliceLyricsInto.clear();
-        else
-            part->spliceLyricsInto.set(splice);
-        if (suppress.isEmpty())
-            part->suppressVerses.clear();
-        else
-            part->suppressVerses.set(suppress);
-        if (when.isEmpty())
-            part->suppressVersesWhen.clear();
-        else
-            part->suppressVersesWhen.set(when);
+        if (choralChanged)
+            part->choralType.set(choralType);
+        if (clefChanged)
+            part->clef.set(clef);
+        if (staffChanged)
+            part->staffNumber.set(staff);
+        if (spliceChanged) {
+            if (splice.isEmpty())
+                part->spliceLyricsInto.clear();
+            else
+                part->spliceLyricsInto.set(splice);
+        }
+        if (suppressChanged) {
+            if (suppress.isEmpty())
+                part->suppressVerses.clear();
+            else
+                part->suppressVerses.set(suppress);
+        }
+        if (whenChanged) {
+            if (when.isEmpty())
+                part->suppressVersesWhen.clear();
+            else
+                part->suppressVersesWhen.set(when);
+        }
     });
 }
 
@@ -559,7 +668,11 @@ TransportBar::TransportBar(Session *session, QWidget *parent) : QWidget(parent),
     m_tempo->setValue(100);
     m_tempo->setFixedWidth(110);
     m_tempoLabel = new QLabel(QStringLiteral("100%"), this);
-    m_position = new QLabel(QStringLiteral("0:00 / 0:00"), this);
+    m_positionLabel = new QLabel(QStringLiteral("0:00 / 0:00"), this);
+
+    m_play->setToolTip(tr("Play the song through the built-in synth (Space)"));
+    m_stop->setToolTip(tr("Stop and rewind to the start"));
+    m_verse->setToolTip(tr("The verse whose words the score highlights"));
 
     layout->addWidget(m_play);
     layout->addWidget(m_stop);
@@ -573,13 +686,13 @@ TransportBar::TransportBar(Session *session, QWidget *parent) : QWidget(parent),
     layout->addWidget(m_tempo);
     layout->addWidget(m_tempoLabel);
     layout->addSpacing(12);
-    layout->addWidget(m_position);
+    layout->addWidget(m_positionLabel);
 
     connect(m_play, &QPushButton::clicked, this, [this] {
-        if (m_play->text().startsWith(QLatin1String("▶")))
-            Q_EMIT playRequested();
-        else
+        if (m_playing)
             Q_EMIT pauseRequested();
+        else
+            Q_EMIT playRequested();
     });
     connect(m_stop, &QPushButton::clicked, this, &TransportBar::stopRequested);
     connect(m_verse, &QComboBox::currentIndexChanged, this, [this] {
@@ -624,20 +737,37 @@ void TransportBar::refresh()
 
 void TransportBar::setPlaying(bool playing)
 {
+    m_playing = playing;
     m_play->setText(playing ? tr("❚❚ Pause") : tr("▶ Play"));
 }
 
 void TransportBar::setPosition(double seconds, double duration)
 {
-    m_position->setText(
-        QStringLiteral("%1 / %2").arg(formatSeconds(seconds), formatSeconds(duration)));
+    m_position = seconds;
+    m_duration = duration;
+    updatePositionLabel();
+}
+
+void TransportBar::setDuration(double seconds)
+{
+    m_duration = seconds;
+    if (!m_playing)
+        m_position = 0.0;
+    updatePositionLabel();
+}
+
+void TransportBar::updatePositionLabel()
+{
+    m_positionLabel->setText(
+        QStringLiteral("%1 / %2").arg(formatSeconds(m_position), formatSeconds(m_duration)));
 }
 
 void TransportBar::setUnavailable(const QString &reason)
 {
     m_play->setEnabled(false);
     m_stop->setEnabled(false);
-    m_position->setText(tr("audio unavailable — %1").arg(reason));
+    m_positionLabel->setText(tr("audio unavailable — %1").arg(reason));
+    m_positionLabel->setToolTip(reason);
 }
 
 int TransportBar::verse() const { return std::max(1, m_verse->currentData().toInt()); }

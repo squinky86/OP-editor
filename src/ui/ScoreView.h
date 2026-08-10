@@ -28,6 +28,22 @@ struct EventBox {
     bool stemUp = true;
 };
 
+/// How wide each rhythmic position in a measure has to be.
+///
+/// Notes are *not* spaced in proportion to their ticks. Every part's note starts
+/// are merged into one grid of tick positions, and each position is given the
+/// larger of the room its duration wants and the room its syllable needs. That
+/// is what stops "Each day I'll do" from printing as "Eachday I'lldo" under a
+/// run of eighth notes, and it keeps the voices vertically aligned while it does
+/// it, because they all read the same grid.
+struct MeasureGrid {
+    QList<int> ticks;      ///< ascending note-start ticks, always starting at 0
+    QList<qreal> offsets;  ///< natural x of each tick, from the measure's content start
+    qreal total = 1.0;     ///< natural width of the whole measure
+
+    [[nodiscard]] qreal offsetAt(int tick) const;
+};
+
 /// One measure in one system.
 struct MeasureBox {
     int index = 0;
@@ -36,6 +52,7 @@ struct MeasureBox {
     bool ticksMatch = true;
     int actualTicks = 0;
     int expectedTicks = 0;
+    MeasureGrid grid;
 };
 
 /// A staff group: every part sharing one staff_number.
@@ -68,6 +85,9 @@ public:
     [[nodiscard]] bool phrasedLayout() const noexcept { return m_phrased; }
     void setActiveVerse(int verse);
     [[nodiscard]] int activeVerse() const noexcept { return m_verse; }
+    /// Stack every verse under the staff, or only the one being worked on.
+    void setShowAllVerses(bool all);
+    [[nodiscard]] bool showAllVerses() const noexcept { return m_allVerses; }
     void setPlaybackTick(int tick);
     void clearPlaybackTick();
     void relayout();
@@ -95,6 +115,15 @@ private:
     void paintMeasureProblems(QPainter &painter, const SystemBox &system);
 
     [[nodiscard]] qreal staffPositionFor(const Pitch &pitch, const QString &clef) const;
+    /// True when this verse row is drawn under the staff at the moment.
+    [[nodiscard]] bool showsSection(const AttachedSection &section) const;
+    /// The font syllables are set in; layout needs its metrics as much as
+    /// painting does, because syllable widths decide how wide a measure is.
+    [[nodiscard]] QFont lyricFont() const;
+    /// Build one measure's spacing grid from every part's rhythm and syllables.
+    [[nodiscard]] MeasureGrid buildGrid(int measureIndex) const;
+    /// Where a note starting at `tick` inside `box` is drawn.
+    [[nodiscard]] qreal xForTick(const MeasureBox &box, int tick) const;
     [[nodiscard]] const EventBox *hitTest(QPointF point) const;
     [[nodiscard]] int measureAtX(const SystemBox &system, qreal x) const;
 
@@ -121,6 +150,7 @@ private:
     qreal m_contentHeight = 0;
     qreal m_contentWidth = 0;
     bool m_phrased = true;
+    bool m_allVerses = false;
     int m_verse = 1;
     int m_playbackTick = -1;
 };

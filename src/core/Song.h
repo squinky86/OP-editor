@@ -92,7 +92,8 @@ enum class BreakKind { Required, Optional, NonBreaking };
 
 struct LyricSection {
     QString rawText;
-    toml::Span span;
+    toml::Span span;       ///< the `text = "…"` value
+    toml::Span tableSpan;  ///< the whole `[lyrics.N]` block, for deletion
     bool dirty = false;
 
     /// Whitespace-delimited syllables, with ` -- ` connectors removed.
@@ -155,6 +156,10 @@ public:
 
     QList<Part> parts;
     QMap<QString, LyricSection> lyrics;  ///< global; keys "1".."N", "chorus", "coda", "sN"
+    /// Whole tables the user deleted (a per-part lyric override reverted to the
+    /// song's default, say). Erased from the file on save; kept as spans because
+    /// the section itself is gone from the map by then.
+    QList<toml::Span> removedTables;
 
     // -- source
     toml::Document source;
@@ -180,6 +185,19 @@ public:
 
     [[nodiscard]] bool isDirty() const;
     void markClean();
+
+    /// Drop a per-part lyric override, so the part falls back to the song's
+    /// default text for that key. The `[parts.X.lyrics.KEY]` block goes with it.
+    void removePartLyric(Part &part, const QString &key);
+    /// Drop a whole `[lyrics.KEY]` section.
+    void removeGlobalLyric(const QString &key);
+    /// Add or replace one lyric entry, marking it for writing.
+    static void setLyric(QMap<QString, LyricSection> &map, const QString &key,
+        const QString &text);
+
+    /// Lyric keys in the order they are written and displayed: numbered verses
+    /// in numeric order, then chorus, coda, and the shared `sN` templates.
+    [[nodiscard]] static QStringList orderedLyricKeys(const QStringList &keys);
 
     static bool isChorusKey(QStringView key);
     static bool isCodaKey(QStringView key);
@@ -214,6 +232,17 @@ namespace io {
     const QString &path, const QByteArray &bytes);
 
 } // namespace io
+
+/// Copy an inherited lyric map into an overlay before its first edit.
+///
+/// In a translation, defining *any* entry of a lyric map replaces the whole map
+/// — the merge is wholesale, not per key. Editing one verse of a `song_es.toml`
+/// that has none of its own would therefore delete the rest. Every path that
+/// writes a lyric into an overlay must call this first. `merged` is the view the
+/// user is looking at; `partName` empty means the song-wide map. Does nothing to
+/// a base document, or to a map the overlay already defines.
+void materialiseOverlayLyrics(
+    SongDocument &overlay, const SongDocument &merged, const QString &partName);
 
 /// Merge an overlay onto a base, reproducing `SongData::merge_overlay`:
 /// scalars and arrays replace, parts merge field-wise, lyric maps replace whole.

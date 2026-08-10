@@ -7,6 +7,7 @@
 #include "LyricsPanel.h"
 #include "Panels.h"
 #include "ScoreView.h"
+#include "SongBrowser.h"
 
 #include <QAbstractButton>
 #include <QAction>
@@ -68,7 +69,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_session(this), 
         m_score->clearPlaybackTick();
     });
 
-    resize(1280, 860);
+    resize(1500, 940);
+    // The score is the point of the window; the two side docks get what they
+    // need to be readable and no more.
+    resizeDocks({ m_browserDock, m_songDock }, { 270, 330 }, Qt::Horizontal);
 }
 
 void MainWindow::buildLayout()
@@ -98,19 +102,30 @@ void MainWindow::buildLayout()
     layout->addWidget(m_transport);
     setCentralWidget(central);
 
+    // The songs folder is the left-hand column of the window, not a dialog: the
+    // job is "work through a directory of hymns", so the directory stays put.
+    m_browser = new SongBrowser(&m_library, this);
+    m_browserDock = new QDockWidget(tr("Songs"), this);
+    m_browserDock->setObjectName(QStringLiteral("songsDock"));
+    m_browserDock->setWidget(m_browser);
+    addDockWidget(Qt::LeftDockWidgetArea, m_browserDock);
+    connect(m_browser, &SongBrowser::openRequested, this, &MainWindow::openPath);
+    connect(m_browser, &SongBrowser::newSongRequested, this, &MainWindow::newSong);
+    connect(m_browser, &SongBrowser::changeFolderRequested, this, &MainWindow::editPreferences);
+
     m_header = new HeaderPanel(&m_session, this);
-    auto *headerDock = new QDockWidget(tr("Song"), this);
-    headerDock->setObjectName(QStringLiteral("songDock"));
-    headerDock->setWidget(m_header);
-    addDockWidget(Qt::RightDockWidgetArea, headerDock);
+    m_songDock = new QDockWidget(tr("Song"), this);
+    m_songDock->setObjectName(QStringLiteral("songDock"));
+    m_songDock->setWidget(m_header);
+    addDockWidget(Qt::RightDockWidgetArea, m_songDock);
 
     m_inspector = new InspectorPanel(&m_session, this);
     auto *inspectorDock = new QDockWidget(tr("Inspector"), this);
     inspectorDock->setObjectName(QStringLiteral("inspectorDock"));
     inspectorDock->setWidget(m_inspector);
     addDockWidget(Qt::RightDockWidgetArea, inspectorDock);
-    tabifyDockWidget(headerDock, inspectorDock);
-    headerDock->raise();
+    tabifyDockWidget(m_songDock, inspectorDock);
+    m_songDock->raise();
 
     m_problems = new ProblemsPanel(&m_session, this);
     auto *problemsDock = new QDockWidget(tr("Problems"), this);
@@ -140,7 +155,10 @@ void MainWindow::buildLayout()
         m_audio.stop();
         m_score->clearPlaybackTick();
     });
-    connect(m_transport, &TransportBar::optionsChanged, this, [this] { m_planStale = true; });
+    connect(m_transport, &TransportBar::optionsChanged, this, [this] {
+        m_planStale = true;
+        updateTransportDuration();
+    });
     connect(m_transport, &TransportBar::verseChanged, this,
         [this](int verse) { m_score->setActiveVerse(verse); });
 
@@ -156,7 +174,9 @@ void MainWindow::buildLayout()
 void MainWindow::buildMenus()
 {
     auto *fileMenu = menuBar()->addMenu(tr("&File"));
-    fileMenu->addAction(tr("&Open Song…"), QKeySequence::Open, this, &MainWindow::openSong);
+    fileMenu->addAction(tr("&Find Song…"), QKeySequence::Open, this, &MainWindow::showBrowser);
+    fileMenu->addAction(tr("Re&fresh Song List"), QKeySequence(Qt::Key_F5), this,
+        [this] { m_browser->refresh(); });
     fileMenu->addAction(tr("&New Song…"), QKeySequence::New, this, &MainWindow::newSong);
     fileMenu->addAction(tr("Add &Translation…"), this, &MainWindow::addTranslation);
     fileMenu->addSeparator();
@@ -178,9 +198,18 @@ void MainWindow::buildMenus()
     auto *viewMenu = menuBar()->addMenu(tr("&View"));
     auto *phrased = viewMenu->addAction(tr("&Phrased line breaks"));
     phrased->setCheckable(true);
-    phrased->setChecked(true);
+    phrased->setChecked(m_score->phrasedLayout());
     connect(phrased, &QAction::toggled, this,
         [this](bool on) { m_score->setPhrasedLayout(on); });
+    auto *allVerses = viewMenu->addAction(tr("Show &all verses under the staff"));
+    allVerses->setCheckable(true);
+    allVerses->setChecked(m_score->showAllVerses());
+    allVerses->setToolTip(tr("Off: only the transport's verse, plus the chorus and coda"));
+    connect(allVerses, &QAction::toggled, this,
+        [this](bool on) { m_score->setShowAllVerses(on); });
+    viewMenu->addSeparator();
+    viewMenu->addAction(tr("Songs &list"), QKeySequence(Qt::CTRL | Qt::Key_L), this,
+        &MainWindow::showBrowser);
     viewMenu->addSeparator();
     viewMenu->addAction(tr("&Score"), QKeySequence(Qt::CTRL | Qt::Key_1), this,
         [this] { m_centre->setCurrentWidget(m_score); });
@@ -217,7 +246,11 @@ void MainWindow::buildMenus()
                "Ctrl+B  phrase break here &nbsp; Ctrl+Shift+B  optional &nbsp; "
                "Alt+B  non-breaking<br>"
                "Ctrl+Enter  copy this marking to every sounding voice<br>"
-               "Ctrl+wheel  zoom"));
+               "Ctrl+wheel  zoom"
+               "<br><br><b>Anywhere</b><br>"
+               "Space  play / pause &nbsp; F5  re-read the songs folder<br>"
+               "Ctrl+O or Ctrl+L  jump to the song list<br>"
+               "Ctrl+1 / Ctrl+2 / Ctrl+3  score / lyrics / source"));
     });
     helpMenu->addAction(tr("&About"), this, [this] { showAbout(this); });
 }
@@ -259,19 +292,40 @@ void MainWindow::refreshPlaybackPlan()
         return;
     m_audio.setPlan(m_session.buildPlaybackPlan(m_transport->options()));
     m_planStale = false;
+    m_transport->setDuration(m_audio.duration());
+}
+
+void MainWindow::updateTransportDuration()
+{
+    // How long the song runs is the one thing the transport can say before
+    // anyone presses Play, and "0:00 / 0:00" beside a working Play button reads
+    // like a broken transport.
+    m_transport->setDuration(m_session.isOpen()
+            ? m_session.buildPlaybackPlan(m_transport->options()).totalSeconds
+            : 0.0);
 }
 
 void MainWindow::openPath(const QString &path)
 {
-    if (!confirmDiscard())
+    // A click in the songs list has already moved the highlight, so an abandoned
+    // open has to put it back on the song that is actually loaded.
+    const QString current = m_session.isOpen()
+        ? (m_session.baseDocument() ? m_session.baseDocument()->path : m_session.currentPath())
+        : QString();
+    if (!confirmDiscard()) {
+        m_browser->showCurrent(current);
         return;
+    }
     if (auto opened = m_session.openSong(path); !opened) {
         showParseError(this, opened.error());
+        m_browser->showCurrent(current);
         return;
     }
     m_planStale = true;
     updateLanguageTabs();
     updateWindowTitle();
+    m_browser->showCurrent(path);
+    updateTransportDuration();
     statusBar()->showMessage(tr("Opened %1").arg(path), 4000);
 }
 
@@ -281,17 +335,16 @@ void MainWindow::selectTab(int index)
         m_centre->setCurrentIndex(index);
 }
 
-void MainWindow::openSong()
+void MainWindow::showBrowser()
 {
     if (m_library.root().isEmpty()) {
         editPreferences();
         if (m_library.root().isEmpty())
             return;
     }
-    m_library.rescan();
-    SongBrowser browser(&m_library, this);
-    if (browser.exec() == QDialog::Accepted && !browser.chosenPath().isEmpty())
-        openPath(browser.chosenPath());
+    m_browserDock->show();
+    m_browserDock->raise();
+    m_browser->focusSearch();
 }
 
 void MainWindow::newSong()
@@ -318,6 +371,7 @@ void MainWindow::newSong()
     QDir().mkpath(QFileInfo(path).path());
     m_session.adoptNewDocument(dialog.buildDocument());
     updateLanguageTabs();
+    updateTransportDuration();
     statusBar()->showMessage(tr("New song ready — nothing is written until you save."), 6000);
 }
 
@@ -394,6 +448,10 @@ void MainWindow::save()
     }
     statusBar()->showMessage(tr("Saved %1").arg(m_session.currentPath()), 4000);
     updateWindowTitle();
+    // A new song only exists in the list once it has been written.
+    m_browser->refresh();
+    m_browser->showCurrent(m_session.baseDocument() ? m_session.baseDocument()->path
+                                                    : m_session.currentPath());
 }
 
 void MainWindow::reloadFromDisk()
@@ -420,8 +478,8 @@ void MainWindow::editPreferences()
                 .arg(root));
     }
     m_library.setRoot(root);
-    m_library.rescan();
     QSettings().setValue(settingsKeyRoot(), root);
+    m_browser->refresh();
 }
 
 bool MainWindow::confirmDiscard()

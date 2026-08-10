@@ -13,6 +13,7 @@
 #include "core/Song.h"
 #include "core/Validator.h"
 
+#include <QTemporaryDir>
 #include <QTest>
 
 using namespace ope;
@@ -71,6 +72,61 @@ private Q_SLOTS:
             }
         }
         QVERIFY2(failures.isEmpty(), qPrintable(failures.join(u'\n')));
+    }
+
+    void addingThenRemovingAPerPartOverrideRestoresEveryFile()
+    {
+        // The lyrics panel's two new buttons, run over the whole corpus. Adding
+        // a `[parts.X.lyrics.KEY]` block and taking it away again has to leave
+        // every one of these files byte for byte as it was.
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        QStringList failures;
+        int exercised = 0;
+        for (const QString &path : allPaths()) {
+            auto doc = io::load(path);
+            if (!doc || doc->parts.isEmpty() || doc->lyrics.isEmpty())
+                continue;
+            const QString key = doc->lyrics.constBegin().key();
+            Part *part = nullptr;
+            for (Part &candidate : doc->parts) {
+                if (!candidate.lyrics.contains(key)) {
+                    part = &candidate;
+                    break;
+                }
+            }
+            if (!part)
+                continue;
+            const QString partName = part->name;
+            SongDocument::setLyric(part->lyrics, key, QStringLiteral("te -- st syl la bles"));
+
+            const QByteArray withOverride = io::serialize(*doc);
+            const QString scratch = temp.filePath(QStringLiteral("scratch.toml"));
+            if (auto written = io::writeAtomically(scratch, withOverride); !written) {
+                failures.append(QStringLiteral("%1: %2").arg(path, written.error()));
+                continue;
+            }
+            auto reloaded = io::load(scratch);
+            if (!reloaded) {
+                failures.append(QStringLiteral("%1: adding an override broke the file: %2")
+                                    .arg(path, reloaded.error().formatted()));
+                continue;
+            }
+            Part *reloadedPart = reloaded->part(partName);
+            if (!reloadedPart || !reloadedPart->lyrics.contains(key)) {
+                failures.append(QStringLiteral("%1: the override did not survive the round trip")
+                                    .arg(path));
+                continue;
+            }
+            reloaded->removePartLyric(*reloadedPart, key);
+            if (io::serialize(*reloaded) != doc->originalBytes)
+                failures.append(QStringLiteral("%1: removing the override did not restore it")
+                                    .arg(path));
+            ++exercised;
+        }
+        QVERIFY2(failures.isEmpty(),
+            qPrintable(failures.first(std::min<qsizetype>(10, failures.size())).join(u'\n')));
+        QVERIFY(exercised > 0);
     }
 
     void everyNoteTokenSurvivesRegeneration()

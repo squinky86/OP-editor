@@ -21,6 +21,10 @@ The design and the reasoning behind it are in [OPE.md](OPE.md).
 - **Aligns lyrics visibly.** The alignment grid puts one column per lyric slot
   with the note above it, so a translator can see which notes take a syllable
   and which are melisma continuations that do not.
+- **Says who sings what.** Lyrics are edited one section at a time: the song's
+  own text on top, and under it a box per voice that overrides it, each labelled
+  with the voice and the TOML table it writes, each counted against *that*
+  voice's slots, and each revertible in one click.
 - **Plays the hymn.** All voices, any verse, with per-part mute and a tempo
   override — using the same tempo, velocity, and tie rules as the site's MIDI
   export, so what you hear is what the site renders.
@@ -51,14 +55,17 @@ Two binaries land in `build/src`:
 ## Running
 
 ```sh
-build/src/ope                      # opens the song browser
+build/src/ope                      # opens with the song list
 build/src/ope path/to/song.toml    # opens one song
 ```
 
-On first run, point *File ▸ Preferences* at your OP-songs checkout — the folder
-holding the numbered song directories. That is the only thing the editor needs
-on disk: no Rust toolchain, no OpenPsalm checkout, no LilyPond, no soundfont, no
-network.
+On first run, press *Folder…* under the song list (or *File ▸ Preferences*) and
+point it at your OP-songs checkout — the folder holding the numbered song
+directories. That is the only thing the editor needs on disk: no Rust toolchain,
+no OpenPsalm checkout, no LilyPond, no soundfont, no network.
+
+The song list stays on screen: click a hymn to open it, and press *Refresh*
+(or `F5`) after a `git pull` or an edit made outside the editor.
 
 ### Checking a corpus from the terminal
 
@@ -96,6 +103,15 @@ In the score view:
 | `Ctrl+Shift+B` / `Alt+B` | optional / non-breaking phrase break |
 | `Ctrl+Enter` | copy this marking to every voice sounding on the beat |
 | `Ctrl+wheel` | zoom |
+
+Anywhere:
+
+| Key | Action |
+|---|---|
+| `Space` | play / pause |
+| `F5` | re-read the songs folder |
+| `Ctrl+O` / `Ctrl+L` | jump to the song list |
+| `Ctrl+1` `Ctrl+2` `Ctrl+3` | score / lyrics / source |
 
 ## Tests
 

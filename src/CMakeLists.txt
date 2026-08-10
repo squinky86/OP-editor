@@ -29,6 +29,7 @@ qt_add_executable(ope
     audio/AudioEngine.cpp
     ui/Glyphs.cpp
     ui/ScoreView.cpp
+    ui/SongBrowser.cpp
     ui/Panels.cpp
     ui/LyricsPanel.cpp
     ui/Dialogs.cpp

@@ -31,8 +31,12 @@ public:
     explicit HeaderPanel(Session *session, QWidget *parent = nullptr);
     void refresh();
 
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private:
     void commit();
+    void editTimeSigChanges();
 
     Session *m_session = nullptr;
     bool m_loading = false;
@@ -44,6 +48,8 @@ private:
     QSpinBox *m_tempo = nullptr;
     QSpinBox *m_verseCount = nullptr;
     QCheckBox *m_active = nullptr;
+    QComboBox *m_converge = nullptr;
+    QPushButton *m_timeSigChanges = nullptr;
     QPlainTextEdit *m_copyrights = nullptr;
     QPlainTextEdit *m_commentary = nullptr;
     QLabel *m_inherited = nullptr;
@@ -112,6 +118,7 @@ public:
     void refresh();
     void setPlaying(bool playing);
     void setPosition(double seconds, double duration);
+    void setDuration(double seconds);
     void setUnavailable(const QString &reason);
 
     [[nodiscard]] PlaybackOptions options() const;
@@ -125,7 +132,14 @@ Q_SIGNALS:
     void verseChanged(int verse);
 
 private:
+    void updatePositionLabel();
+
     Session *m_session = nullptr;
+    /// The transport's own idea of whether sound is coming out. Reading it back
+    /// off the button's label is how the Play button came to emit Pause.
+    bool m_playing = false;
+    double m_position = 0.0;
+    double m_duration = 0.0;
     QPushButton *m_play = nullptr;
     QPushButton *m_stop = nullptr;
     QComboBox *m_verse = nullptr;
@@ -133,7 +147,7 @@ private:
     QList<QCheckBox *> m_partChecks;
     QSlider *m_tempo = nullptr;
     QLabel *m_tempoLabel = nullptr;
-    QLabel *m_position = nullptr;
+    QLabel *m_positionLabel = nullptr;
 };
 
 } // namespace ope::ui
