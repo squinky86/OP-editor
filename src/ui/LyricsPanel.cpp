@@ -39,6 +39,43 @@ QColor colorMelisma() { return QColor(0x80, 0x80, 0x80, 40); }
 QColor colorMismatch() { return QColor(0xd1, 0x24, 0x2f, 60); }
 QColor colorPlaceholder() { return QColor(0xbb, 0x80, 0x09, 60); }
 
+/// The phrase-break lanes, in the order the score's ruler stacks them. Same
+/// colours, so a break is the same colour wherever the user meets it.
+struct LaneStyle {
+    BreakKind kind;
+    const char *field;
+    QString marker;
+    QColor color;
+};
+
+const QList<LaneStyle> &laneStyles()
+{
+    static const QList<LaneStyle> styles {
+        { BreakKind::Required, "phrase_breaks", QStringLiteral("│"),
+            QColor(0x1f, 0x6f, 0xeb) },
+        { BreakKind::Optional, "optional_phrase_breaks", QStringLiteral("┆"),
+            QColor(0x99, 0x77, 0x11) },
+        { BreakKind::NonBreaking, "non_breaking_phrase_breaks", QStringLiteral("╎"),
+            QColor(0x88, 0x88, 0x88) },
+    };
+    return styles;
+}
+
+const LaneStyle &laneStyle(BreakKind kind)
+{
+    for (const LaneStyle &style : laneStyles()) {
+        if (style.kind == kind)
+            return style;
+    }
+    return laneStyles().first();
+}
+
+/// Lexicographic order on (measure, tick) — a break's place in the song.
+bool breakBefore(const PhraseBreak &a, const PhraseBreak &b)
+{
+    return a.measure != b.measure ? a.measure < b.measure : a.tick < b.tick;
+}
+
 QString sectionTitle(const QString &key)
 {
     if (SongDocument::isChorusKey(key))
@@ -177,6 +214,18 @@ LyricsPanel::LyricsPanel(Session *session, QWidget *parent) : QWidget(parent), m
     connect(m_grid, &QTableWidget::cellChanged, this, [this](int row, int column) {
         if (!m_loading)
             commitCell(row, column);
+    });
+    // The break row is the editing surface for phrase breaks: a click adds or
+    // removes a required break after that syllable, the menu picks the lane.
+    connect(m_grid, &QTableWidget::cellClicked, this, [this](int row, int column) {
+        if (row == 0 && !m_loading)
+            clickBreakCell(column);
+    });
+    m_grid->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_grid, &QWidget::customContextMenuRequested, this, [this](QPoint where) {
+        const QModelIndex index = m_grid->indexAt(where);
+        if (index.isValid() && index.row() == 0)
+            showBreakMenu(index.column(), m_grid->viewport()->mapToGlobal(where));
     });
 
     m_commitTimer.setSingleShot(true);
@@ -581,6 +630,160 @@ void LyricsPanel::addSection(const QString &key)
 
 QString LyricsPanel::gridPartName() const { return m_gridPart->currentData().toString(); }
 
+LyricsPanel::BreakCell LyricsPanel::breakCellFor(
+    const PartAlignment &alignment, const Part &part, int column) const
+{
+    BreakCell cell;
+    const Slot &slot = alignment.lyricSlots.at(column);
+    const int measureIndex = slot.measureIndex;
+
+    // The boundary after this syllable is where the *next* one starts — not
+    // where this note ends, because the notes in between are its melisma and a
+    // break may not split them. At the end of a measure it is the barline.
+    int boundaryTick = 0;
+    if (column + 1 < alignment.lyricSlots.size()
+        && alignment.lyricSlots.at(column + 1).measureIndex == measureIndex) {
+        boundaryTick = alignment.lyricSlots.at(column + 1).tickInMeasure;
+    } else if (measureIndex < part.stream.measureCount()) {
+        boundaryTick = part.stream.measures().at(measureIndex).playedTicks();
+    }
+    cell.boundary = PhraseBreak { measureIndex + 1, ticks::toPhraseTicks(boundaryTick) };
+    // 64ths are the format's resolution; a boundary inside a tuplet may not
+    // land on one, and rounding it would move the break somewhere else.
+    cell.representable = ticks::fromPhraseTicks(cell.boundary.tick) == boundaryTick;
+
+    const PhraseBreak slotStart { measureIndex + 1, ticks::toPhraseTicks(slot.tickInMeasure) };
+    const SongDocument &doc = m_session->effectiveDocument();
+    for (const PhraseBreak &brk : doc.allPhraseBreaks()) {
+        if (brk == cell.boundary) {
+            cell.existing = brk;
+            cell.onBoundary = true;
+            break;
+        }
+        // A break between this syllable's own notes belongs to this column too,
+        // flagged: that is R9.4/R9.5 shown where the words are.
+        if (!breakBefore(brk, slotStart) && breakBefore(brk, cell.boundary)
+            && !(brk == slotStart)) {
+            cell.existing = brk;
+            cell.onBoundary = false;
+        }
+    }
+    if (cell.existing)
+        cell.kind = m_session->phraseBreakAt(*cell.existing);
+    return cell;
+}
+
+void LyricsPanel::fillBreakRow(const PartAlignment &alignment, const Part &part)
+{
+    for (int column = 0; column < m_grid->columnCount(); ++column) {
+        const BreakCell cell = breakCellFor(alignment, part, column);
+        auto *item = new QTableWidgetItem;
+        item->setFlags(Qt::ItemIsEnabled);
+        // Hard right: a break comes *after* this syllable, and a mark centred
+        // over the word reads as though it came before it.
+        item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        item->setData(Qt::UserRole, cell.boundary.measure);
+        item->setData(Qt::UserRole + 1, cell.boundary.tick);
+        item->setData(Qt::UserRole + 2, cell.representable);
+        if (cell.existing) {
+            item->setData(Qt::UserRole + 3, cell.existing->measure);
+            item->setData(Qt::UserRole + 4, cell.existing->tick);
+        }
+
+        if (cell.existing && cell.kind) {
+            const LaneStyle &style = laneStyle(*cell.kind);
+            item->setText(style.marker);
+            item->setForeground(style.color);
+            QFont marker = m_grid->font();
+            marker.setBold(true);
+            marker.setPointSizeF(marker.pointSizeF() * 1.5);
+            item->setFont(marker);
+            if (cell.onBoundary) {
+                item->setToolTip(tr("%1 \"%2\" — the line breaks after this syllable.\n"
+                                    "Click to remove, right-click for the other lanes.")
+                                     .arg(QString::fromLatin1(style.field),
+                                         cell.existing->toString()));
+            } else {
+                // Drawn hatched: the break is real, but it does not land between
+                // two of *this* voice's syllables.
+                item->setBackground(QBrush(colorMismatch(), Qt::FDiagPattern));
+                item->setToolTip(tr("%1 \"%2\" falls between %3's own notes, not between two "
+                                    "of its syllables — the seeder will still take it, but the "
+                                    "line will break inside a melisma here.")
+                                     .arg(QString::fromLatin1(style.field),
+                                         cell.existing->toString(), part.name));
+            }
+        } else if (!cell.representable) {
+            item->setToolTip(tr("This boundary falls inside a tuplet and cannot be written as "
+                                "a 64th — place the break on a neighbouring note."));
+            item->setForeground(QColor(0xaa, 0xaa, 0xaa));
+            item->setText(QStringLiteral("·"));
+        } else {
+            item->setToolTip(tr("Click to break the line after this syllable (%1).\n"
+                                "Right-click for optional and non-breaking.")
+                                 .arg(cell.boundary.toString()));
+        }
+        m_grid->setItem(0, column, item);
+    }
+}
+
+void LyricsPanel::clickBreakCell(int column)
+{
+    const QTableWidgetItem *item = m_grid->item(0, column);
+    if (!item)
+        return;
+    if (item->data(Qt::UserRole + 3).isValid()) {
+        // Something is already here — including a break that straddles this
+        // syllable's notes. Clicking clears that one rather than adding a second.
+        m_session->setPhraseBreak(PhraseBreak { item->data(Qt::UserRole + 3).toInt(),
+                                      item->data(Qt::UserRole + 4).toInt() },
+            std::nullopt);
+        return;
+    }
+    if (!item->data(Qt::UserRole + 2).toBool()) {
+        Q_EMIT statusMessage(tr("That boundary is inside a tuplet and has no 64th to sit on."));
+        return;
+    }
+    m_session->togglePhraseBreak(
+        PhraseBreak { item->data(Qt::UserRole).toInt(), item->data(Qt::UserRole + 1).toInt() },
+        BreakKind::Required);
+}
+
+void LyricsPanel::showBreakMenu(int column, QPoint where)
+{
+    const QTableWidgetItem *item = m_grid->item(0, column);
+    if (!item)
+        return;
+    const bool hasExisting = item->data(Qt::UserRole + 3).isValid();
+    const PhraseBreak target = hasExisting
+        ? PhraseBreak { item->data(Qt::UserRole + 3).toInt(),
+              item->data(Qt::UserRole + 4).toInt() }
+        : PhraseBreak { item->data(Qt::UserRole).toInt(), item->data(Qt::UserRole + 1).toInt() };
+    if (!hasExisting && !item->data(Qt::UserRole + 2).toBool()) {
+        Q_EMIT statusMessage(tr("That boundary is inside a tuplet and has no 64th to sit on."));
+        return;
+    }
+    const std::optional<BreakKind> current = m_session->phraseBreakAt(target);
+
+    QMenu menu(this);
+    menu.addSection(tr("Phrase break at %1").arg(target.toString()));
+    for (const LaneStyle &style : laneStyles()) {
+        QAction *action = menu.addAction(QString::fromLatin1(style.field));
+        action->setCheckable(true);
+        action->setChecked(current && *current == style.kind);
+        const BreakKind kind = style.kind;
+        connect(action, &QAction::triggered, this,
+            [this, target, kind] { m_session->setPhraseBreak(target, kind); });
+    }
+    menu.addSeparator();
+    QAction *none = menu.addAction(tr("no break here"));
+    none->setCheckable(true);
+    none->setChecked(!current);
+    connect(none, &QAction::triggered, this,
+        [this, target] { m_session->setPhraseBreak(target, std::nullopt); });
+    menu.exec(where);
+}
+
 void LyricsPanel::rebuildGrid()
 {
     const bool wasLoading = m_loading;
@@ -597,7 +800,8 @@ void LyricsPanel::rebuildGrid()
         if (part) {
             const int columns = static_cast<int>(alignment.lyricSlots.size());
             m_grid->setColumnCount(columns);
-            m_grid->setRowCount(static_cast<int>(alignment.sections.size()) + 1);
+            // Row 0 phrase breaks, row 1 the note, then one row per section.
+            m_grid->setRowCount(static_cast<int>(alignment.sections.size()) + 2);
 
             QStringList headers;
             for (int slot = 0; slot < columns; ++slot) {
@@ -607,10 +811,12 @@ void LyricsPanel::rebuildGrid()
             }
             m_grid->setHorizontalHeaderLabels(headers);
 
-            QStringList rowLabels { tr("note") };
+            QStringList rowLabels { tr("break"), tr("note") };
             for (const AttachedSection &section : alignment.sections)
                 rowLabels.append(rowLabel(section));
             m_grid->setVerticalHeaderLabels(rowLabels);
+
+            fillBreakRow(alignment, *part);
 
             for (int slot = 0; slot < columns; ++slot) {
                 const Slot &position = alignment.lyricSlots.at(slot);
@@ -631,7 +837,7 @@ void LyricsPanel::rebuildGrid()
                 item->setFlags(Qt::ItemIsEnabled);
                 if (position.dashedContinuation)
                     item->setBackground(colorPlaceholder());
-                m_grid->setItem(0, slot, item);
+                m_grid->setItem(1, slot, item);
             }
 
             for (int row = 0; row < alignment.sections.size(); ++row) {
@@ -650,12 +856,12 @@ void LyricsPanel::rebuildGrid()
                         if (item->text() == QLatin1String("_"))
                             item->setBackground(colorPlaceholder());
                     }
-                    m_grid->setItem(row + 1, slot, item);
+                    m_grid->setItem(row + 2, slot, item);
                 }
                 const int overflow
                     = section.slotOffset + static_cast<int>(section.syllables.size()) - columns;
                 if (overflow > 0 && columns > 0) {
-                    if (QTableWidgetItem *item = m_grid->item(row + 1, columns - 1))
+                    if (QTableWidgetItem *item = m_grid->item(row + 2, columns - 1))
                         item->setBackground(colorMismatch());
                 }
             }
@@ -668,6 +874,9 @@ void LyricsPanel::rebuildGrid()
                 hints.append(alignment.errors.join(QStringLiteral("; ")));
             hints.append(tr("Grey cells take no syllable — a melisma continuation, or outside "
                             "this section's range."));
+            hints.append(tr("Click the <b>break</b> row to break the line after a syllable; "
+                            "right-click it for the optional and non-breaking lanes."));
+            m_gridHint->setTextFormat(Qt::RichText);
             m_gridHint->setText(hints.join(QStringLiteral("  ·  ")));
         }
     }
@@ -676,8 +885,8 @@ void LyricsPanel::rebuildGrid()
 
 void LyricsPanel::commitCell(int row, int column)
 {
-    if (row < 1)
-        return;
+    if (row < 2)
+        return;  // the break and note rows are not text
     QTableWidgetItem *item = m_grid->item(row, column);
     if (!item)
         return;
@@ -734,9 +943,9 @@ void LyricsPanel::focusSlot(const QString &partName, int slot)
     if (index >= 0)
         m_gridPart->setCurrentIndex(index);
     m_tabs->setCurrentIndex(1);
-    if (slot >= 0 && slot < m_grid->columnCount() && m_grid->rowCount() > 1) {
-        m_grid->setCurrentCell(1, slot);
-        m_grid->scrollToItem(m_grid->item(1, slot));
+    if (slot >= 0 && slot < m_grid->columnCount() && m_grid->rowCount() > 2) {
+        m_grid->setCurrentCell(2, slot);  // the first section row
+        m_grid->scrollToItem(m_grid->item(2, slot));
     }
 }
 

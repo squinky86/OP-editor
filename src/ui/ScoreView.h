@@ -100,6 +100,7 @@ protected:
     void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
     void mouseDoubleClickEvent(QMouseEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
@@ -126,6 +127,16 @@ private:
     [[nodiscard]] qreal xForTick(const MeasureBox &box, int tick) const;
     [[nodiscard]] const EventBox *hitTest(QPointF point) const;
     [[nodiscard]] int measureAtX(const SystemBox &system, qreal x) const;
+    /// Which phrase-ruler lane `y` falls in (0 required, 1 optional, 2
+    /// non-breaking), or -1 for none.
+    [[nodiscard]] int rulerLaneAt(const SystemBox &system, qreal y) const;
+    /// Resolve a point in a ruler lane to the break it would place: the lane,
+    /// the measure, and the nearest note boundary in internal ticks. Returns
+    /// false when the point is not in a lane at all.
+    bool rulerTargetAt(QPointF point, int &lane, int &measureIndex, int &tick) const;
+    /// Handle a click in a ruler lane: toggle a break at the nearest note
+    /// boundary. Returns true when the click belonged to the ruler.
+    bool clickRuler(QPointF point);
 
     // -- editing operations, each pushed as one undo step
     void moveSelection(int deltaEvents);
@@ -153,6 +164,11 @@ private:
     bool m_allVerses = false;
     int m_verse = 1;
     int m_playbackTick = -1;
+    /// Where a click in the phrase ruler would land, so the snap is visible
+    /// before it happens rather than after.
+    int m_hoverLane = -1;
+    int m_hoverMeasure = -1;
+    int m_hoverTick = 0;
 };
 
 } // namespace ope::ui

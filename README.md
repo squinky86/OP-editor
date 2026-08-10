@@ -104,6 +104,18 @@ In the score view:
 | `Ctrl+Enter` | copy this marking to every voice sounding on the beat |
 | `Ctrl+wheel` | zoom |
 
+Phrase breaks can also be placed with the mouse, and OPE works out the `"M:T"`
+value either way:
+
+- **Score ▸ the three ruler lanes** under each system — click a lane to toggle a
+  break there. The click snaps to the nearest note boundary, and a dotted ghost
+  shows where it will land before you commit to it.
+- **Lyrics ▸ Alignment ▸ the `break` row** — click to break the line after that
+  syllable, right-click for the optional and non-breaking lanes. This is the
+  view that answers "which word does this break follow?", and it hatches a break
+  that falls between the displayed voice's notes instead of between two of its
+  syllables.
+
 Anywhere:
 
 | Key | Action |

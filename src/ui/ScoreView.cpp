@@ -59,6 +59,7 @@ ScoreView::ScoreView(Session *session, QWidget *parent)
     : QAbstractScrollArea(parent), m_session(session)
 {
     setFocusPolicy(Qt::StrongFocus);
+    viewport()->setMouseTracking(true);
     viewport()->setAutoFillBackground(true);
     QPalette palette = viewport()->palette();
     palette.setColor(QPalette::Window, Qt::white);
@@ -841,13 +842,30 @@ void ScoreView::paintPhraseRuler(QPainter &painter, const SystemBox &system)
 
     for (int lane = 0; lane < 3; ++lane) {
         const qreal y = baseY + lane * 1.3 * space;
-        painter.setPen(QColor(0xdd, 0xdd, 0xdd));
+        const bool hovered = lane == m_hoverLane;
+        painter.setPen(hovered ? QColor(0xbb, 0xbb, 0xbb) : QColor(0xdd, 0xdd, 0xdd));
         if (!system.measures.isEmpty()) {
             painter.drawLine(QPointF(system.measures.first().x, y),
                 QPointF(system.measures.last().x + system.measures.last().width, y));
         }
-        painter.setPen(QColor(0xaa, 0xaa, 0xaa));
+        painter.setPen(hovered ? lanes[lane].color : QColor(0xaa, 0xaa, 0xaa));
         painter.drawText(QPointF(2, y + 0.35 * space), lanes[lane].label);
+
+        // Show where a click would land, snapped, before it lands there.
+        if (hovered && m_hoverMeasure >= 0) {
+            const auto box = std::find_if(system.measures.begin(), system.measures.end(),
+                [this](const MeasureBox &m) { return m.index == m_hoverMeasure; });
+            if (box != system.measures.end()) {
+                const int measureTicks
+                    = std::max(1, doc.expectedTicksForMeasure(m_hoverMeasure + 1));
+                const qreal x = m_hoverTick >= measureTicks ? box->x + box->width
+                                                            : xForTick(*box, m_hoverTick);
+                QColor ghost = lanes[lane].color;
+                ghost.setAlpha(110);
+                painter.setPen(QPen(ghost, 2.0, Qt::DotLine));
+                painter.drawLine(QPointF(x, y - 0.55 * space), QPointF(x, y + 0.55 * space));
+            }
+        }
 
         if (!lanes[lane].field->present())
             continue;
@@ -923,6 +941,8 @@ void ScoreView::mousePressEvent(QMouseEvent *event)
 {
     setFocus();
     const QPointF point = event->position() + QPointF(0, verticalScrollBar()->value());
+    if (clickRuler(point))
+        return;
     if (const EventBox *box = hitTest(point)) {
         m_session->setSelection(Selection { box->partIndex, box->measureIndex, box->eventIndex });
         viewport()->update();
@@ -1155,23 +1175,96 @@ void ScoreView::togglePhraseBreakAtCursor(BreakKind kind)
         tick += measure.events.at(e).playedTicks();
 
     const PhraseBreak brk { selection.measureIndex + 1, ticks::toPhraseTicks(tick) };
-    const QString description = kind == BreakKind::Required ? tr("Toggle phrase break")
-        : kind == BreakKind::Optional                       ? tr("Toggle optional break")
-                                                            : tr("Toggle non-breaking break");
+    m_session->togglePhraseBreak(brk, kind);
+    Q_EMIT statusMessage(m_session->phraseBreakAt(brk)
+            ? tr("Phrase break %1 (after the %2 note under the cursor)")
+                  .arg(brk.toString(), part.name)
+            : tr("Phrase break %1 removed").arg(brk.toString()));
+}
 
-    m_session->mutate(description, [&](SongDocument &doc) {
-        Field<QList<PhraseBreak>> *field = kind == BreakKind::Required ? &doc.phraseBreaks
-            : kind == BreakKind::Optional                              ? &doc.optionalPhraseBreaks
-                                                                       : &doc.nonBreakingPhraseBreaks;
-        QList<PhraseBreak> breaks = field->valueOr({});
-        if (breaks.removeAll(brk) == 0) {
-            breaks.append(brk);
-            std::sort(breaks.begin(), breaks.end());
+int ScoreView::rulerLaneAt(const SystemBox &system, qreal y) const
+{
+    const qreal space = m_staffSpace;
+    for (int lane = 0; lane < 3; ++lane) {
+        const qreal centre = system.rulerTop + lane * 1.3 * space;
+        if (y >= centre - 0.65 * space && y <= centre + 0.65 * space)
+            return lane;
+    }
+    return -1;
+}
+
+bool ScoreView::rulerTargetAt(QPointF point, int &lane, int &measureIndex, int &tick) const
+{
+    for (const SystemBox &system : m_systems) {
+        lane = rulerLaneAt(system, point.y());
+        if (lane < 0)
+            continue;
+        measureIndex = -1;
+        for (const MeasureBox &measure : system.measures) {
+            if (point.x() < measure.x || point.x() >= measure.x + measure.width)
+                continue;
+            // Snap to the nearest note boundary: a break between notes is the
+            // only kind the format can express, and the only kind that passes
+            // R9.5. The measure's grid already holds every voice's note starts.
+            const int measureTicks = std::max(1,
+                m_session->effectiveDocument().expectedTicksForMeasure(measure.index + 1));
+            QList<int> candidates = measure.grid.ticks;
+            candidates.append(measureTicks);
+            qreal bestDistance = std::numeric_limits<qreal>::max();
+            for (const int candidate : candidates) {
+                const qreal x = candidate >= measureTicks ? measure.x + measure.width
+                                                          : xForTick(measure, candidate);
+                const qreal distance = std::abs(x - point.x());
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    tick = candidate;
+                }
+            }
+            measureIndex = measure.index;
+            return true;
         }
-        field->set(breaks);
-    });
-    Q_EMIT statusMessage(tr("Phrase break %1 at %2").arg(brk.toString(),
-        part.name));
+        return true;  // in a lane but past the last measure
+    }
+    lane = -1;
+    return false;
+}
+
+bool ScoreView::clickRuler(QPointF point)
+{
+    int lane = -1;
+    int measureIndex = -1;
+    int tick = 0;
+    if (!rulerTargetAt(point, lane, measureIndex, tick))
+        return false;
+    if (measureIndex < 0)
+        return true;
+
+    const PhraseBreak brk { measureIndex + 1, ticks::toPhraseTicks(tick) };
+    const BreakKind kind = lane == 0 ? BreakKind::Required
+        : lane == 1                  ? BreakKind::Optional
+                                     : BreakKind::NonBreaking;
+    m_session->togglePhraseBreak(brk, kind);
+    Q_EMIT statusMessage(m_session->phraseBreakAt(brk)
+            ? tr("Phrase break %1").arg(brk.toString())
+            : tr("Phrase break %1 removed").arg(brk.toString()));
+    return true;
+}
+
+void ScoreView::mouseMoveEvent(QMouseEvent *event)
+{
+    const QPointF point = event->position() + QPointF(0, verticalScrollBar()->value());
+    int lane = -1;
+    int measureIndex = -1;
+    int tick = 0;
+    rulerTargetAt(point, lane, measureIndex, tick);
+    if (lane != m_hoverLane || measureIndex != m_hoverMeasure || tick != m_hoverTick) {
+        m_hoverLane = lane;
+        m_hoverMeasure = measureIndex;
+        m_hoverTick = tick;
+        viewport()->setCursor(lane >= 0 ? Qt::PointingHandCursor : Qt::ArrowCursor);
+        viewport()->update();
+    }
+    QAbstractScrollArea::mouseMoveEvent(event);
 }
 
 void ScoreView::applyMarkingToAllVoices()

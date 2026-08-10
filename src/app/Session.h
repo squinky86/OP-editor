@@ -76,6 +76,20 @@ public:
 
     [[nodiscard]] PlaybackPlan buildPlaybackPlan(const PlaybackOptions &options) const;
 
+    // -- phrase breaks
+    //
+    // Three fields hold them and a break belongs to exactly one, so adding,
+    // removing, and moving between lanes all go through here rather than being
+    // reimplemented by every view that lets the user place one.
+
+    /// Which lane holds a break at this position, if any.
+    [[nodiscard]] std::optional<BreakKind> phraseBreakAt(PhraseBreak position) const;
+    /// Put `position` in `kind`, removing it from whichever lane holds it now.
+    void setPhraseBreak(PhraseBreak position, std::optional<BreakKind> kind);
+    /// `kind` if the position is empty or in another lane, nothing if it is
+    /// already there — a click that adds, then takes away.
+    void togglePhraseBreak(PhraseBreak position, BreakKind kind);
+
 Q_SIGNALS:
     void documentChanged();
     void selectionChanged();

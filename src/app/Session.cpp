@@ -281,4 +281,81 @@ PlaybackPlan Session::buildPlaybackPlan(const PlaybackOptions &options) const
     return buildPlan(effectiveDocument(), options);
 }
 
+namespace {
+
+/// The three lanes, in the order the UI presents them.
+constexpr BreakKind AllBreakKinds[3] { BreakKind::Required, BreakKind::Optional,
+    BreakKind::NonBreaking };
+
+Field<QList<PhraseBreak>> &fieldFor(SongDocument &doc, BreakKind kind)
+{
+    switch (kind) {
+    case BreakKind::Optional: return doc.optionalPhraseBreaks;
+    case BreakKind::NonBreaking: return doc.nonBreakingPhraseBreaks;
+    case BreakKind::Required: break;
+    }
+    return doc.phraseBreaks;
+}
+
+const Field<QList<PhraseBreak>> &fieldFor(const SongDocument &doc, BreakKind kind)
+{
+    switch (kind) {
+    case BreakKind::Optional: return doc.optionalPhraseBreaks;
+    case BreakKind::NonBreaking: return doc.nonBreakingPhraseBreaks;
+    case BreakKind::Required: break;
+    }
+    return doc.phraseBreaks;
+}
+
+} // namespace
+
+std::optional<BreakKind> Session::phraseBreakAt(PhraseBreak position) const
+{
+    const SongDocument &doc = effectiveDocument();
+    for (const BreakKind kind : AllBreakKinds) {
+        const Field<QList<PhraseBreak>> &field = fieldFor(doc, kind);
+        if (field.present() && field->contains(position))
+            return kind;
+    }
+    return std::nullopt;
+}
+
+void Session::setPhraseBreak(PhraseBreak position, std::optional<BreakKind> kind)
+{
+    if (phraseBreakAt(position) == kind)
+        return;
+    const QString description = !kind ? tr("Remove phrase break")
+        : *kind == BreakKind::Required ? tr("Add phrase break")
+        : *kind == BreakKind::Optional ? tr("Add optional phrase break")
+                                       : tr("Add non-breaking phrase break");
+    // A translation inherits the lanes it does not define, and defining one
+    // replaces it whole — so an edit starts from the merged list, not from the
+    // overlay's own empty one, and only the lane that actually changes is
+    // written. Touching the optional lane must not freeze the required one.
+    const SongDocument &effective = effectiveDocument();
+    mutate(description, [position, kind, &effective](SongDocument &doc) {
+        for (const BreakKind lane : AllBreakKinds) {
+            QList<PhraseBreak> breaks = fieldFor(effective, lane).valueOr({});
+            const bool wanted = kind && *kind == lane;
+            const int removed = breaks.removeAll(position);
+            if (removed == 0 && !wanted)
+                continue;
+            if (wanted)
+                breaks.append(position);
+            std::sort(breaks.begin(), breaks.end());
+            Field<QList<PhraseBreak>> &field = fieldFor(doc, lane);
+            if (breaks.isEmpty())
+                field.clear();
+            else
+                field.set(breaks);
+        }
+    });
+}
+
+void Session::togglePhraseBreak(PhraseBreak position, BreakKind kind)
+{
+    setPhraseBreak(position, phraseBreakAt(position) == kind ? std::nullopt
+                                                             : std::optional<BreakKind>(kind));
+}
+
 } // namespace ope

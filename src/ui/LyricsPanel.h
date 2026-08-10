@@ -70,6 +70,20 @@ private:
 
     void rebuildGrid();
     void commitCell(int row, int column);
+    /// The phrase-break boundary that follows the slot in `column`, and the
+    /// break already sitting on it (or straddling it) if there is one.
+    struct BreakCell {
+        PhraseBreak boundary;             ///< where a new break would go
+        bool representable = true;        ///< the boundary is a whole 64th
+        std::optional<PhraseBreak> existing;
+        std::optional<BreakKind> kind;
+        bool onBoundary = true;           ///< false: it splits this voice's notes
+    };
+    [[nodiscard]] BreakCell breakCellFor(const PartAlignment &alignment, const Part &part,
+        int column) const;
+    void fillBreakRow(const PartAlignment &alignment, const Part &part);
+    void clickBreakCell(int column);
+    void showBreakMenu(int column, QPoint where);
     void commitText(const QString &key, const QString &partName, const QString &text);
     void addOverride(const QString &key, const QString &partName);
     void removeOverride(const QString &key, const QString &partName);
