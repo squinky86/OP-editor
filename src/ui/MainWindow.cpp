@@ -419,6 +419,15 @@ void MainWindow::save()
     if (!m_session.isOpen())
         return;
 
+    // Land everything the user has typed but not yet left. The header's
+    // copyright and commentary boxes commit on focus-out and the lyric boxes on
+    // a 600 ms debounce; Ctrl+S is a shortcut, so it moves no focus and beats
+    // the timer. Without this the edit is not in the document when it is
+    // written, and the refresh that follows the save overwrites the box with
+    // the value that was saved — the text vanishes in front of the user.
+    m_header->commitPendingEdits();
+    m_lyrics->commitPendingEdits();
+
     const int errors = countBySeverity(m_session.findings(), Severity::Error);
     if (errors > 0) {
         QStringList firstFew;

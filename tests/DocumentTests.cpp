@@ -278,6 +278,28 @@ private Q_SLOTS:
         QVERIFY(written.contains("tempo_bpm = 120"));
     }
 
+    void appendingACopyrightLineKeepsTheArrayStyle()
+    {
+        // Song 204's shape: a multi-line copyrights array gaining the OpenPsalm
+        // arrangement line at the end.
+        QTemporaryDir dir;
+        SongDocument doc
+            = loadFrom(dir, QStringLiteral("song.toml"), fixtures::partsAndMultilineStrings());
+        doc.copyrights.set({ QStringLiteral("one"), QStringLiteral("two"),
+            QStringLiteral(
+                "Arrangement by OpenPsalm, 2026 and released under the CC-BY 4.0 license") });
+        const QByteArray written = io::serialize(doc);
+        QVERIFY(written.contains("CC-BY 4.0"));
+        QVERIFY(written.contains("[parts.Soprano]"));
+
+        const SongDocument reloaded
+            = loadFrom(dir, QStringLiteral("again.toml"), written);
+        QCOMPARE(reloaded.copyrights.valueOr({}).size(), 3);
+        QCOMPARE(reloaded.copyrights.valueOr({}).at(2),
+            QStringLiteral(
+                "Arrangement by OpenPsalm, 2026 and released under the CC-BY 4.0 license"));
+    }
+
     void addingAKeyInsertsItBeforeTheFirstTable()
     {
         // Every root key must precede the first [table] header, or TOML would

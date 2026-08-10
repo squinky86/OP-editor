@@ -230,14 +230,7 @@ LyricsPanel::LyricsPanel(Session *session, QWidget *parent) : QWidget(parent), m
 
     m_commitTimer.setSingleShot(true);
     m_commitTimer.setInterval(600);
-    connect(&m_commitTimer, &QTimer::timeout, this, [this] {
-        const QHash<QString, QString> pending = std::exchange(m_pendingCommits, {});
-        for (auto it = pending.constBegin(); it != pending.constEnd(); ++it) {
-            const QStringList parts = it.key().split(QChar(0x1f));
-            if (parts.size() == 2)
-                commitText(parts.at(1), parts.at(0), it.value());
-        }
-    });
+    connect(&m_commitTimer, &QTimer::timeout, this, &LyricsPanel::commitPendingEdits);
 
     connect(session, &Session::documentChanged, this, &LyricsPanel::refresh);
     connect(session, &Session::languageChanged, this, &LyricsPanel::refresh);
@@ -567,6 +560,17 @@ void LyricsPanel::updateCounter(const EditorRef &row)
     row.counter->setStyleSheet(allFit
             ? QStringLiteral("color: %1;").arg(colorOk())
             : QStringLiteral("color: %1; font-weight: bold;").arg(colorBad()));
+}
+
+void LyricsPanel::commitPendingEdits()
+{
+    m_commitTimer.stop();
+    const QHash<QString, QString> pending = std::exchange(m_pendingCommits, {});
+    for (auto it = pending.constBegin(); it != pending.constEnd(); ++it) {
+        const QStringList parts = it.key().split(QChar(0x1f));
+        if (parts.size() == 2)
+            commitText(parts.at(1), parts.at(0), it.value());
+    }
 }
 
 void LyricsPanel::commitText(const QString &key, const QString &partName, const QString &text)

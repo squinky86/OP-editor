@@ -44,6 +44,10 @@ public:
     void refresh();
     /// Put the cursor on a slot of a part (the score's double-click target).
     void focusSlot(const QString &partName, int slot);
+    /// Flush text still sitting in the debounce timer into the document. Save
+    /// must call this: a keystroke followed within 600 ms by Ctrl+S would
+    /// otherwise be written nowhere and then wiped by the post-save refresh.
+    void commitPendingEdits();
 
 Q_SIGNALS:
     void statusMessage(const QString &message);

@@ -30,6 +30,11 @@ class HeaderPanel : public QWidget {
 public:
     explicit HeaderPanel(Session *session, QWidget *parent = nullptr);
     void refresh();
+    /// Flush the multi-line boxes, which only commit on focus-out. Save must
+    /// call this: Ctrl+S is a shortcut and does not move focus, so a copyright
+    /// or commentary line typed just before it would never reach the document
+    /// and would then be wiped by the post-save refresh.
+    void commitPendingEdits() { commit(); }
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
