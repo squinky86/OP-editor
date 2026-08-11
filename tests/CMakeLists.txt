@@ -12,6 +12,10 @@ foreach(test IN LISTS OPE_TESTS)
     set_tests_properties(${test} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endforeach()
 
+# These tests create adversarial ZIP fixtures directly. On vcpkg platforms the
+# libzip include directory is target-scoped rather than globally visible.
+target_link_libraries(CorpusArchiveTests PRIVATE libzip::zip)
+
 # The session layer sits above core/ and holds the operations more than one view
 # calls, so it is tested with the document tree rather than through the widgets.
 set(OPE_APP_TESTS SessionTests)
@@ -57,7 +61,7 @@ qt_add_executable(CorpusDownloadTests
     ${CMAKE_SOURCE_DIR}/src/ui/CorpusDownloadDialog.cpp
 )
 target_link_libraries(CorpusDownloadTests PRIVATE
-    ope_cli Qt6::Widgets Qt6::Network Qt6::Test ope_flags)
+    ope_cli libzip::zip Qt6::Widgets Qt6::Network Qt6::Test ope_flags)
 add_test(NAME CorpusDownloadTests COMMAND CorpusDownloadTests)
 set_tests_properties(CorpusDownloadTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
