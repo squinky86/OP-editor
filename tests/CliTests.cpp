@@ -81,6 +81,37 @@ private Q_SLOTS:
         options.quiet = true;
         QCOMPARE(run(options), 0);
     }
+
+    void exposesTheFullCheckAsStructuredData()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        QVERIFY(root.mkpath(QStringLiteral("1")));
+        QFile base(root.filePath(QStringLiteral("1/song.toml")));
+        QVERIFY(base.open(QIODevice::WriteOnly));
+        base.write("title = \"Checked\"\n"
+                   "time_sig_numerator = 4\n"
+                   "time_sig_denominator = 4\n"
+                   "tempo_bpm = 100\n"
+                   "verse_count = 1\n"
+                   "[parts.Soprano]\n"
+                   "choral_type = \"soprano\"\n"
+                   "clef = \"treble\"\n"
+                   "notes = \"c4 d4 e4 f4\"\n"
+                   "[lyrics.1]\n"
+                   "text = \"one two three four\"\n");
+        base.close();
+
+        Options options;
+        options.root = root.path();
+        const CheckSummary summary = check(options);
+        QVERIFY2(summary.passed(), qPrintable(summary.description()));
+        QCOMPARE(summary.files, 1);
+        QCOMPARE(summary.parseFailures, 0);
+        QCOMPARE(summary.roundTripFailures, 0);
+        QCOMPARE(summary.reemitFailures, 0);
+        QCOMPARE(summary.errors, 0);
+    }
 };
 
 QTEST_APPLESS_MAIN(CliTests)

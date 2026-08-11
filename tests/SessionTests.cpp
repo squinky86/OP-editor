@@ -30,6 +30,23 @@ class SessionTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void openedBytesSurviveSaveForContributionDiffs()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        const QByteArray original = baseSong();
+        write(root, QStringLiteral("song.toml"), original);
+        Session session;
+        QVERIFY(session.openSong(root.filePath(QStringLiteral("song.toml"))));
+        QCOMPARE(session.openedBytes(), original);
+
+        session.mutate(QStringLiteral("Title"),
+            [](SongDocument &doc) { doc.title.set(QStringLiteral("Edited title")); });
+        QVERIFY(session.save());
+        QCOMPARE(session.openedBytes(), original);
+        QVERIFY(session.document().originalBytes != original);
+    }
+
     void aBreakLivesInExactlyOneLane()
     {
         QTemporaryDir dir;

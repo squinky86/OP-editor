@@ -8,6 +8,9 @@ Copyright © 2026 Jon Hood, OpenPsalm.com. Licensed under the
 [GNU Affero General Public License v3.0 or later](LICENSE).
 
 The design and the reasoning behind it are in [OPE.md](OPE.md).
+For task-oriented instructions, start with
+[Getting started](docs/getting-started.md) and
+[Reporting and contributing songs](docs/contributing.md).
 
 ---
 
@@ -82,13 +85,51 @@ build/src/ope                      # opens with the song list
 build/src/ope path/to/song.toml    # opens one song
 ```
 
-On first run, press *Folder…* under the song list (or *File ▸ Preferences*) and
-point it at your OP-songs checkout — the folder holding the numbered song
-directories. That is the only thing the editor needs on disk: no Rust toolchain,
-no OpenPsalm checkout, no LilyPond, no soundfont, no network.
+On first run, use one of these two corpus modes:
+
+- Choose *File ▸ Download Latest OP-songs…* to download the head of OP-songs'
+  public `main` branch into OPE's managed application-data directory. OPE first
+  shows the exact destination. It downloads and extracts into temporary storage,
+  rejects unsafe archive entries, and runs the complete `ope-check` suite before
+  changing the destination. If a managed corpus already exists, it is moved to
+  a timestamped backup rather than deleted.
+- Press *Folder…* under the song list (or *File ▸ Preferences*) to use an
+  existing OP-songs checkout — the folder holding the numbered song
+  directories. OPE does not run `git pull`; you retain complete control of that
+  checkout.
+
+The editor never silently updates or merges either corpus. A managed download
+replaces only OPE's managed directory after a warning; an external checkout is
+never overwritten by the download command. Editing itself needs no Rust
+toolchain, OpenPsalm checkout, LilyPond, or soundfont. Network access is needed
+only while downloading a managed snapshot or opening GitHub in a browser.
 
 The song list stays on screen: click a hymn to open it, and press *Refresh*
 (or `F5`) after a `git pull` or an edit made outside the editor.
+
+### Reporting a corpus problem
+
+Open the affected song and choose *Help ▸ Report a Song Problem…*. OPE opens the
+OP-songs repository's maintained GitHub issue form and prefills the song number,
+title, language, filename, and editor version. You will need a GitHub account to
+submit the issue. Describe both what is wrong and what it should be; a lawful
+photo or citation for the source is especially helpful.
+
+To submit an edited correction or new song, choose *File ▸ Prepare
+Contribution…* before closing the editing session. OPE preserves the bytes
+originally opened even across saves, checks the exact proposed TOML in an
+isolated directory, and blocks syntax, round-trip, notation, or validation
+errors. For a correction or translation, a successful preflight creates a ZIP
+containing the proposed file, a unified patch, a Markdown report, any sibling
+`copyright.txt`, and SHA-256 hashes. For a brand-new song, OPE instead puts an
+identity-free `song.toml` at the top of the review folder: attach that file
+directly to the issue, or paste the TOML code block OPE copies. The corpus
+maintainer assigns the upstream song ID. No GitHub credential is stored.
+
+The current workflow does not yet fetch an independent upstream baseline. Start
+from a freshly downloaded or pulled corpus, and review every warning and the
+generated patch. See [the 0.1 release plan](ROADMAP_0.1.md) for the remaining
+stale-baseline and corpus-integrity checks.
 
 ### Checking a corpus from the terminal
 

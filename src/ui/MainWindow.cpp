@@ -3,6 +3,8 @@
 
 #include "MainWindow.h"
 
+#include "cli/Contribution.h"
+#include "CorpusDownloadDialog.h"
 #include "Dialogs.h"
 #include "LyricsPanel.h"
 #include "Panels.h"
@@ -12,25 +14,60 @@
 #include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
+#include <QClipboard>
 #include <QCloseEvent>
 #include <QDir>
+#include <QDesktopServices>
 #include <QDockWidget>
+#include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QToolBar>
 #include <QVBoxLayout>
+#include <QUrlQuery>
 
 namespace ope::ui {
 namespace {
 
 QString settingsKeyRoot() { return QStringLiteral("songsRoot"); }
+
+QString internalCorpusRoot()
+{
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
+        .filePath(QStringLiteral("OP-songs"));
+}
+
+bool isInsideDirectory(const QString &path, const QString &directory)
+{
+    if (path.isEmpty() || directory.isEmpty())
+        return false;
+    const QString relative = QDir(QFileInfo(directory).absoluteFilePath())
+                                 .relativeFilePath(QFileInfo(path).absoluteFilePath());
+    return relative == QLatin1String(".")
+        || (relative != QLatin1String("..")
+            && !relative.startsWith(QLatin1String("../")) && !QDir::isAbsolutePath(relative));
+}
+
+QString tomlCodeBlock(const QByteArray &toml)
+{
+    QByteArray fence("```");
+    while (toml.contains(fence))
+        fence += '`';
+    QByteArray block = "## Proposed `song.toml`\n\n" + fence + "toml\n" + toml;
+    if (!block.endsWith('\n'))
+        block += '\n';
+    block += fence + '\n';
+    return QString::fromUtf8(block);
+}
 
 } // namespace
 
@@ -190,8 +227,12 @@ void MainWindow::buildMenus()
     fileMenu->addAction(tr("&Find Song…"), QKeySequence::Open, this, &MainWindow::showBrowser);
     fileMenu->addAction(tr("Re&fresh Song List"), QKeySequence(Qt::Key_F5), this,
         [this] { m_browser->refresh(); });
+    fileMenu->addAction(tr("Download &Latest OP-songs…"), this,
+        &MainWindow::downloadLatestCorpus);
     fileMenu->addAction(tr("&New Song…"), QKeySequence::New, this, &MainWindow::newSong);
     fileMenu->addAction(tr("Add &Translation…"), this, &MainWindow::addTranslation);
+    fileMenu->addAction(tr("Prepare &Contribution…"), this,
+        &MainWindow::prepareContribution);
     fileMenu->addSeparator();
     fileMenu->addAction(tr("&Save Current"), QKeySequence::Save, this, &MainWindow::save);
     fileMenu->addAction(tr("Save &All"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S), this,
@@ -309,6 +350,8 @@ void MainWindow::buildMenus()
                "Ctrl+O or Ctrl+L  jump to the song list<br>"
                "Ctrl+1 / Ctrl+2 / Ctrl+3  score / lyrics / source"));
     });
+    helpMenu->addAction(tr("&Report a Song Problem…"), this,
+        &MainWindow::reportSongProblem);
     helpMenu->addAction(tr("&About"), this, [this] { showAbout(this); });
 }
 
@@ -432,8 +475,8 @@ void MainWindow::newSong()
         || (targetDirectory.exists()
             && !targetDirectory.entryList(QDir::AllEntries | QDir::NoDotAndDotDot).isEmpty())) {
         QMessageBox::warning(this, tr("New Song"),
-            tr("%1 is already in use. Pick a different song number; OPE will not reuse a "
-               "non-empty directory.")
+            tr("The automatically selected local draft folder %1 became occupied while the "
+               "dialog was open. Try New Song again; OPE will select another local slot.")
                 .arg(target.path()));
         return;
     }
@@ -599,6 +642,281 @@ void MainWindow::editPreferences()
     m_library.setRoot(root);
     QSettings().setValue(settingsKeyRoot(), root);
     m_browser->refresh();
+}
+
+void MainWindow::downloadLatestCorpus()
+{
+    const QString target = internalCorpusRoot();
+    const bool replacing = QFileInfo::exists(target);
+    const bool currentUsesTarget = QDir::cleanPath(m_library.root()) == QDir::cleanPath(target);
+    if (currentUsesTarget && !confirmDiscard())
+        return;
+
+    QMessageBox warning(this);
+    warning.setIcon(QMessageBox::Warning);
+    warning.setWindowTitle(tr("Download latest OP-songs?"));
+    warning.setText(replacing
+            ? tr("This will replace the editor's internal OP-songs directory.")
+            : tr("This will create the editor's internal OP-songs directory."));
+    warning.setInformativeText(
+        tr("Destination:\n%1\n\nThe head of the public main branch will be downloaded from "
+           "GitHub into a temporary directory. OPE will reject unsafe archive paths, then "
+           "parse every TOML file, check unchanged byte round trips, re-emit every note "
+           "token, and run the complete validation rule set before changing this path.%2")
+            .arg(target,
+                replacing
+                    ? tr("\n\nThe existing directory will be moved to a timestamped backup, "
+                         "not deleted.")
+                    : QString()));
+    auto *download = warning.addButton(
+        replacing ? tr("Download and replace") : tr("Download"), QMessageBox::AcceptRole);
+    warning.addButton(QMessageBox::Cancel);
+    warning.setDefaultButton(QMessageBox::Cancel);
+    warning.exec();
+    if (warning.clickedButton() != download)
+        return;
+
+    const QString currentPath = currentUsesTarget && m_session.isOpen()
+        ? m_session.currentPath()
+        : QString();
+    CorpusDownloadDialog dialog(target, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    m_library.setRoot(target);
+    QSettings().setValue(settingsKeyRoot(), target);
+    m_browser->refresh();
+    if (!currentPath.isEmpty()) {
+        if (auto opened = m_session.openSong(currentPath); !opened) {
+            showParseError(this, opened.error());
+        } else {
+            updateLanguageTabs();
+            updateWindowTitle();
+            updateTransportDuration();
+            m_browser->showCurrent(currentPath);
+        }
+    }
+    statusBar()->showMessage(
+        tr("Installed validated OP-songs snapshot: %1")
+            .arg(dialog.checkSummary().description()),
+        10000);
+}
+
+void MainWindow::prepareContribution()
+{
+    if (!m_session.isOpen()) {
+        QMessageBox::information(this, tr("Prepare Contribution"),
+            tr("Open or create the song you want to contribute first."));
+        return;
+    }
+    flushPendingEdits();
+
+    const SongDocument &doc = m_session.document();
+    const QByteArray baseline = m_session.openedBytes();
+    const bool newFile = baseline.isEmpty();
+    const bool newSong = newFile && !doc.isOverlay;
+    if (m_session.isNewFile() && !newSong && QFileInfo::exists(doc.path)) {
+        QMessageBox::warning(this, tr("Prepare Contribution"),
+            tr("%1 now exists even though this translation was created as a new file. "
+               "Reload and reconcile that file before contributing.")
+                .arg(doc.path));
+        return;
+    }
+    if (!m_session.isNewFile()) {
+        QFile disk(doc.path);
+        if (!disk.open(QIODevice::ReadOnly) || disk.readAll() != doc.originalBytes) {
+            QMessageBox::warning(this, tr("Prepare Contribution"),
+                tr("%1 changed on disk after it was opened or saved. Reload and reconcile "
+                   "that change before preparing a contribution.")
+                    .arg(doc.path));
+            return;
+        }
+    }
+
+    QByteArray baseBytes;
+    if (doc.isOverlay) {
+        const SongDocument *base = m_session.baseDocument();
+        if (!base) {
+            QMessageBox::critical(this, tr("Prepare Contribution"),
+                tr("This translation has no open base song.toml."));
+            return;
+        }
+        if (m_session.isDirty(base->language) || m_session.openedBytes(base->language).isEmpty()) {
+            QMessageBox::warning(this, tr("Prepare Contribution"),
+                tr("The base song is new or has changes in this session. Prepare the base-song "
+                   "contribution first, then reopen the accepted baseline before packaging "
+                   "this translation."));
+            return;
+        }
+        baseBytes = io::serialize(*base);
+    }
+
+    const QString suggested = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    const QString output = QFileDialog::getExistingDirectory(this,
+        tr("Choose Where to Create the Contribution Bundle"), suggested);
+    if (output.isEmpty())
+        return;
+    if (isInsideDirectory(output, m_library.root())) {
+        QMessageBox::warning(this, tr("Prepare Contribution"),
+            tr("Choose a destination outside the OP-songs corpus. Contribution ZIPs and "
+               "reports must never become accidental corpus files."));
+        return;
+    }
+
+    contrib::Request request;
+    request.outputParent = output;
+    request.workId = doc.workId;
+    request.title = doc.title.valueOr(tr("(untitled)"));
+    request.language = m_session.currentLanguage();
+    request.fileName = QFileInfo(doc.path).fileName();
+    request.editorVersion = QCoreApplication::applicationVersion();
+    request.proposedToml
+        = m_session.isNewFile() ? io::serializeFresh(doc) : io::serialize(doc);
+    request.baselineToml = baseline;
+    request.baseToml = baseBytes;
+    const QString copyrightPath
+        = QFileInfo(doc.path).dir().filePath(QStringLiteral("copyright.txt"));
+    QFile copyrightFile(copyrightPath);
+    if (copyrightFile.open(QIODevice::ReadOnly))
+        request.copyrightFile = copyrightFile.readAll();
+
+    const auto prepared = contrib::prepare(request);
+    if (!prepared) {
+        m_problemsDock->show();
+        m_problemsDock->raise();
+        QMessageBox::warning(this, tr("Contribution Not Ready"), prepared.error());
+        return;
+    }
+
+    QMessageBox result(this);
+    result.setIcon(QMessageBox::Information);
+    result.setWindowTitle(tr("Contribution Bundle Ready"));
+    result.setText(tr("The exact proposed TOML passed preflight and was packaged for review."));
+    if (prepared->newSong) {
+        result.setInformativeText(
+            tr("%1\n\nNew song file:\n%2\n\nOpen the GitHub form and drag this "
+               "song.toml file into the details field. As a fallback, OPE will copy the "
+               "complete file as a TOML code block. The corpus maintainer will assign its "
+               "upstream song ID.\n\nOptional review ZIP:\n%3")
+                .arg(prepared->checks.description(), prepared->proposedFile,
+                    prepared->archive));
+    } else {
+        result.setInformativeText(
+            tr("%1\n\nZIP bundle:\n%2\n\nSHA-256:\n%3\n\nOpen the GitHub form and "
+               "drag this ZIP into the details field. OPE will copy the preflight report "
+               "to the clipboard for you.")
+                .arg(prepared->checks.description(), prepared->archive,
+                    prepared->archiveSha256));
+    }
+    auto *openIssue = result.addButton(tr("Open GitHub Issue"), QMessageBox::AcceptRole);
+    auto *openFolder = result.addButton(tr("Open Bundle Folder"), QMessageBox::ActionRole);
+    result.addButton(QMessageBox::Close);
+    result.setDefaultButton(openIssue);
+    result.exec();
+
+    if (result.clickedButton() == openFolder) {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(prepared->directory));
+        return;
+    }
+    if (result.clickedButton() != openIssue)
+        return;
+
+    QFile report(prepared->reportFile);
+    QString clipboardText;
+    if (report.open(QIODevice::ReadOnly))
+        clipboardText = QString::fromUtf8(report.readAll());
+    if (prepared->newSong) {
+        if (!clipboardText.isEmpty())
+            clipboardText += QStringLiteral("\n");
+        clipboardText += tomlCodeBlock(request.proposedToml);
+    }
+    if (!clipboardText.isEmpty())
+        QGuiApplication::clipboard()->setText(clipboardText);
+
+    QUrl url(QStringLiteral("https://github.com/squinky86/OP-songs/issues/new"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("template"), QStringLiteral("song-problem.yml"));
+    if (prepared->newSong) {
+        const QString identity = tr("New song — %1").arg(request.title);
+        query.addQueryItem(
+            QStringLiteral("title"), QStringLiteral("[New Song] %1").arg(request.title));
+        query.addQueryItem(QStringLiteral("song"), identity);
+        query.addQueryItem(QStringLiteral("location"),
+            tr("New song submission; proposed file song.toml; language %1")
+                .arg(m_session.currentLanguage()));
+        query.addQueryItem(QStringLiteral("details"),
+            tr("A new song passed OpenPsalm Editor %1 preflight. %2 Drag the generated "
+               "song.toml into this field, or paste the copied TOML code block, then explain "
+               "the musical/textual source. No song ID is proposed; the corpus maintainer "
+               "will assign it.")
+                .arg(request.editorVersion, prepared->checks.description()));
+    } else {
+        const QString identity
+            = QStringLiteral("#%1 — %2").arg(doc.workId).arg(request.title);
+        query.addQueryItem(
+            QStringLiteral("title"), QStringLiteral("[Song] %1").arg(identity));
+        query.addQueryItem(QStringLiteral("song"), identity);
+        QString songUrl = QStringLiteral("https://openpsalm.com/songs/%1").arg(doc.workId);
+        if (m_session.currentLanguage() != i18n::defaultLanguage())
+            songUrl += u'/' + m_session.currentLanguage();
+        query.addQueryItem(QStringLiteral("song-url"), songUrl);
+        query.addQueryItem(QStringLiteral("location"),
+            tr("Language %1; proposed file %2")
+                .arg(m_session.currentLanguage(), request.fileName));
+        query.addQueryItem(QStringLiteral("details"),
+            tr("A contribution bundle was prepared by OpenPsalm Editor %1. %2 Bundle "
+               "SHA-256: %3. Drag the ZIP into this field, paste the copied preflight report, "
+               "and explain the musical/textual source for the change.")
+                .arg(request.editorVersion, prepared->checks.description(),
+                    prepared->archiveSha256));
+    }
+    url.setQuery(query);
+    if (!QDesktopServices::openUrl(url)) {
+        QMessageBox::warning(this, tr("Open GitHub issue"),
+            tr("Could not open a web browser. Open this address manually:\n\n%1\n\nThe "
+               "submission text is already on the clipboard.")
+                .arg(url.toString(QUrl::FullyEncoded)));
+    }
+}
+
+void MainWindow::reportSongProblem()
+{
+    QUrl url(QStringLiteral("https://github.com/squinky86/OP-songs/issues/new"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("template"), QStringLiteral("song-problem.yml"));
+    if (m_session.isOpen()) {
+        flushPendingEdits();
+        const SongDocument &doc = m_session.document();
+        const QString identity = QStringLiteral("#%1 — %2")
+                                     .arg(doc.workId)
+                                     .arg(doc.title.valueOr(tr("(untitled)")));
+        query.addQueryItem(QStringLiteral("title"), QStringLiteral("[Song] %1").arg(identity));
+        query.addQueryItem(QStringLiteral("song"), identity);
+        QString location = tr("Language %1; file %2")
+                               .arg(m_session.currentLanguage(), QFileInfo(doc.path).fileName());
+        const Selection selection = m_session.selection();
+        const SongDocument &effective = m_session.effectiveDocument();
+        if (selection.isValid() && selection.partIndex < effective.parts.size()) {
+            location += tr("; measure %1; %2")
+                            .arg(selection.measureIndex + 1)
+                            .arg(effective.parts.at(selection.partIndex).name);
+        }
+        query.addQueryItem(QStringLiteral("location"), location);
+        QString songUrl = QStringLiteral("https://openpsalm.com/songs/%1").arg(doc.workId);
+        if (m_session.currentLanguage() != i18n::defaultLanguage())
+            songUrl += u'/' + m_session.currentLanguage();
+        query.addQueryItem(QStringLiteral("song-url"), songUrl);
+        query.addQueryItem(QStringLiteral("details"),
+            tr("Reported from OpenPsalm Editor %1. Describe what is wrong and what it should "
+               "be instead.")
+                .arg(QCoreApplication::applicationVersion()));
+    }
+    url.setQuery(query);
+    if (!QDesktopServices::openUrl(url)) {
+        QMessageBox::warning(this, tr("Open GitHub issue"),
+            tr("Could not open a web browser. Open this address manually:\n\n%1")
+                .arg(url.toString(QUrl::FullyEncoded)));
+    }
 }
 
 bool MainWindow::confirmDiscard()

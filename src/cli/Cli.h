@@ -21,6 +21,26 @@ struct Options {
     int limit = -1;        ///< stop after N songs; -1 = all
 };
 
+/// Machine-readable result used by the GUI before installing a downloaded
+/// corpus. These are the same gates printed by `ope-check`.
+struct CheckSummary {
+    int files = 0;
+    int parseFailures = 0;
+    int roundTripFailures = 0;
+    int reemitFailures = 0;
+    int errors = 0;
+    int warnings = 0;
+    int infos = 0;
+    int songsWithErrors = 0;
+    bool foundCorpus = true;
+
+    [[nodiscard]] bool passed() const noexcept;
+    [[nodiscard]] QString description() const;
+};
+
+/// Run all enabled checks without writing to stdout.
+[[nodiscard]] CheckSummary check(const Options &options);
+
 /// Run the checks. Returns a process exit code: 0 when nothing failed.
 [[nodiscard]] int run(const Options &options);
 

@@ -12,6 +12,7 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
+#include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -172,6 +173,26 @@ private Q_SLOTS:
         language->setEditText(QStringLiteral("pt-br"));
         QVERIFY(buttons->button(QDialogButtonBox::Ok)->isEnabled());
         QCOMPARE(dialog.languageCode(), QStringLiteral("pt-BR"));
+    }
+
+    void newSongUsesAnAutomaticLocalDraftSlot()
+    {
+        QTemporaryDir dir;
+        Library library;
+        library.setRoot(dir.path());
+        library.rescan();
+        NewSongDialog dialog(&library);
+
+        bool mentionsLocalDraft = false;
+        for (const QLabel *label : dialog.findChildren<QLabel *>()) {
+            QVERIFY(label->text() != QStringLiteral("Song number"));
+            mentionsLocalDraft |= label->text().contains(QStringLiteral("local draft folder"));
+        }
+        QVERIFY(mentionsLocalDraft);
+
+        const SongDocument draft = dialog.buildDocument();
+        QCOMPARE(draft.workId, 1);
+        QCOMPARE(draft.path, QDir(dir.path()).filePath(QStringLiteral("1/song.toml")));
     }
 };
 

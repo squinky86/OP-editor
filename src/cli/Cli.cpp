@@ -109,18 +109,7 @@ bool checkReemitPart(const Part &part, QStringList &problems)
     return true;
 }
 
-struct Totals {
-    int files = 0;
-    int parseFailures = 0;
-    int roundTripFailures = 0;
-    int reemitFailures = 0;
-    int errors = 0;
-    int warnings = 0;
-    int infos = 0;
-    int songsWithErrors = 0;
-};
-
-void checkFile(const QString &path, const Options &options, Totals &totals,
+void checkFile(const QString &path, const Options &options, CheckSummary &totals,
     const QString &baseLanguage, const SongDocument *base = nullptr)
 {
     ++totals.files;
@@ -188,7 +177,80 @@ void checkFile(const QString &path, const Options &options, Totals &totals,
     }
 }
 
+CheckSummary runChecks(const Options &options, bool announceMissingCorpus)
+{
+    CheckSummary totals;
+    const QFileInfo info(options.root);
+
+    if (info.isFile()) {
+        const QString overlayLanguage = i18n::codeFromFilename(info.fileName());
+        if (overlayLanguage.isEmpty()) {
+            checkFile(options.root, options, totals, QString());
+        } else {
+            const QString basePath = info.dir().filePath(QStringLiteral("song.toml"));
+            const auto base = io::load(basePath);
+            if (!base) {
+                ++totals.parseFailures;
+                if (!options.quiet) {
+                    out() << "BASE   " << options.root
+                          << ": cannot validate this overlay without " << basePath << ": "
+                          << base.error().formatted() << "\n";
+                }
+            }
+            checkFile(options.root, options, totals,
+                base ? base->language : QString(), base ? &*base : nullptr);
+        }
+        return totals;
+    }
+
+    Library library;
+    library.setRoot(options.root);
+    library.rescan();
+    if (library.entries().isEmpty()) {
+        totals.foundCorpus = false;
+        if (announceMissingCorpus) {
+            out() << "No song directories found under " << options.root << "\n";
+            out().flush();
+        }
+        return totals;
+    }
+    int handled = 0;
+    for (const SongEntry &entry : library.entries()) {
+        if (options.limit >= 0 && handled >= options.limit)
+            break;
+        ++handled;
+        checkFile(entry.basePath, options, totals, QString());
+        const auto base = io::load(entry.basePath);
+        for (const QString &path : entry.translationPaths) {
+            checkFile(path, options, totals, entry.baseLanguage,
+                base ? &*base : nullptr);
+        }
+    }
+    return totals;
+}
+
 } // namespace
+
+bool CheckSummary::passed() const noexcept
+{
+    return foundCorpus && files > 0 && parseFailures == 0 && roundTripFailures == 0
+        && reemitFailures == 0 && errors == 0;
+}
+
+QString CheckSummary::description() const
+{
+    if (!foundCorpus)
+        return QStringLiteral("No numbered song directories were found.");
+    return QStringLiteral(
+        "%1 file(s) checked; %2 parse failure(s); %3 round-trip change(s); "
+        "%4 note re-emission mismatch(es); %5 validation error(s); %6 warning(s).")
+        .arg(files)
+        .arg(parseFailures)
+        .arg(roundTripFailures)
+        .arg(reemitFailures)
+        .arg(errors)
+        .arg(warnings);
+}
 
 QString usage()
 {
@@ -269,51 +331,18 @@ bool parse(const QStringList &arguments, Options &options, int &exitCode)
     return true;
 }
 
+CheckSummary check(const Options &options)
+{
+    Options silent = options;
+    silent.quiet = true;
+    return runChecks(silent, false);
+}
+
 int run(const Options &options)
 {
-    Totals totals;
-    const QFileInfo info(options.root);
-
-    if (info.isFile()) {
-        const QString overlayLanguage = i18n::codeFromFilename(info.fileName());
-        if (overlayLanguage.isEmpty()) {
-            checkFile(options.root, options, totals, QString());
-        } else {
-            const QString basePath = info.dir().filePath(QStringLiteral("song.toml"));
-            const auto base = io::load(basePath);
-            if (!base) {
-                ++totals.parseFailures;
-                if (!options.quiet) {
-                    out() << "BASE   " << options.root
-                          << ": cannot validate this overlay without " << basePath << ": "
-                          << base.error().formatted() << "\n";
-                }
-            }
-            checkFile(options.root, options, totals,
-                base ? base->language : QString(), base ? &*base : nullptr);
-        }
-    } else {
-        Library library;
-        library.setRoot(options.root);
-        library.rescan();
-        if (library.entries().isEmpty()) {
-            out() << "No song directories found under " << options.root << "\n";
-            out().flush();
-            return 2;
-        }
-        int handled = 0;
-        for (const SongEntry &entry : library.entries()) {
-            if (options.limit >= 0 && handled >= options.limit)
-                break;
-            ++handled;
-            checkFile(entry.basePath, options, totals, QString());
-            const auto base = io::load(entry.basePath);
-            for (const QString &path : entry.translationPaths) {
-                checkFile(path, options, totals, entry.baseLanguage,
-                    base ? &*base : nullptr);
-            }
-        }
-    }
+    const CheckSummary totals = runChecks(options, true);
+    if (!totals.foundCorpus)
+        return 2;
 
     out() << "\n";
     out() << "files checked      " << totals.files << "\n";
@@ -327,9 +356,7 @@ int run(const Options &options)
         out() << "info               " << totals.infos << "\n";
     out().flush();
 
-    const bool failed = totals.parseFailures > 0 || totals.roundTripFailures > 0
-        || totals.reemitFailures > 0 || totals.errors > 0;
-    return failed ? 1 : 0;
+    return totals.passed() ? 0 : 1;
 }
 
 } // namespace ope::cli

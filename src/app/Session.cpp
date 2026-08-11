@@ -99,6 +99,8 @@ std::expected<void, LoadError> Session::openSong(const QString &basePath)
     m_currentLanguage = baseLanguage;
     m_selection = {};
     for (const QString &language : std::as_const(m_languages))
+        m_openedBytes.insert(language, m_documents.value(language).originalBytes);
+    for (const QString &language : std::as_const(m_languages))
         ensureUndoStack(language);
     if (!requestedLanguage.isEmpty() && m_documents.contains(requestedLanguage))
         m_currentLanguage = requestedLanguage;
@@ -117,6 +119,7 @@ void Session::adoptNewDocument(SongDocument document)
     document.language = language;
     m_baseLanguage = document.isOverlay ? QString() : language;
     m_documents.insert(language, std::move(document));
+    m_openedBytes.insert(language, QByteArray());
     m_languages = { language };
     m_currentLanguage = language;
     m_newFiles.insert(language);
@@ -134,6 +137,7 @@ bool Session::adoptNewOverlay(SongDocument document)
     if (language.isEmpty() || !document.isOverlay || m_documents.contains(language))
         return false;
     m_documents.insert(language, std::move(document));
+    m_openedBytes.insert(language, QByteArray());
     m_languages.append(language);
     m_newFiles.insert(language);
     ensureUndoStack(language);
@@ -150,6 +154,7 @@ void Session::close()
     }
     m_undoStacks.clear();
     m_documents.clear();
+    m_openedBytes.clear();
     m_alignments.clear();
     m_languages.clear();
     m_currentLanguage.clear();
@@ -256,6 +261,11 @@ bool Session::isNewFile(const QString &language) const noexcept
 }
 
 QString Session::currentPath() const { return document().path; }
+
+QByteArray Session::openedBytes(const QString &language) const
+{
+    return m_openedBytes.value(language);
+}
 
 std::expected<void, Session::SaveError> Session::save(
     const QString &language, bool overwriteExternalChanges)

@@ -35,7 +35,7 @@ public:
 
 private:
     Library *m_library = nullptr;
-    QSpinBox *m_id = nullptr;
+    int m_localDraftId = 0;
     QLineEdit *m_title = nullptr;
     QLineEdit *m_subtitle = nullptr;
     QComboBox *m_key = nullptr;

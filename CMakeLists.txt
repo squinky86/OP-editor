@@ -20,8 +20,9 @@ endif()
 option(OPE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(OPE_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Multimedia)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Multimedia Network)
 find_package(Qt6 6.5 QUIET COMPONENTS Test)
+find_package(libzip CONFIG REQUIRED)
 
 qt_standard_project_setup()
 
@@ -45,9 +46,10 @@ if(Qt6Test_FOUND)
     add_subdirectory(tests)
 endif()
 
-install(FILES README.md LICENSE CHANGELOG.md OPE.md RELEASE_CHECKLIST.md
+install(FILES README.md LICENSE CHANGELOG.md OPE.md ROADMAP_0.1.md RELEASE_CHECKLIST.md
     DESTINATION ${CMAKE_INSTALL_DOCDIR})
 install(FILES THIRD_PARTY_NOTICES.md DESTINATION ${CMAKE_INSTALL_DOCDIR})
+install(DIRECTORY docs/ DESTINATION ${CMAKE_INSTALL_DOCDIR}/guides)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     install(FILES packaging/linux/openpsalm-editor.desktop

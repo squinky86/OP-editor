@@ -18,6 +18,10 @@
       "name": "qtmultimedia",
       "default-features": false,
       "version>=": "6.11.1"
+    },
+    {
+      "name": "libzip",
+      "default-features": false
     }
   ]
 }

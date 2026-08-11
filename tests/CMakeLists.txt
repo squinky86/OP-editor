@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Jon Hood, OpenPsalm.com
 
-set(OPE_TESTS FormatTests DocumentTests CorpusTests)
+set(OPE_TESTS FormatTests DocumentTests CorpusTests CorpusArchiveTests)
 
 foreach(test IN LISTS OPE_TESTS)
     qt_add_executable(${test} ${test}.cpp Fixtures.cpp)
@@ -45,6 +45,11 @@ qt_add_executable(CliTests CliTests.cpp)
 target_link_libraries(CliTests PRIVATE ope_cli Qt6::Test ope_flags)
 add_test(NAME CliTests COMMAND CliTests)
 set_tests_properties(CliTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+qt_add_executable(ContributionTests ContributionTests.cpp Fixtures.cpp)
+target_link_libraries(ContributionTests PRIVATE ope_cli Qt6::Test ope_flags)
+add_test(NAME ContributionTests COMMAND ContributionTests)
+set_tests_properties(ContributionTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Focused widget lifecycle coverage. These tests use real editor panels while
 # keeping files in a temporary directory and audio completely out of process.

@@ -1,6 +1,6 @@
 # Third-party notices
 
-OpenPsalm Editor uses Qt 6 Core, GUI, Widgets, Multimedia, and Test. Release
+OpenPsalm Editor uses Qt 6 Core, GUI, Widgets, Multimedia, Network, and Test. Release
 builds use the open-source Qt distribution under the GNU General Public License
 version 3 option. OpenPsalm Editor itself is licensed under the GNU Affero
 General Public License version 3 or later; its complete corresponding source,
@@ -18,6 +18,13 @@ tree.
 - Qt open-source licensing: <https://www.qt.io/development/open-source-lgpl-obligations>
 - Reproducible dependency recipe: `vcpkg.json`
 - Windows static-link settings: `packaging/vcpkg-triplets/x64-windows-static-release.cmake`
+
+OpenPsalm Editor uses libzip to inspect and extract downloaded OP-songs ZIP
+archives. libzip is distributed under the BSD 3-Clause License. Release builds
+obtain its unmodified source and license through the pinned vcpkg manifest.
+
+- libzip project and source: <https://libzip.org/>
+- libzip license: <https://github.com/nih-at/libzip/blob/main/LICENSE>
 
 The packaged copies of this notice, OpenPsalm Editor's `LICENSE`, and the public
 release-tag source are intended to travel together. No Qt source is modified by

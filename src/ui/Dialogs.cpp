@@ -93,9 +93,7 @@ NewSongDialog::NewSongDialog(Library *library, QWidget *parent)
     setWindowTitle(tr("New Song"));
 
     auto *layout = new QFormLayout(this);
-    m_id = new QSpinBox(this);
-    m_id->setRange(1, 100000);
-    m_id->setValue(library->nextId());
+    m_localDraftId = library->nextId();
     m_title = new QLineEdit(this);
     m_subtitle = new QLineEdit(this);
     m_key = new QComboBox(this);
@@ -129,7 +127,6 @@ NewSongDialog::NewSongDialog(Library *library, QWidget *parent)
     metreLayout->addWidget(m_denominator);
     metreLayout->addStretch();
 
-    layout->addRow(tr("Song number"), m_id);
     layout->addRow(tr("Title"), m_title);
     layout->addRow(tr("Subtitle"), m_subtitle);
     layout->addRow(tr("Key"), m_key);
@@ -143,7 +140,9 @@ NewSongDialog::NewSongDialog(Library *library, QWidget *parent)
 
     auto *note = new QLabel(
         tr("The song starts with rests filling every measure, so it is valid from the "
-           "first save. Public-domain credits are assumed; edit the copyright block if not."),
+           "first save. OPE chooses a local draft folder automatically; that folder number "
+           "is not proposed upstream. Public-domain credits are assumed; edit the copyright "
+           "block if not."),
         this);
     note->setWordWrap(true);
     note->setStyleSheet(QStringLiteral("color: #57606a;"));
@@ -158,14 +157,14 @@ NewSongDialog::NewSongDialog(Library *library, QWidget *parent)
 
 QString NewSongDialog::targetPath() const
 {
-    return QStringLiteral("%1/%2/song.toml").arg(m_library->root()).arg(m_id->value());
+    return QStringLiteral("%1/%2/song.toml").arg(m_library->root()).arg(m_localDraftId);
 }
 
 SongDocument NewSongDialog::buildDocument() const
 {
     SongDocument doc;
     doc.path = targetPath();
-    doc.workId = m_id->value();
+    doc.workId = m_localDraftId;
     doc.language = i18n::defaultLanguage();
     doc.title.set(m_title->text().isEmpty() ? tr("Untitled") : m_title->text());
     if (!m_subtitle->text().isEmpty())

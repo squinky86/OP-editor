@@ -10,14 +10,15 @@ add_library(ope_core STATIC
     core/Lyrics.cpp
     core/Validator.cpp
     core/Library.cpp
+    core/CorpusArchive.cpp
     core/Playback.cpp
 )
 target_include_directories(ope_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(ope_core PUBLIC Qt6::Core PRIVATE ope_flags)
+target_link_libraries(ope_core PUBLIC Qt6::Core PRIVATE libzip::zip ope_flags)
 
 # The command-line checker, shared by the app binary and CI.
-add_library(ope_cli STATIC cli/Cli.cpp)
-target_link_libraries(ope_cli PUBLIC ope_core PRIVATE ope_flags)
+add_library(ope_cli STATIC cli/Cli.cpp cli/Contribution.cpp)
+target_link_libraries(ope_cli PUBLIC ope_core PRIVATE libzip::zip ope_flags)
 
 add_executable(ope-check cli/CheckMain.cpp)
 target_link_libraries(ope-check PRIVATE ope_cli ope_flags)
@@ -33,6 +34,7 @@ qt_add_executable(ope
     ui/Panels.cpp
     ui/LyricsPanel.cpp
     ui/Dialogs.cpp
+    ui/CorpusDownloadDialog.cpp
     ui/MainWindow.cpp
 )
 target_compile_definitions(ope PRIVATE OPE_VERSION="${PROJECT_VERSION}")
@@ -42,6 +44,7 @@ target_link_libraries(ope PRIVATE
     Qt6::Widgets
     Qt6::Gui
     Qt6::Multimedia
+    Qt6::Network
     ope_flags
 )
 

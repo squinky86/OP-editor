@@ -74,6 +74,11 @@ public:
     [[nodiscard]] bool isDirty(const QString &language) const;
     [[nodiscard]] QStringList dirtyLanguages() const;
     [[nodiscard]] QString currentPath() const;
+    /// Exact bytes first opened for this language. Unlike SongDocument's
+    /// serialization baseline, this survives Save so contribution packaging can
+    /// still describe the whole editing session. Empty for a newly created file.
+    [[nodiscard]] QByteArray openedBytes(const QString &language) const;
+    [[nodiscard]] QByteArray openedBytes() const { return openedBytes(m_currentLanguage); }
     [[nodiscard]] bool isNewFile() const noexcept { return isNewFile(m_currentLanguage); }
     [[nodiscard]] bool isNewFile(const QString &language) const noexcept;
 
@@ -132,6 +137,7 @@ private:
     void refresh();
 
     QHash<QString, SongDocument> m_documents;  ///< keyed by language code
+    QHash<QString, QByteArray> m_openedBytes;  ///< immutable contribution baseline
     QHash<QString, PartAlignment> m_alignments;
     mutable SongDocument m_effective;
     QStringList m_languages;

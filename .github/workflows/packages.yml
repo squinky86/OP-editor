@@ -32,7 +32,7 @@ jobs:
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
             build-essential ca-certificates cmake dpkg-dev file git ninja-build \
-            qt6-base-dev qt6-base-dev-tools qt6-multimedia-dev
+            libzip-dev qt6-base-dev qt6-base-dev-tools qt6-multimedia-dev
 
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -160,11 +160,11 @@ jobs:
           # UiWorkflowTests need their own platform-plugin imports; exercise the
           # real shipped GUI with the native screenshot smoke in the next step.
           cmake --build build-windows --config Release --parallel 2 `
-            --target ope ope-check FormatTests DocumentTests CorpusTests `
-              AudioTests GlyphTests CliTests
+            --target ope ope-check FormatTests DocumentTests CorpusTests CorpusArchiveTests `
+              AudioTests GlyphTests CliTests ContributionTests
           ctest --test-dir build-windows -C Release --output-on-failure `
             --timeout 30 `
-            -R '^(FormatTests|DocumentTests|CorpusTests|AudioTests|GlyphTests|CliTests)$'
+            -R '^(FormatTests|DocumentTests|CorpusTests|CorpusArchiveTests|AudioTests|GlyphTests|CliTests|ContributionTests)$'
 
       - name: Stage self-contained package
         shell: pwsh
@@ -176,7 +176,8 @@ jobs:
           New-Item -ItemType Directory -Force $package | Out-Null
           Copy-Item build-windows\Release\ope.exe $package
           Copy-Item build-windows\Release\ope-check.exe $package
-          Copy-Item README.md,CHANGELOG.md,LICENSE,THIRD_PARTY_NOTICES.md $package
+          Copy-Item README.md,ROADMAP_0.1.md,CHANGELOG.md,LICENSE,THIRD_PARTY_NOTICES.md $package
+          Copy-Item docs $package -Recurse
 
           $dlls = Get-ChildItem $package -Filter '*.dll' -Recurse
           if ($dlls) { throw "Static package unexpectedly contains DLLs: $dlls" }

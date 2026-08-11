@@ -58,6 +58,9 @@ private:
     [[nodiscard]] bool confirmSaveWithErrors(const QString &language);
     void reloadFromDisk();
     void editPreferences();
+    void downloadLatestCorpus();
+    void prepareContribution();
+    void reportSongProblem();
     [[nodiscard]] bool confirmDiscard();
     void navigateTo(const Finding &finding);
 
