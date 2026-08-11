@@ -8,6 +8,7 @@
 #include "core/Song.h"
 #include "core/Validator.h"
 
+#include <QDir>
 #include <QFileInfo>
 #include <QTextStream>
 
@@ -126,7 +127,8 @@ void checkFile(const QString &path, const Options &options, Totals &totals,
     const auto loaded = io::load(path);
     if (!loaded) {
         ++totals.parseFailures;
-        out() << "PARSE  " << loaded.error().formatted() << "\n";
+        if (!options.quiet)
+            out() << "PARSE  " << loaded.error().formatted() << "\n";
         return;
     }
     const SongDocument &doc = *loaded;
@@ -135,8 +137,10 @@ void checkFile(const QString &path, const Options &options, Totals &totals,
         const QByteArray written = io::serialize(doc);
         if (written != doc.originalBytes) {
             ++totals.roundTripFailures;
-            out() << "ROUND  " << path << ": saving an unmodified file changed "
-                  << (written.size() - doc.originalBytes.size()) << " byte(s)\n";
+            if (!options.quiet) {
+                out() << "ROUND  " << path << ": saving an unmodified file changed "
+                      << (written.size() - doc.originalBytes.size()) << " byte(s)\n";
+            }
         }
     }
 
@@ -148,8 +152,10 @@ void checkFile(const QString &path, const Options &options, Totals &totals,
         }
         if (!problems.isEmpty()) {
             ++totals.reemitFailures;
-            for (const QString &problem : problems)
-                out() << "REEMIT " << path << ": " << problem << "\n";
+            if (!options.quiet) {
+                for (const QString &problem : problems)
+                    out() << "REEMIT " << path << ": " << problem << "\n";
+            }
         }
     }
 
@@ -167,6 +173,8 @@ void checkFile(const QString &path, const Options &options, Totals &totals,
         if (errors > 0)
             ++totals.songsWithErrors;
         for (const Finding &finding : findings) {
+            if (options.quiet)
+                continue;
             if (finding.severity == Severity::Warning && !options.warnings)
                 continue;
             if (finding.severity == Severity::Info && !options.info)
@@ -187,7 +195,9 @@ QString usage()
     return QStringLiteral(
         "OpenPsalm Editor — headless checks\n"
         "\n"
+        "  ope [song.toml]           start the graphical editor\n"
         "  ope --check <path>        check a songs directory or a single song.toml\n"
+        "  ope --version             print the application version\n"
         "\n"
         "Options:\n"
         "  --no-roundtrip            skip the save-unchanged byte-equality check\n"
@@ -197,6 +207,10 @@ QString usage()
         "  --info                    also show info-level findings\n"
         "  --limit N                 stop after N songs\n"
         "  --quiet                   summary only\n"
+        "\n"
+        "GUI automation:\n"
+        "  --tab 0|1|2               open score, lyrics, or source\n"
+        "  --screenshot FILE         save a PNG after startup and exit\n"
         "\n"
         "With no arguments the graphical editor starts.\n");
 }
@@ -226,8 +240,21 @@ bool parse(const QStringList &arguments, Options &options, int &exitCode)
         } else if (argument == QLatin1String("--quiet")) {
             options.quiet = true;
         } else if (argument == QLatin1String("--limit")) {
-            if (i + 1 < arguments.size())
-                options.limit = arguments.at(++i).toInt();
+            if (i + 1 >= arguments.size()) {
+                out() << "--limit needs a positive number\n";
+                out().flush();
+                exitCode = 2;
+                return false;
+            }
+            bool ok = false;
+            const int limit = arguments.at(++i).toInt(&ok);
+            if (!ok || limit <= 0) {
+                out() << "--limit needs a positive number\n";
+                out().flush();
+                exitCode = 2;
+                return false;
+            }
+            options.limit = limit;
         } else if (argument == QLatin1String("--help") || argument == QLatin1String("-h")) {
             out() << usage();
             out().flush();
@@ -248,7 +275,23 @@ int run(const Options &options)
     const QFileInfo info(options.root);
 
     if (info.isFile()) {
-        checkFile(options.root, options, totals, QString());
+        const QString overlayLanguage = i18n::codeFromFilename(info.fileName());
+        if (overlayLanguage.isEmpty()) {
+            checkFile(options.root, options, totals, QString());
+        } else {
+            const QString basePath = info.dir().filePath(QStringLiteral("song.toml"));
+            const auto base = io::load(basePath);
+            if (!base) {
+                ++totals.parseFailures;
+                if (!options.quiet) {
+                    out() << "BASE   " << options.root
+                          << ": cannot validate this overlay without " << basePath << ": "
+                          << base.error().formatted() << "\n";
+                }
+            }
+            checkFile(options.root, options, totals,
+                base ? base->language : QString(), base ? &*base : nullptr);
+        }
     } else {
         Library library;
         library.setRoot(options.root);

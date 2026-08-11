@@ -8,6 +8,7 @@
 #include <QCheckBox>
 #include <QEvent>
 #include <QComboBox>
+#include <QDesktopServices>
 #include <QFontDatabase>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -20,6 +21,7 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QTreeWidget>
+#include <QUrl>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -53,6 +55,26 @@ QString severityLabel(Severity severity)
     return {};
 }
 
+void addTimeSignatureDenominators(QComboBox *box)
+{
+    for (const int denominator : ticks::TimeSignatureDenominators)
+        box->addItem(QString::number(denominator), denominator);
+}
+
+void selectTimeSignatureDenominator(QComboBox *box, int denominator)
+{
+    for (int i = box->count() - 1; i >= 0; --i) {
+        if (!ticks::isSupportedTimeSignatureDenominator(box->itemData(i).toInt()))
+            box->removeItem(i);
+    }
+    int index = box->findData(denominator);
+    if (index < 0) {
+        box->addItem(QObject::tr("%1 (unsupported)").arg(denominator), denominator);
+        index = box->count() - 1;
+    }
+    box->setCurrentIndex(index);
+}
+
 } // namespace
 
 // ------------------------------------------------------------- HeaderPanel ---
@@ -74,8 +96,8 @@ HeaderPanel::HeaderPanel(Session *session, QWidget *parent) : QWidget(parent), m
     m_key->setEditable(true);
     m_timeNumerator = new QSpinBox(this);
     m_timeNumerator->setRange(1, 32);
-    m_timeDenominator = new QSpinBox(this);
-    m_timeDenominator->setRange(1, 32);
+    m_timeDenominator = new QComboBox(this);
+    addTimeSignatureDenominators(m_timeDenominator);
     m_tempo = new QSpinBox(this);
     m_tempo->setRange(20, 300);
     m_tempo->setSuffix(tr(" bpm"));
@@ -125,11 +147,24 @@ HeaderPanel::HeaderPanel(Session *session, QWidget *parent) : QWidget(parent), m
     layout->addRow(QString(), m_inherited);
 
     const auto onEdit = [this] { commit(); };
+    const auto pending = [this] {
+        if (m_loading || m_pending)
+            return;
+        m_pending = true;
+        Q_EMIT pendingEditsChanged(true);
+    };
+    connect(m_title, &QLineEdit::textChanged, this, pending);
+    connect(m_subtitle, &QLineEdit::textChanged, this, pending);
+    connect(m_timeNumerator, &QSpinBox::valueChanged, this, pending);
+    connect(m_tempo, &QSpinBox::valueChanged, this, pending);
+    connect(m_verseCount, &QSpinBox::valueChanged, this, pending);
+    connect(m_copyrights, &QPlainTextEdit::textChanged, this, pending);
+    connect(m_commentary, &QPlainTextEdit::textChanged, this, pending);
     connect(m_title, &QLineEdit::editingFinished, this, onEdit);
     connect(m_subtitle, &QLineEdit::editingFinished, this, onEdit);
     connect(m_key, &QComboBox::currentTextChanged, this, onEdit);
     connect(m_timeNumerator, &QSpinBox::editingFinished, this, onEdit);
-    connect(m_timeDenominator, &QSpinBox::editingFinished, this, onEdit);
+    connect(m_timeDenominator, &QComboBox::currentIndexChanged, this, onEdit);
     connect(m_tempo, &QSpinBox::editingFinished, this, onEdit);
     connect(m_verseCount, &QSpinBox::editingFinished, this, onEdit);
     connect(m_active, &QCheckBox::toggled, this, onEdit);
@@ -172,6 +207,11 @@ void HeaderPanel::editTimeSigChanges()
 
 void HeaderPanel::refresh()
 {
+    // A score or lyric edit also emits documentChanged. Do not let that
+    // unrelated refresh replace title/commentary text that is still being
+    // edited and has not reached the session yet.
+    if (m_pending && m_session->isOpen())
+        return;
     m_loading = true;
     const bool open = m_session->isOpen();
     setEnabled(open);
@@ -186,7 +226,7 @@ void HeaderPanel::refresh()
     m_subtitle->setText(doc.subtitle.valueOr(effective.subtitle.valueOr(QString())));
     m_key->setCurrentText(effective.keySignature.valueOr(QStringLiteral("C")));
     m_timeNumerator->setValue(effective.timeSigNumerator.valueOr(4));
-    m_timeDenominator->setValue(effective.timeSigDenominator.valueOr(4));
+    selectTimeSignatureDenominator(m_timeDenominator, effective.timeSigDenominator.valueOr(4));
     m_tempo->setValue(effective.tempoBpm.valueOr(100));
     m_verseCount->setValue(effective.verseCount.valueOr(0));
     m_active->setChecked(effective.active.valueOr(true));
@@ -227,13 +267,18 @@ void HeaderPanel::commit()
     if (m_loading || !m_session->isOpen())
         return;
 
+    const bool hadPending = m_pending;
+    m_pending = false;
+    if (hadPending)
+        Q_EMIT pendingEditsChanged(false);
+
     const QStringList copyrights = m_copyrights->toPlainText().split(u'\n', Qt::SkipEmptyParts);
     const QString commentary = m_commentary->toPlainText();
     const QString title = m_title->text();
     const QString subtitle = m_subtitle->text();
     const QString key = m_key->currentText();
     const int numerator = m_timeNumerator->value();
-    const int denominator = m_timeDenominator->value();
+    const int denominator = m_timeDenominator->currentData().toInt();
     const int tempo = m_tempo->value();
     const int verses = m_verseCount->value();
     const bool active = m_active->isChecked();
@@ -606,12 +651,24 @@ SourcePanel::SourcePanel(Session *session, QWidget *parent) : QWidget(parent), m
     layout->setContentsMargins(4, 4, 4, 4);
     m_status = new QLabel(this);
     m_status->setWordWrap(true);
+    m_openExternal = new QPushButton(tr("Open file in text editor…"), this);
+    m_openExternal->setToolTip(
+        tr("Use the system editor for advanced or newly introduced TOML fields. OPE will "
+           "detect the external change before it overwrites anything."));
     m_text = new QPlainTextEdit(this);
     m_text->setReadOnly(true);
     m_text->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     m_text->setLineWrapMode(QPlainTextEdit::NoWrap);
-    layout->addWidget(m_status);
+    auto *top = new QHBoxLayout;
+    top->addWidget(m_status, 1);
+    top->addWidget(m_openExternal);
+    layout->addLayout(top);
     layout->addWidget(m_text);
+
+    connect(m_openExternal, &QPushButton::clicked, this, [this] {
+        if (m_session->isOpen())
+            QDesktopServices::openUrl(QUrl::fromLocalFile(m_session->currentPath()));
+    });
 
     connect(session, &Session::documentChanged, this, &SourcePanel::refresh);
     connect(session, &Session::languageChanged, this, &SourcePanel::refresh);
@@ -623,12 +680,21 @@ void SourcePanel::refresh()
     if (!m_session->isOpen()) {
         m_text->clear();
         m_status->clear();
+        m_openExternal->setEnabled(false);
         return;
     }
     const SongDocument &doc = m_session->document();
     const QByteArray bytes
         = m_session->isNewFile() ? io::serializeFresh(doc) : io::serialize(doc);
     m_text->setPlainText(QString::fromUtf8(bytes));
+    m_openExternal->setEnabled(!m_session->isNewFile() && !m_session->isDirty(
+        m_session->currentLanguage()));
+    if (!m_openExternal->isEnabled())
+        m_openExternal->setToolTip(tr("Save this file first, then open it externally."));
+    else
+        m_openExternal->setToolTip(
+            tr("Use the system editor for advanced or newly introduced TOML fields. OPE "
+               "will detect external changes before it overwrites anything."));
 
     if (bytes == doc.originalBytes) {
         m_status->setText(tr("Identical to the file on disk."));
@@ -727,9 +793,16 @@ void TransportBar::refresh()
     for (const Part *part : doc.partsInDisplayOrder()) {
         auto *check = new QCheckBox(part->name.left(3), m_partBox);
         check->setToolTip(tr("Mute %1").arg(part->name));
-        check->setChecked(true);
+        check->setChecked(!m_mutedParts.contains(part->name));
         check->setProperty("partName", part->name);
-        connect(check, &QCheckBox::toggled, this, [this] { Q_EMIT optionsChanged(); });
+        connect(check, &QCheckBox::toggled, this, [this, check](bool audible) {
+            const QString partName = check->property("partName").toString();
+            if (audible)
+                m_mutedParts.remove(partName);
+            else
+                m_mutedParts.insert(partName);
+            Q_EMIT optionsChanged();
+        });
         layout->addWidget(check);
         m_partChecks.append(check);
     }

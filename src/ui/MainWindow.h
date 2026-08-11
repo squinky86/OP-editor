@@ -46,11 +46,16 @@ private:
     void updateLanguageTabs();
     void refreshPlaybackPlan();
     void updateTransportDuration();
+    void flushPendingEdits();
+    [[nodiscard]] bool hasUnsavedWork() const;
 
     void showBrowser();
     void newSong();
     void addTranslation();
     void save();
+    [[nodiscard]] bool saveAll();
+    [[nodiscard]] bool saveLanguage(const QString &language);
+    [[nodiscard]] bool confirmSaveWithErrors(const QString &language);
     void reloadFromDisk();
     void editPreferences();
     [[nodiscard]] bool confirmDiscard();
@@ -64,6 +69,7 @@ private:
     SongBrowser *m_browser = nullptr;
     QDockWidget *m_browserDock = nullptr;
     QDockWidget *m_songDock = nullptr;
+    QDockWidget *m_problemsDock = nullptr;
     LyricsPanel *m_lyrics = nullptr;
     SourcePanel *m_source = nullptr;
     HeaderPanel *m_header = nullptr;

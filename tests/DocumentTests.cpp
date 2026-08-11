@@ -465,6 +465,71 @@ private Q_SLOTS:
         QCOMPARE(countBySeverity(findings, Severity::Error), 0);
     }
 
+    void removingAllTimeSignatureChangesRemovesTheTables()
+    {
+        QTemporaryDir dir;
+        SongDocument doc
+            = loadFrom(dir, QStringLiteral("song.toml"), timeSignatureChange());
+        doc.timeSigChanges.clear();
+        const QByteArray written = io::serialize(doc);
+        QVERIFY(!written.contains("[[time_sig_changes]]"));
+        QVERIFY(written.contains("[parts.Soprano]"));
+        QVERIFY(toml::parse(written).has_value());
+    }
+
+    void unsupportedTimeSignatureDenominatorsAreErrors()
+    {
+        QTemporaryDir dir;
+        QByteArray source = baseSong();
+        source.prepend("time_sig_numerator = 4\ntime_sig_denominator = 3\n");
+        const SongDocument doc = loadFrom(dir, QStringLiteral("song.toml"), source);
+        const QList<Finding> findings = validate(doc);
+        QVERIFY(std::any_of(findings.begin(), findings.end(), [](const Finding &finding) {
+            return finding.rule == QLatin1String("E-METRE")
+                && finding.message.contains(QStringLiteral("denominator 3"));
+        }));
+    }
+
+    void nonPositiveTempoAndVerseCountAreErrors()
+    {
+        QTemporaryDir dir;
+        QByteArray source = baseSong();
+        source.replace("tempo_bpm = 96", "tempo_bpm = 0");
+        source.replace("verse_count = 4", "verse_count = -1");
+        const SongDocument doc = loadFrom(dir, QStringLiteral("song.toml"), source);
+        const QList<Finding> findings = validate(doc);
+        QVERIFY(std::any_of(findings.begin(), findings.end(), [](const Finding &finding) {
+            return finding.rule == QLatin1String("E-TEMPO");
+        }));
+        QVERIFY(std::any_of(findings.begin(), findings.end(), [](const Finding &finding) {
+            return finding.rule == QLatin1String("E-VERSE-COUNT");
+        }));
+    }
+
+    void overlappingTimeSignatureChangesAreErrors()
+    {
+        QTemporaryDir dir;
+        QByteArray source = baseSong();
+        source.prepend(R"TOML([[time_sig_changes]]
+measure = 1
+numerator = 4
+denominator = 4
+duration = 2
+
+[[time_sig_changes]]
+measure = 2
+numerator = 3
+denominator = 4
+duration = 1
+
+)TOML");
+        const SongDocument doc = loadFrom(dir, QStringLiteral("song.toml"), source);
+        const QList<Finding> findings = validate(doc);
+        QVERIFY(std::any_of(findings.begin(), findings.end(), [](const Finding &finding) {
+            return finding.rule == QLatin1String("E-METRE-OVERLAP");
+        }));
+    }
+
     void truncatedVerseIsAnError()
     {
         QTemporaryDir dir;

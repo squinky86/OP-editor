@@ -134,6 +134,162 @@ private Q_SLOTS:
         QVERIFY(!session.phraseBreakAt(position));
         QCOMPARE(io::serialize(session.document()), baseSong());
     }
+
+
+    void eachLanguageHasIndependentDirtyAndUndoState()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, QStringLiteral("song.toml"), baseSong());
+        write(root, QStringLiteral("song_es.toml"), "title = \"Cara a cara\"\n");
+        Session session;
+        QVERIFY(session.openSong(root.filePath(QStringLiteral("song.toml"))));
+
+        session.mutate(QStringLiteral("Base title"),
+            [](SongDocument &doc) { doc.title.set(QStringLiteral("Base edit")); });
+        session.setCurrentLanguage(QStringLiteral("es"));
+        session.mutate(QStringLiteral("Spanish title"),
+            [](SongDocument &doc) { doc.title.set(QStringLiteral("Edición")); });
+        QCOMPARE(session.dirtyLanguages(), QStringList({ QStringLiteral("en"), QStringLiteral("es") }));
+
+        session.undoStack()->undo();
+        QVERIFY(session.isDirty(QStringLiteral("en")));
+        QVERIFY(!session.isDirty(QStringLiteral("es")));
+        QCOMPARE(session.currentLanguage(), QStringLiteral("es"));
+        QCOMPARE(session.document().title.valueOr(QString()), QStringLiteral("Cara a cara"));
+    }
+
+    void savingOneLanguageDoesNotCleanAnother()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, QStringLiteral("song.toml"), baseSong());
+        write(root, QStringLiteral("song_es.toml"), "title = \"Cara a cara\"\n");
+        Session session;
+        QVERIFY(session.openSong(root.filePath(QStringLiteral("song.toml"))));
+        session.mutate(QStringLiteral("Base title"),
+            [](SongDocument &doc) { doc.title.set(QStringLiteral("Base edit")); });
+        session.setCurrentLanguage(QStringLiteral("es"));
+        session.mutate(QStringLiteral("Spanish title"),
+            [](SongDocument &doc) { doc.title.set(QStringLiteral("Edición")); });
+
+        QVERIFY(session.save(QStringLiteral("en")));
+        QVERIFY(!session.isDirty(QStringLiteral("en")));
+        QVERIFY(session.isDirty(QStringLiteral("es")));
+        QCOMPARE(session.currentLanguage(), QStringLiteral("es"));
+    }
+
+    void externalChangesAreNeverSilentlyOverwritten()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        const QString path = root.filePath(QStringLiteral("song.toml"));
+        write(root, QStringLiteral("song.toml"), baseSong());
+        Session session;
+        QVERIFY(session.openSong(path));
+        session.mutate(QStringLiteral("Title"),
+            [](SongDocument &doc) { doc.title.set(QStringLiteral("OPE edit")); });
+
+        const QByteArray external = QByteArray("title = \"External edit\"\n");
+        write(root, QStringLiteral("song.toml"), external);
+        const auto refused = session.save();
+        QVERIFY(!refused);
+        QCOMPARE(refused.error().kind, Session::SaveError::Kind::Conflict);
+        QFile unchanged(path);
+        QVERIFY(unchanged.open(QIODevice::ReadOnly));
+        QCOMPARE(unchanged.readAll(), external);
+
+        QVERIFY(session.save(true));
+        QVERIFY(!session.isDirty());
+        QFile overwritten(path);
+        QVERIFY(overwritten.open(QIODevice::ReadOnly));
+        QVERIFY(overwritten.readAll().contains("OPE edit"));
+    }
+
+    void newTranslationStaysInMemoryUntilExplicitlySaved()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, QStringLiteral("song.toml"), baseSong());
+        Session session;
+        QVERIFY(session.openSong(root.filePath(QStringLiteral("song.toml"))));
+
+        SongDocument overlay;
+        overlay.isOverlay = true;
+        overlay.language = QStringLiteral("fr");
+        overlay.path = root.filePath(QStringLiteral("song_fr.toml"));
+        overlay.title.set(QStringLiteral("Face à face"));
+        QVERIFY(session.adoptNewOverlay(overlay));
+        QVERIFY(session.isNewFile());
+        QVERIFY(!QFileInfo::exists(overlay.path));
+        QVERIFY(!session.adoptNewOverlay(overlay));
+
+        QVERIFY(session.save());
+        QVERIFY(QFileInfo::exists(overlay.path));
+        QVERIFY(!session.isNewFile());
+    }
+
+    void openingATranslationPathSelectsItsSiblingOverlay()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, QStringLiteral("song.toml"), baseSong());
+        const QString overlayPath = root.filePath(QStringLiteral("song_es.toml"));
+        write(root, QStringLiteral("song_es.toml"), "title = \"Cara a cara\"\n");
+        Session session;
+        QVERIFY(session.openSong(overlayPath));
+        QCOMPARE(session.currentLanguage(), QStringLiteral("es"));
+        QCOMPARE(session.languages().size(), 2);
+        QCOMPARE(session.baseDocument()->path, root.filePath(QStringLiteral("song.toml")));
+    }
+
+    void duplicateLanguageFilesCannotReplaceTheBaseInMemory()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, QStringLiteral("song.toml"), baseSong());
+        write(root, QStringLiteral("song_en.toml"), "title = \"Duplicate\"\n");
+        Session session;
+        const auto opened = session.openSong(root.filePath(QStringLiteral("song.toml")));
+        QVERIFY(!opened);
+        QVERIFY(opened.error().message.contains(QStringLiteral("already used")));
+        QVERIFY(!session.isOpen());
+    }
+
+    void aNewSongDirectoryIsCreatedOnlyWhenSaved()
+    {
+        QTemporaryDir dir;
+        const QString path = QDir(dir.path()).filePath(QStringLiteral("42/song.toml"));
+        SongDocument document;
+        document.path = path;
+        document.language = QStringLiteral("en");
+        document.title.set(QStringLiteral("New song"));
+        Session session;
+        session.adoptNewDocument(document);
+        QVERIFY(!QFileInfo::exists(QFileInfo(path).path()));
+        QVERIFY(session.save());
+        QVERIFY(QFileInfo::exists(path));
+    }
+
+    void aNewSongRefusesADirectoryOccupiedAfterTheWizard()
+    {
+        QTemporaryDir dir;
+        const QString directory = QDir(dir.path()).filePath(QStringLiteral("42"));
+        const QString path = QDir(directory).filePath(QStringLiteral("song.toml"));
+        SongDocument document;
+        document.path = path;
+        document.language = QStringLiteral("en");
+        document.title.set(QStringLiteral("New song"));
+        Session session;
+        session.adoptNewDocument(document);
+
+        QVERIFY(QDir().mkpath(directory));
+        write(QDir(directory), QStringLiteral("README.txt"), "occupied\n");
+        const auto saved = session.save();
+        QVERIFY(!saved);
+        QCOMPARE(saved.error().kind, Session::SaveError::Kind::Conflict);
+        QVERIFY(!QFileInfo::exists(path));
+    }
 };
 
 QTEST_GUILESS_MAIN(SessionTests)

@@ -4,6 +4,7 @@
 #include "Session.h"
 
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QUndoCommand>
 
@@ -49,14 +50,17 @@ private:
 
 } // namespace
 
-Session::Session(QObject *parent) : QObject(parent)
-{
-    connect(&m_undo, &QUndoStack::cleanChanged, this, [this](bool) { Q_EMIT dirtyChanged(); });
-}
+Session::Session(QObject *parent) : QObject(parent), m_undoGroup(this) {}
 
 std::expected<void, LoadError> Session::openSong(const QString &basePath)
 {
-    auto base = io::load(basePath);
+    const QFileInfo requested(basePath);
+    const QString requestedLanguage = i18n::codeFromFilename(requested.fileName());
+    const QString normalizedPath = requestedLanguage.isEmpty()
+        ? basePath
+        : requested.dir().filePath(QStringLiteral("song.toml"));
+
+    auto base = io::load(normalizedPath);
     if (!base)
         return std::unexpected(base.error());
 
@@ -74,6 +78,13 @@ std::expected<void, LoadError> Session::openSong(const QString &basePath)
         const QString code = i18n::codeFromFilename(file);
         if (code.isEmpty())
             continue;
+        if (documents.contains(code)) {
+            LoadError error;
+            error.path = dir.filePath(file);
+            error.message = tr("language code %1 is already used by another file in this song")
+                                .arg(code);
+            return std::unexpected(error);
+        }
         auto overlay = io::load(dir.filePath(file));
         if (!overlay)
             return std::unexpected(overlay.error());
@@ -86,8 +97,12 @@ std::expected<void, LoadError> Session::openSong(const QString &basePath)
     m_languages = languages;
     m_baseLanguage = baseLanguage;
     m_currentLanguage = baseLanguage;
-    m_isNewFile = false;
     m_selection = {};
+    for (const QString &language : std::as_const(m_languages))
+        ensureUndoStack(language);
+    if (!requestedLanguage.isEmpty() && m_documents.contains(requestedLanguage))
+        m_currentLanguage = requestedLanguage;
+    m_undoGroup.setActiveStack(ensureUndoStack(m_currentLanguage));
     refresh();
     Q_EMIT languageChanged();
     Q_EMIT documentChanged();
@@ -104,16 +119,36 @@ void Session::adoptNewDocument(SongDocument document)
     m_documents.insert(language, std::move(document));
     m_languages = { language };
     m_currentLanguage = language;
-    m_isNewFile = true;
+    m_newFiles.insert(language);
     m_selection = {};
+    m_undoGroup.setActiveStack(ensureUndoStack(language));
     refresh();
     Q_EMIT languageChanged();
     Q_EMIT documentChanged();
     Q_EMIT dirtyChanged();
 }
 
+bool Session::adoptNewOverlay(SongDocument document)
+{
+    const QString language = document.language;
+    if (language.isEmpty() || !document.isOverlay || m_documents.contains(language))
+        return false;
+    m_documents.insert(language, std::move(document));
+    m_languages.append(language);
+    m_newFiles.insert(language);
+    ensureUndoStack(language);
+    setCurrentLanguage(language);
+    Q_EMIT dirtyChanged();
+    return true;
+}
+
 void Session::close()
 {
+    for (QUndoStack *stack : std::as_const(m_undoStacks)) {
+        m_undoGroup.removeStack(stack);
+        delete stack;
+    }
+    m_undoStacks.clear();
     m_documents.clear();
     m_alignments.clear();
     m_languages.clear();
@@ -121,8 +156,7 @@ void Session::close()
     m_baseLanguage.clear();
     m_findings.clear();
     m_selection = {};
-    m_undo.clear();
-    m_isNewFile = false;
+    m_newFiles.clear();
 }
 
 void Session::setCurrentLanguage(const QString &code)
@@ -130,6 +164,7 @@ void Session::setCurrentLanguage(const QString &code)
     if (!m_documents.contains(code) || code == m_currentLanguage)
         return;
     m_currentLanguage = code;
+    m_undoGroup.setActiveStack(ensureUndoStack(code));
     m_selection = {};
     refresh();
     Q_EMIT languageChanged();
@@ -143,6 +178,17 @@ const SongDocument &Session::document() const
     static const SongDocument empty;
     const auto it = m_documents.constFind(m_currentLanguage);
     return it == m_documents.constEnd() ? empty : *it;
+}
+
+const SongDocument *Session::document(const QString &language) const
+{
+    const auto it = m_documents.constFind(language);
+    return it == m_documents.constEnd() ? nullptr : &*it;
+}
+
+QUndoStack *Session::undoStack() noexcept
+{
+    return m_currentLanguage.isEmpty() ? nullptr : ensureUndoStack(m_currentLanguage);
 }
 
 const SongDocument *Session::baseDocument() const
@@ -185,39 +231,110 @@ const Event *Session::selectedEvent() const
 
 bool Session::isDirty() const
 {
-    if (m_isNewFile)
-        return true;
-    for (auto it = m_documents.constBegin(); it != m_documents.constEnd(); ++it) {
-        if (it->isDirty())
-            return true;
+    return !dirtyLanguages().isEmpty();
+}
+
+bool Session::isDirty(const QString &language) const
+{
+    const SongDocument *doc = document(language);
+    return doc && (m_newFiles.contains(language) || doc->isDirty());
+}
+
+QStringList Session::dirtyLanguages() const
+{
+    QStringList dirty;
+    for (const QString &language : m_languages) {
+        if (isDirty(language))
+            dirty.append(language);
     }
-    return false;
+    return dirty;
+}
+
+bool Session::isNewFile(const QString &language) const noexcept
+{
+    return m_newFiles.contains(language);
 }
 
 QString Session::currentPath() const { return document().path; }
 
-std::expected<void, QString> Session::save()
+std::expected<void, Session::SaveError> Session::save(
+    const QString &language, bool overwriteExternalChanges)
 {
-    SongDocument &doc = document();
+    auto found = m_documents.find(language);
+    if (found == m_documents.end()) {
+        return std::unexpected(SaveError { SaveError::Kind::Io, {},
+            tr("the selected language is no longer open") });
+    }
+    SongDocument &doc = *found;
     if (doc.path.isEmpty())
-        return std::unexpected(tr("this song has no file path yet"));
+        return std::unexpected(SaveError { SaveError::Kind::Io, {},
+            tr("this song has no file path yet") });
 
-    const QByteArray bytes = m_isNewFile ? io::serializeFresh(doc) : io::serialize(doc);
+    const bool newFile = m_newFiles.contains(language);
+    if (!overwriteExternalChanges) {
+        QFile disk(doc.path);
+        if (newFile) {
+            if (disk.exists()) {
+                return std::unexpected(SaveError { SaveError::Kind::Conflict, doc.path,
+                    tr("%1 now exists. It was not present when this document was created.")
+                        .arg(doc.path) });
+            }
+            const QDir targetDirectory(QFileInfo(doc.path).absolutePath());
+            if (!doc.isOverlay && targetDirectory.exists()
+                && !targetDirectory
+                        .entryList(QDir::AllEntries | QDir::NoDotAndDotDot)
+                        .isEmpty()) {
+                return std::unexpected(SaveError { SaveError::Kind::Conflict, doc.path,
+                    tr("%1 is no longer empty. OPE will not silently reuse it.")
+                        .arg(targetDirectory.absolutePath()) });
+            }
+        } else if (!disk.open(QIODevice::ReadOnly)) {
+            return std::unexpected(SaveError { SaveError::Kind::Conflict, doc.path,
+                tr("%1 was deleted, moved, or made unreadable after it was opened.")
+                    .arg(doc.path) });
+        } else if (disk.readAll() != doc.originalBytes) {
+            return std::unexpected(SaveError { SaveError::Kind::Conflict, doc.path,
+                tr("%1 changed on disk after it was opened.").arg(doc.path) });
+        }
+    }
+
+    const QByteArray bytes = newFile ? io::serializeFresh(doc) : io::serialize(doc);
+    if (!toml::parse(bytes)) {
+        return std::unexpected(SaveError { SaveError::Kind::Io, doc.path,
+            tr("The generated TOML did not parse, so nothing was written.") });
+    }
+
+    const QString directory = QFileInfo(doc.path).absolutePath();
+    const bool directoryExisted = QDir(directory).exists();
+    if (!directoryExisted && !QDir().mkpath(directory)) {
+        return std::unexpected(SaveError { SaveError::Kind::Io, doc.path,
+            tr("Could not create %1").arg(directory) });
+    }
     if (auto written = io::writeAtomically(doc.path, bytes); !written)
-        return std::unexpected(written.error());
+    {
+        if (!directoryExisted)
+            QDir().rmdir(directory);
+        return std::unexpected(
+            SaveError { SaveError::Kind::Io, doc.path, written.error() });
+    }
 
     // Re-read so spans point at the bytes now on disk; otherwise the next save
     // would splice against stale offsets.
     auto reloaded = io::load(doc.path);
-    if (reloaded) {
-        const QString language = doc.language;
-        reloaded->language = language;
-        m_documents.insert(language, *reloaded);
-    } else {
-        doc.markClean();
+    if (!reloaded) {
+        return std::unexpected(SaveError { SaveError::Kind::Reload, doc.path,
+            tr("%1 was written, but could not be reloaded: %2. The document remains marked "
+               "unsaved so it cannot be silently discarded.")
+                .arg(doc.path, reloaded.error().formatted()) });
     }
-    m_isNewFile = false;
-    m_undo.setClean();
+    reloaded->language = language;
+    m_documents.insert(language, *reloaded);
+    m_newFiles.remove(language);
+    // Snapshot commands retain the byte spans that were current when they were
+    // created. Once the file has been rewritten those spans are no longer a
+    // safe baseline for an undo followed by another save, so start a fresh
+    // history at the successfully reloaded document.
+    ensureUndoStack(language)->clear();
     refresh();
     Q_EMIT documentChanged();
     Q_EMIT dirtyChanged();
@@ -227,19 +344,36 @@ std::expected<void, QString> Session::save()
 void Session::mutate(
     const QString &description, const std::function<void(SongDocument &)> &mutation)
 {
-    if (!isOpen())
+    mutate(m_currentLanguage, description, mutation);
+}
+
+void Session::mutate(const QString &language, const QString &description,
+    const std::function<void(SongDocument &)> &mutation)
+{
+    auto found = m_documents.find(language);
+    if (found == m_documents.end())
         return;
-    SongDocument before = document();
-    mutation(document());
-    for (Part &part : document().parts) {
+    SongDocument before = *found;
+    mutation(*found);
+    for (Part &part : found->parts) {
         // Any edit may have changed the notation; keeping the parsed stream and
         // the text in step here means no caller has to remember to.
         if (part.notes.dirty())
             part.reparse();
         part.stream.reindex();
     }
-    SongDocument after = document();
-    m_undo.push(new SnapshotCommand(this, m_currentLanguage, std::move(before), std::move(after),
+    SongDocument after = *found;
+    const bool newFile = m_newFiles.contains(language);
+    const QByteArray beforeBytes
+        = newFile ? io::serializeFresh(before) : io::serialize(before);
+    const QByteArray afterBytes
+        = newFile ? io::serializeFresh(after) : io::serialize(after);
+    if (beforeBytes == afterBytes) {
+        *found = std::move(before);
+        return;
+    }
+    ensureUndoStack(language)->push(new SnapshotCommand(this, language,
+        std::move(before), std::move(after),
         description));
     refresh();
     Q_EMIT documentChanged();
@@ -249,11 +383,35 @@ void Session::mutate(
 void Session::restore(const QString &language, const SongDocument &document)
 {
     m_documents.insert(language, document);
-    if (m_currentLanguage != language)
-        m_currentLanguage = language;
     refresh();
     Q_EMIT documentChanged();
     Q_EMIT dirtyChanged();
+}
+
+QUndoStack *Session::ensureUndoStack(const QString &language)
+{
+    if (QUndoStack *existing = m_undoStacks.value(language, nullptr))
+        return existing;
+    auto *stack = new QUndoStack(this);
+    m_undoStacks.insert(language, stack);
+    m_undoGroup.addStack(stack);
+    connect(stack, &QUndoStack::cleanChanged, this, [this](bool) { Q_EMIT dirtyChanged(); });
+    return stack;
+}
+
+SongDocument Session::effectiveDocument(const QString &language) const
+{
+    const SongDocument *current = document(language);
+    const SongDocument *base = baseDocument();
+    if (!current)
+        return {};
+    return current->isOverlay && base ? mergeOverlay(*base, *current) : *current;
+}
+
+QList<Finding> Session::findings(const QString &language) const
+{
+    const SongDocument effective = effectiveDocument(language);
+    return validate(effective, i18n::isKnown(language), m_baseLanguage);
 }
 
 void Session::refresh()

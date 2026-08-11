@@ -17,6 +17,7 @@
 #include <QString>
 #include <QStringList>
 
+#include <array>
 #include <optional>
 
 namespace ope {
@@ -36,6 +37,16 @@ inline constexpr int SixtyFourth = 3;
 
 /// Phrase-break strings count 64ths (quarter = 16). Three internal ticks each.
 inline constexpr int PerPhraseTick = 3;
+inline constexpr std::array<int, 7> TimeSignatureDenominators { 1, 2, 4, 8, 16, 32, 64 };
+
+[[nodiscard]] constexpr bool isSupportedTimeSignatureDenominator(int denominator) noexcept
+{
+    for (const int supported : TimeSignatureDenominators) {
+        if (denominator == supported)
+            return true;
+    }
+    return false;
+}
 
 [[nodiscard]] constexpr int toPhraseTicks(int internal) noexcept
 {
@@ -52,6 +63,8 @@ inline constexpr int PerPhraseTick = 3;
         : denominator == 4            ? Quarter
         : denominator == 8            ? Eighth
         : denominator == 16           ? Sixteenth
+        : denominator == 32           ? ThirtySecond
+        : denominator == 64           ? SixtyFourth
                                       : Quarter;
     return unit * numerator;
 }

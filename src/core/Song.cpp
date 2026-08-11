@@ -734,8 +734,8 @@ QByteArray emitTimeSigChanges(const QList<TimeSigChange> &changes)
 QByteArray serialize(const SongDocument &doc)
 {
     // A merged view mixes spans from two files; writing it would splice the
-    // overlay's bytes at the base file's offsets.
-    Q_ASSERT_X(!doc.isMergedView, "io::serialize", "refusing to write a merged overlay view");
+    // overlay's bytes at the base file's offsets. Refuse identically in Debug
+    // and Release; an assertion here used to abort the Debug regression suite.
     if (doc.isMergedView)
         return doc.originalBytes;
 
@@ -792,12 +792,24 @@ QByteArray serialize(const SongDocument &doc)
             true, doc.copyrights.span(), emitted);
     }
 
-    if (doc.timeSigChanges.dirty() && doc.timeSigChanges.present()) {
-        if (doc.timeSigChanges.span().isValid())
-            edit.replace(doc.timeSigChanges.span(), emitTimeSigChanges(*doc.timeSigChanges));
-        else
-            edit.insert(doc.originalBytes.size(), "\n" + emitTimeSigChanges(*doc.timeSigChanges)
-                    + "\n");
+    if (doc.timeSigChanges.dirty()) {
+        if (doc.timeSigChanges.present()) {
+            if (doc.timeSigChanges.span().isValid()) {
+                edit.replace(doc.timeSigChanges.span(), emitTimeSigChanges(*doc.timeSigChanges));
+            } else {
+                edit.insert(doc.originalBytes.size(),
+                    "\n" + emitTimeSigChanges(*doc.timeSigChanges) + "\n");
+            }
+        } else if (doc.timeSigChanges.span().isValid()) {
+            qsizetype from = doc.source.lineStart(doc.timeSigChanges.span().begin);
+            qsizetype to = doc.source.lineEnd(doc.timeSigChanges.span().end);
+            if (to < doc.originalBytes.size() && doc.originalBytes.at(to) == '\n')
+                ++to;
+            else if (from >= 2 && doc.originalBytes.at(from - 1) == '\n'
+                && doc.originalBytes.at(from - 2) == '\n')
+                --from;
+            edit.erase({ from, to });
+        }
     }
 
     // Parts.

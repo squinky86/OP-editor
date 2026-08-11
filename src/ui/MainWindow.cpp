@@ -19,6 +19,7 @@
 #include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QSettings>
 #include <QStatusBar>
 #include <QTabBar>
@@ -53,7 +54,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_session(this), 
         m_statusSummary->setText(m_problems->summary());
     });
     connect(&m_session, &Session::dirtyChanged, this, &MainWindow::updateWindowTitle);
+    connect(&m_session, &Session::dirtyChanged, this, &MainWindow::updateLanguageTabs);
     connect(&m_session, &Session::languageChanged, this, &MainWindow::updateLanguageTabs);
+    const auto pendingChanged = [this](bool) {
+        updateWindowTitle();
+        updateLanguageTabs();
+    };
+    connect(m_header, &HeaderPanel::pendingEditsChanged, this, pendingChanged);
+    connect(m_lyrics, &LyricsPanel::pendingEditsChanged, this, pendingChanged);
 
     connect(&m_audio, &audio::AudioEngine::positionChanged, this, [this](double seconds) {
         m_transport->setPosition(seconds, m_audio.duration());
@@ -73,6 +81,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_session(this), 
     // The score is the point of the window; the two side docks get what they
     // need to be readable and no more.
     resizeDocks({ m_browserDock, m_songDock }, { 270, 330 }, Qt::Horizontal);
+    resizeDocks({ m_problemsDock }, { 170 }, Qt::Vertical);
 }
 
 void MainWindow::buildLayout()
@@ -128,10 +137,10 @@ void MainWindow::buildLayout()
     m_songDock->raise();
 
     m_problems = new ProblemsPanel(&m_session, this);
-    auto *problemsDock = new QDockWidget(tr("Problems"), this);
-    problemsDock->setObjectName(QStringLiteral("problemsDock"));
-    problemsDock->setWidget(m_problems);
-    addDockWidget(Qt::BottomDockWidgetArea, problemsDock);
+    m_problemsDock = new QDockWidget(tr("Problems"), this);
+    m_problemsDock->setObjectName(QStringLiteral("problemsDock"));
+    m_problemsDock->setWidget(m_problems);
+    addDockWidget(Qt::BottomDockWidgetArea, m_problemsDock);
 
     m_statusSummary = new QLabel(this);
     statusBar()->addPermanentWidget(m_statusSummary);
@@ -148,7 +157,7 @@ void MainWindow::buildLayout()
 
     connect(m_transport, &TransportBar::playRequested, this, [this] {
         refreshPlaybackPlan();
-        m_audio.play(0.0);
+        m_audio.resume();
     });
     connect(m_transport, &TransportBar::pauseRequested, this, [this] { m_audio.pause(); });
     connect(m_transport, &TransportBar::stopRequested, this, [this] {
@@ -166,8 +175,12 @@ void MainWindow::buildLayout()
         if (index < 0)
             return;
         const QString code = m_languageTabs->tabBar()->tabData(index).toString();
-        if (!code.isEmpty())
+        if (!code.isEmpty()) {
+            // The widgets still belong to the old language at this point. Land
+            // their drafts there before changing the session's identity.
+            flushPendingEdits();
             m_session.setCurrentLanguage(code);
+        }
     });
 }
 
@@ -180,7 +193,9 @@ void MainWindow::buildMenus()
     fileMenu->addAction(tr("&New Song…"), QKeySequence::New, this, &MainWindow::newSong);
     fileMenu->addAction(tr("Add &Translation…"), this, &MainWindow::addTranslation);
     fileMenu->addSeparator();
-    fileMenu->addAction(tr("&Save"), QKeySequence::Save, this, &MainWindow::save);
+    fileMenu->addAction(tr("&Save Current"), QKeySequence::Save, this, &MainWindow::save);
+    fileMenu->addAction(tr("Save &All"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S), this,
+        [this] { (void)saveAll(); });
     fileMenu->addAction(tr("&Reload from Disk"), this, &MainWindow::reloadFromDisk);
     fileMenu->addSeparator();
     fileMenu->addAction(tr("&Preferences…"), this, &MainWindow::editPreferences);
@@ -188,10 +203,30 @@ void MainWindow::buildMenus()
     fileMenu->addAction(tr("E&xit"), QKeySequence::Quit, this, &QWidget::close);
 
     auto *editMenu = menuBar()->addMenu(tr("&Edit"));
-    QAction *undo = m_session.undoStack()->createUndoAction(this, tr("&Undo"));
+    QAction *undo = new QAction(tr("&Undo"), this);
     undo->setShortcut(QKeySequence::Undo);
-    QAction *redo = m_session.undoStack()->createRedoAction(this, tr("&Redo"));
+    undo->setEnabled(false);
+    connect(undo, &QAction::triggered, this, [this] {
+        flushPendingEdits();
+        m_session.undoGroup()->undo();
+    });
+    connect(m_session.undoGroup(), &QUndoGroup::canUndoChanged, undo, &QAction::setEnabled);
+    connect(m_session.undoGroup(), &QUndoGroup::undoTextChanged, undo,
+        [this, undo](const QString &text) {
+            undo->setText(text.isEmpty() ? tr("&Undo") : tr("&Undo %1").arg(text));
+        });
+    QAction *redo = new QAction(tr("&Redo"), this);
     redo->setShortcut(QKeySequence::Redo);
+    redo->setEnabled(false);
+    connect(redo, &QAction::triggered, this, [this] {
+        flushPendingEdits();
+        m_session.undoGroup()->redo();
+    });
+    connect(m_session.undoGroup(), &QUndoGroup::canRedoChanged, redo, &QAction::setEnabled);
+    connect(m_session.undoGroup(), &QUndoGroup::redoTextChanged, redo,
+        [this, redo](const QString &text) {
+            redo->setText(text.isEmpty() ? tr("&Redo") : tr("&Redo %1").arg(text));
+        });
     editMenu->addAction(undo);
     editMenu->addAction(redo);
 
@@ -224,12 +259,34 @@ void MainWindow::buildMenus()
             m_audio.pause();
         } else {
             refreshPlaybackPlan();
-            m_audio.play(0.0);
+            m_audio.resume();
         }
     });
     playMenu->addAction(tr("&Stop"), this, [this] { m_audio.stop(); });
 
     auto *helpMenu = menuBar()->addMenu(tr("&Help"));
+    helpMenu->addAction(tr("&TOML Field Reference"), this, [this] {
+        QMessageBox box(this);
+        box.setWindowTitle(tr("TOML Field Reference"));
+        box.setIcon(QMessageBox::Information);
+        box.setText(tr("Every field used by the current OpenPsalm corpus has an editing "
+                       "surface in OPE."));
+        box.setInformativeText(tr(
+            "<b>Song dock</b><br>title, subtitle, active, copyrights, key_signature, "
+            "time_sig_numerator, time_sig_denominator, tempo_bpm, verse_count, "
+            "converge_verses, commentary, and [[time_sig_changes]].<br><br>"
+            "<b>Score and Lyrics tabs</b><br>notes, text, phrase_breaks, "
+            "optional_phrase_breaks, and non_breaking_phrase_breaks.<br><br>"
+            "<b>Inspector dock</b><br>choral_type, clef, staff_number, "
+            "splice_lyrics_into, suppress_verses, and suppress_verses_when.<br><br>"
+            "<b>Translations</b><br>File → Add Translation creates song_LANG.toml safely. "
+            "The language is its filename suffix.<br><br>"
+            "For a future or advanced field OPE does not yet model, use Source → Open "
+            "file in text editor. Unknown TOML is preserved byte-for-byte, and OPE "
+            "detects external changes before saving."));
+        box.setStandardButtons(QMessageBox::Ok);
+        box.exec();
+    });
     helpMenu->addAction(tr("&Keyboard Reference"), this, [this] {
         QMessageBox::information(this, tr("Keyboard Reference"),
             tr("<b>In the score</b><br>"
@@ -263,7 +320,7 @@ void MainWindow::updateWindowTitle()
         const QString name = QFileInfo(doc.path).fileName();
         title = QStringLiteral("%1 — %2 [%3]%4")
                     .arg(doc.title.valueOr(tr("(untitled)")), name, m_session.currentLanguage(),
-                        m_session.isDirty() ? QStringLiteral(" •") : QString());
+                        hasUnsavedWork() ? QStringLiteral(" •") : QString());
     }
     setWindowTitle(title);
 }
@@ -276,7 +333,12 @@ void MainWindow::updateLanguageTabs()
     const QStringList languages = m_session.languages();
     for (const QString &code : languages) {
         const LanguageInfo *info = i18n::lookup(code);
-        const QString label = info ? QStringLiteral("%1 (%2)").arg(info->nativeName, code) : code;
+        QString label = info ? QStringLiteral("%1 (%2)").arg(info->nativeName, code) : code;
+        const bool pending = code == m_session.currentLanguage()
+            && ((m_header && m_header->hasPendingEdits())
+                || (m_lyrics && m_lyrics->hasPendingEdits()));
+        if (m_session.isDirty(code) || pending)
+            label.append(QStringLiteral(" •"));
         const int index = m_languageTabs->addTab(new QWidget(m_languageTabs), label);
         m_languageTabs->tabBar()->setTabData(index, code);
         if (code == m_session.currentLanguage())
@@ -324,7 +386,8 @@ void MainWindow::openPath(const QString &path)
     m_planStale = true;
     updateLanguageTabs();
     updateWindowTitle();
-    m_browser->showCurrent(path);
+    m_browser->showCurrent(m_session.baseDocument() ? m_session.baseDocument()->path
+                                                    : m_session.currentPath());
     updateTransportDuration();
     statusBar()->showMessage(tr("Opened %1").arg(path), 4000);
 }
@@ -363,12 +426,17 @@ void MainWindow::newSong()
         return;
 
     const QString path = dialog.targetPath();
-    if (QFileInfo::exists(path)) {
+    const QFileInfo target(path);
+    const QDir targetDirectory(target.path());
+    if (target.exists()
+        || (targetDirectory.exists()
+            && !targetDirectory.entryList(QDir::AllEntries | QDir::NoDotAndDotDot).isEmpty())) {
         QMessageBox::warning(this, tr("New Song"),
-            tr("%1 already exists. Pick a different song number.").arg(path));
+            tr("%1 is already in use. Pick a different song number; OPE will not reuse a "
+               "non-empty directory.")
+                .arg(target.path()));
         return;
     }
-    QDir().mkpath(QFileInfo(path).path());
     m_session.adoptNewDocument(dialog.buildDocument());
     updateLanguageTabs();
     updateTransportDuration();
@@ -387,13 +455,6 @@ void MainWindow::addTranslation()
             tr("Translations are added to a base song.toml."));
         return;
     }
-    if (m_session.isDirty()) {
-        QMessageBox::information(this, tr("Add Translation"),
-            tr("Save the current changes first — a new translation is written beside the "
-               "song on disk."));
-        return;
-    }
-
     TranslationDialog dialog(*base, m_session.languages(), this);
     if (dialog.exec() != QDialog::Accepted)
         return;
@@ -402,36 +463,31 @@ void MainWindow::addTranslation()
         return;
 
     SongDocument overlay = dialog.buildOverlay();
-    const QByteArray bytes = io::serializeFresh(overlay);
-    if (auto written = io::writeAtomically(overlay.path, bytes); !written) {
+    if (!m_session.adoptNewOverlay(std::move(overlay))) {
         QMessageBox::critical(this, tr("Add Translation"),
-            tr("Could not write %1: %2").arg(overlay.path, written.error()));
+            tr("That language is already open. No file was written."));
         return;
     }
-    openPath(base->path);
-    m_session.setCurrentLanguage(code);
     updateLanguageTabs();
-    statusBar()->showMessage(tr("Created %1").arg(overlay.path), 6000);
+    statusBar()->showMessage(
+        tr("Translation ready — nothing is written until you save."), 6000);
 }
 
 void MainWindow::save()
 {
     if (!m_session.isOpen())
         return;
+    flushPendingEdits();
+    (void)saveLanguage(m_session.currentLanguage());
+}
 
-    // Land everything the user has typed but not yet left. The header's
-    // copyright and commentary boxes commit on focus-out and the lyric boxes on
-    // a 600 ms debounce; Ctrl+S is a shortcut, so it moves no focus and beats
-    // the timer. Without this the edit is not in the document when it is
-    // written, and the refresh that follows the save overwrites the box with
-    // the value that was saved — the text vanishes in front of the user.
-    m_header->commitPendingEdits();
-    m_lyrics->commitPendingEdits();
-
-    const int errors = countBySeverity(m_session.findings(), Severity::Error);
+bool MainWindow::confirmSaveWithErrors(const QString &language)
+{
+    const QList<Finding> findings = m_session.findings(language);
+    const int errors = countBySeverity(findings, Severity::Error);
     if (errors > 0) {
         QStringList firstFew;
-        for (const Finding &finding : m_session.findings()) {
+        for (const Finding &finding : findings) {
             if (finding.severity != Severity::Error)
                 continue;
             firstFew.append(QStringLiteral("• %1").arg(finding.formatted()));
@@ -448,19 +504,60 @@ void MainWindow::save()
         box.setDefaultButton(QMessageBox::Cancel);
         box.button(QMessageBox::Save)->setText(tr("Save anyway"));
         if (box.exec() != QMessageBox::Save)
-            return;
+            return false;
     }
+    return true;
+}
 
-    if (auto saved = m_session.save(); !saved) {
-        QMessageBox::critical(this, tr("Save failed"), saved.error());
-        return;
+bool MainWindow::saveLanguage(const QString &language)
+{
+    if (!m_session.isDirty(language))
+        return true;
+    if (!confirmSaveWithErrors(language))
+        return false;
+
+    const SongDocument *before = m_session.document(language);
+    const QString path = before ? before->path : QString();
+    auto saved = m_session.save(language);
+    if (!saved && saved.error().kind == Session::SaveError::Kind::Conflict) {
+        QMessageBox box(this);
+        box.setIcon(QMessageBox::Warning);
+        box.setWindowTitle(tr("File changed on disk"));
+        box.setText(saved.error().message);
+        box.setInformativeText(tr("Overwrite only if you are sure the disk changes are no "
+                                  "longer needed. Cancel, reload, and compare otherwise."));
+        auto *overwrite = box.addButton(tr("Overwrite disk changes"), QMessageBox::DestructiveRole);
+        box.addButton(QMessageBox::Cancel);
+        box.setDefaultButton(QMessageBox::Cancel);
+        box.exec();
+        if (box.clickedButton() != overwrite)
+            return false;
+        saved = m_session.save(language, true);
     }
-    statusBar()->showMessage(tr("Saved %1").arg(m_session.currentPath()), 4000);
+    if (!saved) {
+        QMessageBox::critical(this, tr("Save failed"), saved.error().message);
+        return false;
+    }
+    statusBar()->showMessage(tr("Saved %1").arg(path), 4000);
     updateWindowTitle();
     // A new song only exists in the list once it has been written.
     m_browser->refresh();
     m_browser->showCurrent(m_session.baseDocument() ? m_session.baseDocument()->path
                                                     : m_session.currentPath());
+    return true;
+}
+
+bool MainWindow::saveAll()
+{
+    if (!m_session.isOpen())
+        return true;
+    flushPendingEdits();
+    const QStringList dirty = m_session.dirtyLanguages();
+    for (const QString &language : dirty) {
+        if (!saveLanguage(language))
+            return false;
+    }
+    return true;
 }
 
 void MainWindow::reloadFromDisk()
@@ -469,9 +566,22 @@ void MainWindow::reloadFromDisk()
         return;
     if (!confirmDiscard())
         return;
-    const SongDocument *base = m_session.baseDocument();
-    const QString path = base ? base->path : m_session.currentPath();
-    openPath(path);
+    // Use the current overlay path when applicable so Session reselects the
+    // same language after normalizing it to the sibling song.toml.
+    const QString path = m_session.currentPath();
+    if (auto opened = m_session.openSong(path); !opened) {
+        // openSong loads the replacement family before closing this one, so a
+        // failed reload leaves the in-memory edits available for recovery.
+        showParseError(this, opened.error());
+        return;
+    }
+    m_planStale = true;
+    updateLanguageTabs();
+    updateWindowTitle();
+    updateTransportDuration();
+    m_browser->showCurrent(m_session.baseDocument() ? m_session.baseDocument()->path
+                                                    : m_session.currentPath());
+    statusBar()->showMessage(tr("Reloaded %1").arg(path), 4000);
 }
 
 void MainWindow::editPreferences()
@@ -493,20 +603,39 @@ void MainWindow::editPreferences()
 
 bool MainWindow::confirmDiscard()
 {
+    flushPendingEdits();
     if (!m_session.isDirty())
         return true;
+    QStringList files;
+    for (const QString &language : m_session.dirtyLanguages()) {
+        if (const SongDocument *doc = m_session.document(language))
+            files.append(QFileInfo(doc->path).fileName());
+    }
     const QMessageBox::StandardButton answer = QMessageBox::question(this,
         tr("Unsaved changes"),
-        tr("%1 has unsaved changes. Save before continuing?")
-            .arg(QFileInfo(m_session.currentPath()).fileName()),
+        tr("These files have unsaved changes:\n\n%1\n\nSave all before continuing?")
+            .arg(files.join(u'\n')),
         QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
     if (answer == QMessageBox::Cancel)
         return false;
     if (answer == QMessageBox::Save) {
-        save();
-        return !m_session.isDirty();
+        return saveAll() && !m_session.isDirty();
     }
     return true;
+}
+
+void MainWindow::flushPendingEdits()
+{
+    if (m_header)
+        m_header->commitPendingEdits();
+    if (m_lyrics)
+        m_lyrics->commitPendingEdits();
+}
+
+bool MainWindow::hasUnsavedWork() const
+{
+    return m_session.isDirty() || (m_header && m_header->hasPendingEdits())
+        || (m_lyrics && m_lyrics->hasPendingEdits());
 }
 
 void MainWindow::navigateTo(const Finding &finding)

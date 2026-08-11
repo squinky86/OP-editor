@@ -31,9 +31,19 @@ The design and the reasoning behind it are in [OPE.md](OPE.md).
 - **Keeps diffs honest.** Saving a song rewrites only the bytes you changed.
   Opening and saving any of the 200-plus songs in OP-songs without editing
   produces a byte-identical file; this is enforced by a test.
+- **Refuses silent overwrites.** If a file changed on disk after it was opened,
+  OPE stops before saving and requires an explicit decision. Each translation
+  has its own dirty marker and undo history, with separate Save Current and Save
+  All actions.
 
 It does not export anything. MusicXML, LilyPond, PDF, MIDI files, and slides
 stay with the website; this program edits the source of truth.
+
+Every TOML field used by the current corpus is available through the Song and
+Inspector docks, Score or Lyrics tabs, and translation workflow. Help ▸ TOML
+Field Reference maps exact TOML names to those controls. The Source tab previews
+the exact bytes that will be written and can open the file in a system text
+editor for advanced or newly introduced fields; unknown TOML remains untouched.
 
 ## Building
 
@@ -129,6 +139,14 @@ Anywhere:
 
 ```sh
 cd build && ctest --output-on-failure
+```
+
+For the release sanitizer gate:
+
+```sh
+cmake -S . -B build-sanitize -DCMAKE_BUILD_TYPE=Debug -DOPE_ENABLE_SANITIZERS=ON
+cmake --build build-sanitize -j
+ASAN_OPTIONS=detect_leaks=0 ctest --test-dir build-sanitize --output-on-failure
 ```
 
 `FormatTests` and `DocumentTests` are ports of the unit tests in OpenPsalm's

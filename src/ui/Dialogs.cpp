@@ -19,6 +19,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -35,6 +36,51 @@ QString arrangementLine()
     return QStringLiteral(
         "Arrangement by OpenPsalm, %1 and released under the CC-BY 4.0 license")
         .arg(CurrentYear);
+}
+
+QString normalizeLanguageCode(QString code)
+{
+    code = code.section(u' ', 0, 0).trimmed();
+    QStringList pieces = code.split(u'-');
+    if (pieces.isEmpty())
+        return {};
+    pieces[0] = pieces[0].toLower();
+    for (qsizetype i = 1; i < pieces.size(); ++i) {
+        if (pieces.at(i).size() == 2
+            && std::all_of(pieces.at(i).begin(), pieces.at(i).end(),
+                [](QChar c) { return c.isLetter(); })) {
+            pieces[i] = pieces.at(i).toUpper();
+        } else if (pieces.at(i).size() == 4
+            && std::all_of(pieces.at(i).begin(), pieces.at(i).end(),
+                [](QChar c) { return c.isLetter(); })) {
+            pieces[i] = pieces.at(i).toLower();
+            pieces[i][0] = pieces.at(i).front().toUpper();
+        } else {
+            pieces[i] = pieces.at(i).toLower();
+        }
+    }
+    return pieces.join(u'-');
+}
+
+bool isSafeLanguageCode(const QString &code)
+{
+    static const QRegularExpression safe(
+        QStringLiteral("^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$"));
+    return safe.match(code).hasMatch();
+}
+
+QComboBox *makeDenominatorBox(QWidget *parent, int value)
+{
+    auto *box = new QComboBox(parent);
+    for (const int denominator : ticks::TimeSignatureDenominators)
+        box->addItem(QString::number(denominator), denominator);
+    int index = box->findData(value);
+    if (index < 0) {
+        box->addItem(QObject::tr("%1 (unsupported)").arg(value), value);
+        index = box->count() - 1;
+    }
+    box->setCurrentIndex(index);
+    return box;
 }
 
 } // namespace
@@ -58,9 +104,7 @@ NewSongDialog::NewSongDialog(Library *library, QWidget *parent)
     m_numerator = new QSpinBox(this);
     m_numerator->setRange(1, 32);
     m_numerator->setValue(4);
-    m_denominator = new QSpinBox(this);
-    m_denominator->setRange(1, 32);
-    m_denominator->setValue(4);
+    m_denominator = makeDenominatorBox(this, 4);
     m_tempo = new QSpinBox(this);
     m_tempo->setRange(20, 300);
     m_tempo->setValue(100);
@@ -128,7 +172,7 @@ SongDocument NewSongDialog::buildDocument() const
         doc.subtitle.set(m_subtitle->text());
     doc.keySignature.set(m_key->currentText());
     doc.timeSigNumerator.set(m_numerator->value());
-    doc.timeSigDenominator.set(m_denominator->value());
+    doc.timeSigDenominator.set(m_denominator->currentData().toInt());
     doc.tempoBpm.set(m_tempo->value());
     doc.verseCount.set(m_verses->value());
 
@@ -143,7 +187,7 @@ SongDocument NewSongDialog::buildDocument() const
     // Fill each measure with one rest of the whole measure's value where the
     // metre allows it, so every measure sums correctly from the start.
     const int measureTicks
-        = ticks::forTimeSignature(m_numerator->value(), m_denominator->value());
+        = ticks::forTimeSignature(m_numerator->value(), m_denominator->currentData().toInt());
     QStringList measures;
     for (int m = 0; m < m_measures->value(); ++m) {
         QStringList tokens;
@@ -245,21 +289,23 @@ TranslationDialog::TranslationDialog(
     layout->addRow(rule);
     layout->addRow(m_warning);
 
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
-    layout->addRow(buttons);
-    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    m_buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+    layout->addRow(m_buttons);
+    connect(m_buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(m_buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     connect(m_language, &QComboBox::currentTextChanged, this, &TranslationDialog::updateWarning);
     updateWarning();
 }
 
 QString TranslationDialog::languageCode() const
 {
+    const int index = m_language->currentIndex();
     const QString selected = m_language->currentData().toString();
-    if (!selected.isEmpty())
+    if (index >= 0 && m_language->currentText() == m_language->itemText(index)
+        && !selected.isEmpty())
         return selected;
     // An edited entry: take the code before any separator the user left in.
-    return m_language->currentText().section(u' ', 0, 0).trimmed();
+    return normalizeLanguageCode(m_language->currentText());
 }
 
 bool TranslationDialog::copyBaseVerses() const { return m_copyVerses->isChecked(); }
@@ -267,11 +313,21 @@ bool TranslationDialog::copyBaseVerses() const { return m_copyVerses->isChecked(
 void TranslationDialog::updateWarning()
 {
     const QString code = languageCode();
+    const bool safe = isSafeLanguageCode(code);
+    const bool duplicate = m_existing.contains(code, Qt::CaseInsensitive);
+    m_buttons->button(QDialogButtonBox::Ok)->setEnabled(safe && !duplicate);
     if (code.isEmpty()) {
-        m_warning->clear();
+        m_warning->setText(tr("Choose a language code."));
+        m_warning->setStyleSheet(QStringLiteral("color: #d1242f;"));
         return;
     }
-    if (m_existing.contains(code)) {
+    if (!safe) {
+        m_warning->setText(tr("Use a safe BCP-47 code such as es, de, pt-BR, or zh-Hant. "
+                              "Spaces, dots, slashes, and underscores are not allowed."));
+        m_warning->setStyleSheet(QStringLiteral("color: #d1242f;"));
+        return;
+    }
+    if (duplicate) {
         m_warning->setText(tr("This song already has a %1 translation.").arg(code));
         m_warning->setStyleSheet(QStringLiteral("color: #d1242f;"));
         return;
@@ -398,7 +454,7 @@ void TimeSigChangesDialog::addRow(const TimeSigChange &change)
     };
     m_table->setCellWidget(row, 0, spin(change.measure, 1, std::max(1, m_measureCount)));
     m_table->setCellWidget(row, 1, spin(change.numerator, 1, 32));
-    m_table->setCellWidget(row, 2, spin(change.denominator, 1, 32));
+    m_table->setCellWidget(row, 2, makeDenominatorBox(m_table, change.denominator));
     m_table->setCellWidget(row, 3, spin(change.duration, 1, std::max(1, m_measureCount)));
 }
 
@@ -406,11 +462,14 @@ QList<TimeSigChange> TimeSigChangesDialog::changes() const
 {
     QList<TimeSigChange> out;
     for (int row = 0; row < m_table->rowCount(); ++row) {
-        const auto value = [this, row](int column) {
+        const auto spinValue = [this, row](int column) {
             const auto *box = qobject_cast<QSpinBox *>(m_table->cellWidget(row, column));
             return box ? box->value() : 1;
         };
-        out.append(TimeSigChange { value(0), value(1), value(2), value(3) });
+        const auto *denominator
+            = qobject_cast<QComboBox *>(m_table->cellWidget(row, 2));
+        out.append(TimeSigChange { spinValue(0), spinValue(1),
+            denominator ? denominator->currentData().toInt() : 4, spinValue(3) });
     }
     return out;
 }

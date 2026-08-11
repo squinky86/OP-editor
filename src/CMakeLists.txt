@@ -46,4 +46,4 @@ target_link_libraries(ope PRIVATE
 )
 set_target_properties(ope PROPERTIES WIN32_EXECUTABLE OFF MACOSX_BUNDLE OFF OUTPUT_NAME ope)
 
-install(TARGETS ope ope-check RUNTIME DESTINATION bin)
+install(TARGETS ope ope-check RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

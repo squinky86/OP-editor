@@ -44,9 +44,14 @@ void Synth::reset(double startSeconds)
     m_frame = static_cast<qint64>(startSeconds * SampleRate);
     m_finished = false;
     m_nextNote = 0;
+    // Recreate notes that began before a paused playhead but are still
+    // sounding. Skipping them made Resume silent until the next note onset.
     while (m_nextNote < m_plan.notes.size()
-        && m_plan.notes.at(m_nextNote).startSeconds < startSeconds)
+        && m_plan.notes.at(m_nextNote).startSeconds < startSeconds) {
+        if (m_plan.notes.at(m_nextNote).endSeconds > startSeconds)
+            startVoice(m_plan.notes.at(m_nextNote));
         ++m_nextNote;
+    }
 }
 
 void Synth::startVoice(const PlaybackNote &note)

@@ -45,6 +45,9 @@ public:
     [[nodiscard]] const PlaybackPlan &plan() const noexcept { return m_plan; }
 
     void play(double fromSeconds = 0.0);
+    /// Continue from the paused playhead, or start from the beginning after a
+    /// stop or plan change.
+    void resume();
     void pause();
     void stop();
     [[nodiscard]] bool isPlaying() const;

@@ -15,6 +15,8 @@
 
 #include <QHash>
 #include <QObject>
+#include <QSet>
+#include <QUndoGroup>
 #include <QUndoStack>
 
 namespace ope {
@@ -41,6 +43,9 @@ public:
     /// Adopt an in-memory document (the new-song wizard's output). `path` is
     /// where it will be written.
     void adoptNewDocument(SongDocument document);
+    /// Add an in-memory translation without touching disk. It follows the same
+    /// save, undo, and discard rules as an existing language document.
+    [[nodiscard]] bool adoptNewOverlay(SongDocument document);
     void close();
 
     [[nodiscard]] bool isOpen() const noexcept { return !m_languages.isEmpty(); }
@@ -50,12 +55,15 @@ public:
 
     [[nodiscard]] SongDocument &document();
     [[nodiscard]] const SongDocument &document() const;
+    [[nodiscard]] const SongDocument *document(const QString &language) const;
     /// The document as the seeder sees it: an overlay merged onto its base.
     [[nodiscard]] const SongDocument &effectiveDocument() const;
     [[nodiscard]] const SongDocument *baseDocument() const;
 
-    [[nodiscard]] QUndoStack *undoStack() noexcept { return &m_undo; }
+    [[nodiscard]] QUndoStack *undoStack() noexcept;
+    [[nodiscard]] QUndoGroup *undoGroup() noexcept { return &m_undoGroup; }
     [[nodiscard]] const QList<Finding> &findings() const noexcept { return m_findings; }
+    [[nodiscard]] QList<Finding> findings(const QString &language) const;
     [[nodiscard]] const PartAlignment &alignment(const QString &partName) const;
 
     [[nodiscard]] Selection selection() const noexcept { return m_selection; }
@@ -63,13 +71,35 @@ public:
     [[nodiscard]] const Event *selectedEvent() const;
 
     [[nodiscard]] bool isDirty() const;
+    [[nodiscard]] bool isDirty(const QString &language) const;
+    [[nodiscard]] QStringList dirtyLanguages() const;
     [[nodiscard]] QString currentPath() const;
-    [[nodiscard]] bool isNewFile() const noexcept { return m_isNewFile; }
-    [[nodiscard]] std::expected<void, QString> save();
+    [[nodiscard]] bool isNewFile() const noexcept { return isNewFile(m_currentLanguage); }
+    [[nodiscard]] bool isNewFile(const QString &language) const noexcept;
+
+    struct SaveError {
+        enum class Kind { Conflict, Io, Reload };
+        Kind kind = Kind::Io;
+        QString path;
+        QString message;
+    };
+
+    /// Save one authored file. Unless `overwriteExternalChanges` is true, the
+    /// exact disk bytes must still match what was opened.
+    [[nodiscard]] std::expected<void, SaveError> save(
+        const QString &language, bool overwriteExternalChanges = false);
+    [[nodiscard]] std::expected<void, SaveError> save(bool overwriteExternalChanges = false)
+    {
+        return save(m_currentLanguage, overwriteExternalChanges);
+    }
 
     /// Apply a mutation as one undo step. `mutate` receives the live document;
     /// the session snapshots around it, re-parses, and revalidates.
     void mutate(const QString &description, const std::function<void(SongDocument &)> &mutate);
+    /// Apply a mutation to a specific document. This lets a delayed editor
+    /// commit safely to the document where typing began even after a tab switch.
+    void mutate(const QString &language, const QString &description,
+        const std::function<void(SongDocument &)> &mutate);
 
     /// Replace the document wholesale (used by undo/redo).
     void restore(const QString &language, const SongDocument &document);
@@ -97,6 +127,8 @@ Q_SIGNALS:
     void dirtyChanged();
 
 private:
+    [[nodiscard]] SongDocument effectiveDocument(const QString &language) const;
+    QUndoStack *ensureUndoStack(const QString &language);
     void refresh();
 
     QHash<QString, SongDocument> m_documents;  ///< keyed by language code
@@ -107,8 +139,9 @@ private:
     QString m_baseLanguage;
     QList<Finding> m_findings;
     Selection m_selection;
-    QUndoStack m_undo;
-    bool m_isNewFile = false;
+    QHash<QString, QUndoStack *> m_undoStacks;
+    QUndoGroup m_undoGroup;
+    QSet<QString> m_newFiles;
     PartAlignment m_emptyAlignment;
 };
 

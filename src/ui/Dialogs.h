@@ -15,6 +15,7 @@
 QT_BEGIN_NAMESPACE
 class QCheckBox;
 class QComboBox;
+class QDialogButtonBox;
 class QLabel;
 class QLineEdit;
 class QSpinBox;
@@ -39,7 +40,7 @@ private:
     QLineEdit *m_subtitle = nullptr;
     QComboBox *m_key = nullptr;
     QSpinBox *m_numerator = nullptr;
-    QSpinBox *m_denominator = nullptr;
+    QComboBox *m_denominator = nullptr;
     QSpinBox *m_tempo = nullptr;
     QSpinBox *m_verses = nullptr;
     QSpinBox *m_measures = nullptr;
@@ -70,6 +71,7 @@ private:
     QCheckBox *m_copyVerses = nullptr;
     QCheckBox *m_templateCopyrights = nullptr;
     QLabel *m_warning = nullptr;
+    QDialogButtonBox *m_buttons = nullptr;
 };
 
 /// Edits `[[time_sig_changes]]`: the measure a metre change starts at, the new

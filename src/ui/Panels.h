@@ -8,6 +8,7 @@
 
 #include "app/Session.h"
 
+#include <QSet>
 #include <QWidget>
 
 QT_BEGIN_NAMESPACE
@@ -35,6 +36,10 @@ public:
     /// or commentary line typed just before it would never reach the document
     /// and would then be wiped by the post-save refresh.
     void commitPendingEdits() { commit(); }
+    [[nodiscard]] bool hasPendingEdits() const noexcept { return m_pending; }
+
+Q_SIGNALS:
+    void pendingEditsChanged(bool pending);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -45,11 +50,12 @@ private:
 
     Session *m_session = nullptr;
     bool m_loading = false;
+    bool m_pending = false;
     QLineEdit *m_title = nullptr;
     QLineEdit *m_subtitle = nullptr;
     QComboBox *m_key = nullptr;
     QSpinBox *m_timeNumerator = nullptr;
-    QSpinBox *m_timeDenominator = nullptr;
+    QComboBox *m_timeDenominator = nullptr;
     QSpinBox *m_tempo = nullptr;
     QSpinBox *m_verseCount = nullptr;
     QCheckBox *m_active = nullptr;
@@ -113,6 +119,7 @@ private:
     Session *m_session = nullptr;
     QPlainTextEdit *m_text = nullptr;
     QLabel *m_status = nullptr;
+    QPushButton *m_openExternal = nullptr;
 };
 
 /// Play, pause, stop, verse, per-part mute, tempo override.
@@ -150,6 +157,7 @@ private:
     QComboBox *m_verse = nullptr;
     QWidget *m_partBox = nullptr;
     QList<QCheckBox *> m_partChecks;
+    QSet<QString> m_mutedParts;
     QSlider *m_tempo = nullptr;
     QLabel *m_tempoLabel = nullptr;
     QLabel *m_positionLabel = nullptr;

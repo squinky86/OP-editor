@@ -48,9 +48,11 @@ public:
     /// must call this: a keystroke followed within 600 ms by Ctrl+S would
     /// otherwise be written nowhere and then wiped by the post-save refresh.
     void commitPendingEdits();
+    [[nodiscard]] bool hasPendingEdits() const noexcept { return !m_pendingCommits.isEmpty(); }
 
 Q_SIGNALS:
     void statusMessage(const QString &message);
+    void pendingEditsChanged(bool pending);
 
 private:
     /// One editable text box: a song-wide section, or one voice's override of it.
@@ -88,7 +90,8 @@ private:
     void fillBreakRow(const PartAlignment &alignment, const Part &part);
     void clickBreakCell(int column);
     void showBreakMenu(int column, QPoint where);
-    void commitText(const QString &key, const QString &partName, const QString &text);
+    void commitText(const QString &language, const QString &key, const QString &partName,
+        const QString &text);
     void addOverride(const QString &key, const QString &partName);
     void removeOverride(const QString &key, const QString &partName);
     void addSection(const QString &key);
@@ -113,7 +116,13 @@ private:
 
     QList<EditorRef> m_editors;
     /// Typing is debounced into one undo step per pause, not one per keystroke.
-    QHash<QString, QString> m_pendingCommits;
+    struct PendingCommit {
+        QString language;
+        QString key;
+        QString partName;
+        QString text;
+    };
+    QHash<QString, PendingCommit> m_pendingCommits;
     QTimer m_commitTimer;
     QStringList m_signature;
 };

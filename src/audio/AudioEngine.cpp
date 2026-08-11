@@ -8,6 +8,7 @@
 #include <QAudioSink>
 #include <QMediaDevices>
 
+#include <algorithm>
 #include <vector>
 
 namespace ope::audio {
@@ -79,11 +80,12 @@ AudioEngine::~AudioEngine()
 
 void AudioEngine::setPlan(const PlaybackPlan &plan)
 {
-    const bool wasPlaying = isPlaying();
-    if (wasPlaying)
+    if (isPlaying())
         stop();
     m_plan = plan;
     m_synth.setPlan(plan);
+    m_startOffset = 0.0;
+    Q_EMIT positionChanged(0.0);
 }
 
 void AudioEngine::play(double fromSeconds)
@@ -91,12 +93,18 @@ void AudioEngine::play(double fromSeconds)
     if (!m_available)
         return;
     stop();
-    m_startOffset = fromSeconds;
-    m_synth.reset(fromSeconds);
+    m_startOffset = std::clamp(fromSeconds, 0.0, m_plan.totalSeconds);
+    m_synth.reset(m_startOffset);
     m_device->open(QIODevice::ReadOnly);
     m_sink->start(m_device);
     m_timer.start();
     Q_EMIT playingChanged(true);
+}
+
+void AudioEngine::resume()
+{
+    const double from = m_startOffset >= m_plan.totalSeconds ? 0.0 : m_startOffset;
+    play(from);
 }
 
 void AudioEngine::pause()
@@ -118,6 +126,9 @@ void AudioEngine::stop()
     if (m_device->isOpen())
         m_device->close();
     m_timer.stop();
+    m_startOffset = 0.0;
+    m_synth.reset(0.0);
+    Q_EMIT positionChanged(0.0);
     if (was)
         Q_EMIT playingChanged(false);
 }

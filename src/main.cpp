@@ -9,7 +9,10 @@
 
 #include <QApplication>
 #include <QFileInfo>
+#include <QTextStream>
 #include <QTimer>
+
+#include <utility>
 
 int main(int argc, char **argv)
 {
@@ -17,6 +20,11 @@ int main(int argc, char **argv)
     arguments.reserve(argc - 1);
     for (int i = 1; i < argc; ++i)
         arguments.append(QString::fromLocal8Bit(argv[i]));
+
+    if (arguments.contains(QStringLiteral("--version"))) {
+        QTextStream(stdout) << "OpenPsalm Editor " << OPE_VERSION << "\n";
+        return 0;
+    }
 
     // The headless path takes no GUI: it must run over SSH and in CI.
     if (arguments.contains(QStringLiteral("--check"))
@@ -31,6 +39,31 @@ int main(int argc, char **argv)
         return ope::cli::run(options);
     }
 
+    const int shotIndex = arguments.indexOf(QStringLiteral("--screenshot"));
+    if (shotIndex >= 0 && shotIndex + 1 >= arguments.size()) {
+        QTextStream(stderr) << "--screenshot needs an output PNG path\n";
+        return 2;
+    }
+    const int tabIndex = arguments.indexOf(QStringLiteral("--tab"));
+    int requestedTab = -1;
+    if (tabIndex >= 0) {
+        bool ok = false;
+        if (tabIndex + 1 < arguments.size())
+            requestedTab = arguments.at(tabIndex + 1).toInt(&ok);
+        if (!ok || requestedTab < 0 || requestedTab > 2) {
+            QTextStream(stderr) << "--tab needs 0 (score), 1 (lyrics), or 2 (source)\n";
+            return 2;
+        }
+    }
+    for (const QString &argument : std::as_const(arguments)) {
+        if (argument.startsWith(QLatin1String("--"))
+            && argument != QLatin1String("--screenshot")
+            && argument != QLatin1String("--tab")) {
+            QTextStream(stderr) << "unknown option: " << argument << "\n";
+            return 2;
+        }
+    }
+
     QApplication app(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("OpenPsalm"));
     QCoreApplication::setOrganizationDomain(QStringLiteral("openpsalm.com"));
@@ -42,23 +75,23 @@ int main(int argc, char **argv)
 
     // `--screenshot <file>` renders the window once and exits: how the score
     // view is checked in CI and how the screenshots in the README are made.
-    const int shotIndex = arguments.indexOf(QStringLiteral("--screenshot"));
-    if (shotIndex >= 0 && shotIndex + 1 < arguments.size()) {
+    if (shotIndex >= 0) {
         const QString target = arguments.at(shotIndex + 1);
         QTimer::singleShot(1200, &window, [&window, target] {
-            window.grab().save(target);
-            QCoreApplication::quit();
+            const bool saved = window.grab().save(target, "PNG");
+            if (!saved)
+                QTextStream(stderr) << "could not write screenshot to " << target << "\n";
+            QCoreApplication::exit(saved ? 0 : 2);
         });
     }
 
-    const int tabIndex = arguments.indexOf(QStringLiteral("--tab"));
-    if (tabIndex >= 0 && tabIndex + 1 < arguments.size())
-        window.selectTab(arguments.at(tabIndex + 1).toInt());
+    if (requestedTab >= 0)
+        window.selectTab(requestedTab);
 
     // A path on the command line opens straight away.
     for (int i = 0; i < arguments.size(); ++i) {
         const QString &argument = arguments.at(i);
-        if (argument.startsWith(QLatin1String("--"))) {
+        if (argument == QLatin1String("--screenshot") || argument == QLatin1String("--tab")) {
             ++i;  // skip its value
             continue;
         }

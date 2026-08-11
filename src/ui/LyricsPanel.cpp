@@ -96,9 +96,9 @@ QString rowLabel(const AttachedSection &section)
     return QObject::tr("verse %1").arg(section.verseNumber);
 }
 
-QString commitKey(const QString &partName, const QString &key)
+QString commitKey(const QString &language, const QString &partName, const QString &key)
 {
-    return partName + QChar(0x1f) + key;
+    return language + QChar(0x1f) + partName + QChar(0x1f) + key;
 }
 
 /// The text a `@sN` reference stands for, as this voice would see it: its own
@@ -304,7 +304,8 @@ void LyricsPanel::syncEditors()
     for (const EditorRef &row : m_editors) {
         // Never overwrite a box whose keystrokes have not reached the document
         // yet; the debounce timer is about to carry them there.
-        if (m_pendingCommits.contains(commitKey(row.partName, row.key)))
+        if (m_pendingCommits.contains(
+                commitKey(m_session->currentLanguage(), row.partName, row.key)))
             continue;
         const Part *part = row.partName.isEmpty() ? nullptr : doc.part(row.partName);
         const QString text = part ? part->lyrics.value(row.key).rawText
@@ -506,8 +507,12 @@ QWidget *LyricsPanel::buildTextRow(const QString &key, const QString &partName,
         updateCounter(ref);
         if (m_loading)
             return;
-        m_pendingCommits.insert(
-            commitKey(ref.partName, ref.key), ref.editor->toPlainText());
+        const bool wasEmpty = m_pendingCommits.isEmpty();
+        const QString language = m_session->currentLanguage();
+        m_pendingCommits.insert(commitKey(language, ref.partName, ref.key),
+            PendingCommit { language, ref.key, ref.partName, ref.editor->toPlainText() });
+        if (wasEmpty)
+            Q_EMIT pendingEditsChanged(true);
         m_commitTimer.start();
     });
     return row;
@@ -565,25 +570,28 @@ void LyricsPanel::updateCounter(const EditorRef &row)
 void LyricsPanel::commitPendingEdits()
 {
     m_commitTimer.stop();
-    const QHash<QString, QString> pending = std::exchange(m_pendingCommits, {});
-    for (auto it = pending.constBegin(); it != pending.constEnd(); ++it) {
-        const QStringList parts = it.key().split(QChar(0x1f));
-        if (parts.size() == 2)
-            commitText(parts.at(1), parts.at(0), it.value());
-    }
+    const QHash<QString, PendingCommit> pending = std::exchange(m_pendingCommits, {});
+    for (const PendingCommit &commit : pending)
+        commitText(commit.language, commit.key, commit.partName, commit.text);
+    if (!pending.isEmpty())
+        Q_EMIT pendingEditsChanged(false);
 }
 
-void LyricsPanel::commitText(const QString &key, const QString &partName, const QString &text)
+void LyricsPanel::commitText(const QString &language, const QString &key,
+    const QString &partName, const QString &text)
 {
-    if (!m_session->isOpen())
+    const SongDocument *authored = m_session->document(language);
+    if (!authored)
         return;
-    const SongDocument &doc = m_session->effectiveDocument();
+    const SongDocument doc = authored->isOverlay && m_session->baseDocument()
+        ? mergeOverlay(*m_session->baseDocument(), *authored)
+        : *authored;
     const Part *part = partName.isEmpty() ? nullptr : doc.part(partName);
     const QString existing = part ? part->lyrics.value(key).rawText : doc.lyrics.value(key).rawText;
     if (existing == text)
         return;
 
-    m_session->mutate(tr("Edit lyrics"), [&](SongDocument &document) {
+    m_session->mutate(language, tr("Edit lyrics"), [&](SongDocument &document) {
         materialiseOverlayLyrics(document, doc, partName);
         if (!partName.isEmpty()) {
             if (Part *target = document.part(partName))
@@ -938,7 +946,8 @@ void LyricsPanel::commitCell(int row, int column)
         return;
     }
     tokens[target] = item->text().trimmed();
-    commitText(key, perPart ? partName : QString(), tokens.join(u' '));
+    commitText(m_session->currentLanguage(), key, perPart ? partName : QString(),
+        tokens.join(u' '));
 }
 
 void LyricsPanel::focusSlot(const QString &partName, int slot)

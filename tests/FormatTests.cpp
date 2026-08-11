@@ -130,6 +130,10 @@ private Q_SLOTS:
         QCOMPARE(ticks::forTimeSignature(4, 4), 192);
         QCOMPARE(ticks::forTimeSignature(3, 4), 144);
         QCOMPARE(ticks::forTimeSignature(6, 8), 144);
+        QCOMPARE(ticks::forTimeSignature(3, 32), 18);
+        QCOMPARE(ticks::forTimeSignature(3, 64), 9);
+        QVERIFY(ticks::isSupportedTimeSignatureDenominator(32));
+        QVERIFY(!ticks::isSupportedTimeSignatureDenominator(3));
     }
 
     // -- note tokens ----------------------------------------------------------

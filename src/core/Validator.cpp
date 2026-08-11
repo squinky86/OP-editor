@@ -202,9 +202,77 @@ QList<Finding> validate(
                 .arg(doc.language));
     }
 
+    if (doc.tempoBpm.present() && *doc.tempoBpm <= 0) {
+        add(Severity::Error, QStringLiteral("E-TEMPO"),
+            QStringLiteral("tempo_bpm must be positive; found %1").arg(*doc.tempoBpm));
+    }
+    if (doc.verseCount.present() && *doc.verseCount <= 0) {
+        add(Severity::Error, QStringLiteral("E-VERSE-COUNT"),
+            QStringLiteral("verse_count must be positive; found %1").arg(*doc.verseCount));
+    }
+
     for (const QString &key : doc.unknownKeys)
         add(Severity::Info, QStringLiteral("I-UNKNOWN-KEY"),
             QStringLiteral("`%1` is not a field OPE knows; it is preserved untouched").arg(key));
+
+    // Metre values feed every measure-duration calculation. Reject values the
+    // tick engine cannot represent instead of silently treating them as /4.
+    const auto validateMetre = [&add](int numerator, int denominator, const QString &where,
+                                  int measure = -1) {
+        if (numerator <= 0) {
+            add(Severity::Error, QStringLiteral("E-METRE"),
+                QStringLiteral("%1 has numerator %2; it must be positive").arg(where).arg(numerator),
+                {}, measure);
+        }
+        if (!ticks::isSupportedTimeSignatureDenominator(denominator)) {
+            add(Severity::Error, QStringLiteral("E-METRE"),
+                QStringLiteral("%1 has denominator %2; supported values are 1, 2, 4, 8, 16, 32, "
+                               "and 64")
+                    .arg(where)
+                    .arg(denominator),
+                {}, measure);
+        }
+    };
+    validateMetre(doc.timeSigNumerator.valueOr(4), doc.timeSigDenominator.valueOr(4),
+        QStringLiteral("the song metre"));
+
+    if (doc.timeSigChanges.present()) {
+        const int measures = doc.measureCount();
+        QList<std::pair<int, int>> occupiedRanges;
+        for (qsizetype i = 0; i < doc.timeSigChanges->size(); ++i) {
+            const TimeSigChange &change = doc.timeSigChanges->at(i);
+            const QString where = QStringLiteral("time_sig_changes row %1").arg(i + 1);
+            validateMetre(change.numerator, change.denominator, where, change.measure);
+            if (change.measure <= 0 || change.duration <= 0) {
+                add(Severity::Error, QStringLiteral("E-METRE-RANGE"),
+                    QStringLiteral("%1 must have positive measure and duration values").arg(where),
+                    {}, change.measure);
+                continue;
+            }
+            const int last = change.measure + change.duration - 1;
+            if (measures > 0 && last > measures) {
+                add(Severity::Error, QStringLiteral("E-METRE-RANGE"),
+                    QStringLiteral("%1 covers measures %2–%3, past the song's final measure %4")
+                        .arg(where)
+                        .arg(change.measure)
+                        .arg(last)
+                        .arg(measures),
+                    {}, change.measure);
+            }
+            for (const auto &[firstOccupied, lastOccupied] : occupiedRanges) {
+                if (change.measure <= lastOccupied && last >= firstOccupied) {
+                    add(Severity::Error, QStringLiteral("E-METRE-OVERLAP"),
+                        QStringLiteral("%1 overlaps another metre change in measures %2–%3")
+                            .arg(where)
+                            .arg(std::max(change.measure, firstOccupied))
+                            .arg(std::min(last, lastOccupied)),
+                        {}, change.measure);
+                    break;
+                }
+            }
+            occupiedRanges.append({ change.measure, last });
+        }
+    }
 
     // ------------------------------------------------------------- token issues
 
