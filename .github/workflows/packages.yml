@@ -98,7 +98,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Restore vcpkg binary cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: vcpkg-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .vcpkg-binary-cache
           key: vcpkg-windows-static-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'packaging/vcpkg-triplets/*.cmake') }}
@@ -108,6 +109,8 @@ jobs:
       - name: Bootstrap pinned vcpkg
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $root = Join-Path $env:RUNNER_TEMP 'ope-vcpkg'
           git clone --no-checkout https://github.com/microsoft/vcpkg.git $root
           git -C $root checkout --detach $env:VCPKG_COMMIT
@@ -121,16 +124,28 @@ jobs:
           VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\.vcpkg-binary-cache,readwrite
           VCPKG_FEATURE_FLAGS: manifests,binarycaching
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           cmake -S . -B build-windows -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
             -DVCPKG_OVERLAY_TRIPLETS="${{ github.workspace }}\packaging\vcpkg-triplets" `
             -DVCPKG_TARGET_TRIPLET=x64-windows-static-release `
             -DVCPKG_HOST_TRIPLET=x64-windows-release `
             -DOPE_WARNINGS_AS_ERRORS=ON
 
+      - name: Save vcpkg binary cache
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .vcpkg-binary-cache
+          key: vcpkg-windows-static-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'packaging/vcpkg-triplets/*.cmake') }}
+
       - name: Build and test
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $packages = & "$env:VCPKG_ROOT\vcpkg.exe" list
           if ($packages -notmatch 'qtbase:x64-windows-static-release\s+6\.11\.1') {
             throw "The target Qt Base build is not 6.11.1:`n$packages"
@@ -144,11 +159,13 @@ jobs:
       - name: Stage self-contained package
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $packageName = "OpenPsalmEditor-$env:APP_VERSION-Windows-x64"
           $package = Join-Path $PWD "artifacts\$packageName"
           New-Item -ItemType Directory -Force $package | Out-Null
-          Copy-Item build-windows\src\Release\ope.exe $package
-          Copy-Item build-windows\src\Release\ope-check.exe $package
+          Copy-Item build-windows\Release\ope.exe $package
+          Copy-Item build-windows\Release\ope-check.exe $package
           Copy-Item README.md,CHANGELOG.md,LICENSE,THIRD_PARTY_NOTICES.md $package
 
           $dlls = Get-ChildItem $package -Filter '*.dll' -Recurse
