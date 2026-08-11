@@ -35,7 +35,7 @@ jobs:
             qt6-base-dev qt6-base-dev-tools qt6-multimedia-dev
 
       - name: Check out source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Configure
         run: |
@@ -68,7 +68,7 @@ jobs:
           test -f package-root/usr/share/doc/OpenPsalmEditor/THIRD_PARTY_NOTICES.md
           file package-root/usr/bin/ope | grep -q 'ELF 64-bit.*x86-64'
           package-root/usr/bin/ope --version | grep -F "OpenPsalm Editor ${APP_VERSION}"
-          package-root/usr/bin/ope-check --help | grep -F 'Usage:'
+          package-root/usr/bin/ope-check --help | grep -F 'headless checks'
           mkdir -p smoke/config smoke/data
           QT_QPA_PLATFORM=offscreen \
             XDG_CONFIG_HOME="$PWD/smoke/config" \
@@ -79,7 +79,7 @@ jobs:
           dpkg-deb --info "$package"
 
       - name: Upload Debian package
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: OpenPsalmEditor-${{ env.APP_VERSION }}-Debian-amd64
           path: |
@@ -95,10 +95,10 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Restore vcpkg binary cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .vcpkg-binary-cache
           key: vcpkg-windows-static-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'packaging/vcpkg-triplets/*.cmake') }}
@@ -109,7 +109,8 @@ jobs:
         shell: pwsh
         run: |
           $root = Join-Path $env:RUNNER_TEMP 'ope-vcpkg'
-          git clone --filter=blob:none --no-checkout https://github.com/microsoft/vcpkg.git $root
+          git init $root
+          git -C $root remote add origin https://github.com/microsoft/vcpkg.git
           git -C $root fetch --depth 1 origin $env:VCPKG_COMMIT
           git -C $root checkout --detach $env:VCPKG_COMMIT
           & "$root\bootstrap-vcpkg.bat" -disableMetrics
@@ -194,7 +195,7 @@ jobs:
             Set-Content "artifacts\$packageName.zip.sha256"
 
       - name: Upload static Windows package
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: OpenPsalmEditor-${{ env.APP_VERSION }}-Windows-x64-static
           path: |
