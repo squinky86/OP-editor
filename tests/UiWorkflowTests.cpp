@@ -4,9 +4,12 @@
 #include "Fixtures.h"
 
 #include "app/Session.h"
+#include "core/CorpusSnapshot.h"
+#include "ui/CorpusBackupDialog.h"
 #include "ui/Dialogs.h"
 #include "ui/LyricsPanel.h"
 #include "ui/Panels.h"
+#include "ui/SongBrowser.h"
 
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -21,6 +24,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTabWidget>
+#include <QTreeWidget>
 
 using namespace ope;
 using namespace ope::fixtures;
@@ -193,6 +197,60 @@ private Q_SLOTS:
         const SongDocument draft = dialog.buildDocument();
         QCOMPARE(draft.workId, 1);
         QCOMPARE(draft.path, QDir(dir.path()).filePath(QStringLiteral("1/song.toml")));
+    }
+
+    void corpusUpdateStateIsVisibleWithoutDependingOnColor()
+    {
+        QTemporaryDir dir;
+        Library library;
+        library.setRoot(dir.path());
+        SongBrowser browser(&library);
+        browser.show();
+        browser.setManagedCorpusStatus(CorpusUpdateState::UpdateAvailable,
+            QStringLiteral("Update available: abc → def • checked today"),
+            QStringLiteral("Latest commit: def"), 2);
+
+        QPushButton *update = nullptr;
+        QPushButton *backups = nullptr;
+        for (QPushButton *button : browser.findChildren<QPushButton *>()) {
+            if (button->text() == QStringLiteral("Update OP-songs…"))
+                update = button;
+            if (button->text() == QStringLiteral("Backups (2)…"))
+                backups = button;
+        }
+        QVERIFY(update);
+        QVERIFY(backups);
+        QVERIFY(update->isVisibleTo(&browser));
+        QVERIFY(update->styleSheet().contains(QStringLiteral("#f0c84b")));
+        QCOMPARE(update->toolTip(), QStringLiteral("Latest commit: def"));
+
+        browser.setManagedCorpusStatus(CorpusUpdateState::Current,
+            QStringLiteral("Installed def • current as of today"),
+            QStringLiteral("Current as of: today"), 2);
+        QCOMPARE(update->text(), QStringLiteral("OP-songs is current"));
+        QVERIFY(update->styleSheet().isEmpty());
+    }
+
+    void backupManagerDisplaysCommitAndFreshness()
+    {
+        QTemporaryDir dir;
+        const QString target = dir.filePath(QStringLiteral("OP-songs"));
+        const QString backup = target + QStringLiteral(".backup-20260811-120000");
+        corpus::SnapshotInfo snapshot;
+        snapshot.commitSha = QString(40, u'a');
+        snapshot.commitDate
+            = QDateTime::fromString(QStringLiteral("2026-08-10T12:00:00Z"), Qt::ISODate);
+        snapshot.currentAsOf
+            = QDateTime::fromString(QStringLiteral("2026-08-11T12:00:00Z"), Qt::ISODate);
+        QVERIFY(corpus::writeSnapshot(backup, snapshot));
+
+        CorpusBackupDialog dialog(target);
+        QTreeWidget *tree = dialog.findChild<QTreeWidget *>();
+        QVERIFY(tree);
+        QCOMPARE(tree->topLevelItemCount(), 1);
+        QCOMPARE(tree->topLevelItem(0)->text(1), QString(10, u'a'));
+        QVERIFY(tree->topLevelItem(0)->text(2) != QStringLiteral("Unknown"));
+        QVERIFY(tree->topLevelItem(0)->text(3) != QStringLiteral("Unknown"));
     }
 };
 

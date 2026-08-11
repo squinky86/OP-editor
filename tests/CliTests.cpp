@@ -112,6 +112,47 @@ private Q_SLOTS:
         QCOMPARE(summary.reemitFailures, 0);
         QCOMPARE(summary.errors, 0);
     }
+
+    void structuredCheckReportsProgressAndCancelsBetweenFiles()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        const QByteArray song(
+            "title = \"Checked\"\n"
+            "time_sig_numerator = 4\n"
+            "time_sig_denominator = 4\n"
+            "tempo_bpm = 100\n"
+            "verse_count = 1\n"
+            "[parts.Soprano]\n"
+            "choral_type = \"soprano\"\n"
+            "clef = \"treble\"\n"
+            "notes = \"c4 d4 e4 f4\"\n"
+            "[lyrics.1]\n"
+            "text = \"one two three four\"\n");
+        for (int id = 1; id <= 2; ++id) {
+            QVERIFY(root.mkpath(QString::number(id)));
+            QFile file(root.filePath(QStringLiteral("%1/song.toml").arg(id)));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            QCOMPARE(file.write(song), song.size());
+        }
+
+        bool cancel = false;
+        int reportedTotal = 0;
+        Options options;
+        options.root = root.path();
+        options.cancelled = [&cancel] { return cancel; };
+        options.progress = [&cancel, &reportedTotal](int completed, int total, const QString &) {
+            reportedTotal = total;
+            if (completed == 1)
+                cancel = true;
+        };
+        const CheckSummary summary = check(options);
+        QVERIFY(summary.cancelled);
+        QVERIFY(!summary.passed());
+        QCOMPARE(summary.files, 1);
+        QCOMPARE(reportedTotal, 2);
+        QVERIFY(summary.description().contains(QStringLiteral("cancelled")));
+    }
 };
 
 QTEST_APPLESS_MAIN(CliTests)

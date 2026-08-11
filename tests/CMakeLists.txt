@@ -74,6 +74,8 @@ qt_add_executable(UiWorkflowTests
     ${CMAKE_SOURCE_DIR}/src/ui/LyricsPanel.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/Panels.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/Dialogs.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/CorpusBackupDialog.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/SongBrowser.cpp
 )
 target_link_libraries(UiWorkflowTests PRIVATE ope_core Qt6::Widgets Qt6::Test ope_flags)
 target_compile_definitions(UiWorkflowTests PRIVATE OPE_VERSION="test")

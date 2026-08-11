@@ -18,11 +18,14 @@
 QT_BEGIN_NAMESPACE
 class QLabel;
 class QLineEdit;
+class QPushButton;
 class QTreeWidget;
 class QTreeWidgetItem;
 QT_END_NAMESPACE
 
 namespace ope::ui {
+
+enum class CorpusUpdateState { Hidden, Checking, Current, UpdateAvailable, CheckFailed };
 
 class SongBrowser : public QWidget {
     Q_OBJECT
@@ -34,11 +37,15 @@ public:
     /// Highlight the row holding `path` without opening it again.
     void showCurrent(const QString &path);
     void focusSearch();
+    void setManagedCorpusStatus(CorpusUpdateState state, const QString &summary,
+        const QString &toolTip, int backupCount);
 
 Q_SIGNALS:
     void openRequested(const QString &path);
     void newSongRequested();
     void changeFolderRequested();
+    void updateCorpusRequested();
+    void manageBackupsRequested();
 
 private:
     void repopulate();
@@ -48,6 +55,9 @@ private:
     QLineEdit *m_search = nullptr;
     QTreeWidget *m_tree = nullptr;
     QLabel *m_status = nullptr;
+    QLabel *m_corpusStatus = nullptr;
+    QPushButton *m_updateCorpus = nullptr;
+    QPushButton *m_manageBackups = nullptr;
     QString m_currentPath;
 };
 

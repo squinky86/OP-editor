@@ -8,6 +8,8 @@
 
 #include <QStringList>
 
+#include <functional>
+
 namespace ope::cli {
 
 struct Options {
@@ -19,6 +21,8 @@ struct Options {
     bool info = false;
     bool quiet = false;
     int limit = -1;        ///< stop after N songs; -1 = all
+    std::function<bool()> cancelled;
+    std::function<void(int completed, int total, const QString &path)> progress;
 };
 
 /// Machine-readable result used by the GUI before installing a downloaded
@@ -33,6 +37,7 @@ struct CheckSummary {
     int infos = 0;
     int songsWithErrors = 0;
     bool foundCorpus = true;
+    bool cancelled = false;
 
     [[nodiscard]] bool passed() const noexcept;
     [[nodiscard]] QString description() const;

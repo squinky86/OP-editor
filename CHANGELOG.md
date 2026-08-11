@@ -5,6 +5,10 @@
 - Added a managed OP-songs HEAD download that stages the archive, rejects unsafe
   paths and sizes, runs the complete corpus checker, retains the old directory
   as a timestamped backup, and switches the library only after success.
+- Resolved HEAD to an immutable commit archive; recorded and displayed the full
+  SHA, commit date, and last-confirmed “current as of” time. Added automatic
+  six-hour update checks, an accessible yellow update indicator, cancellable
+  validation progress, and validated restore/permanent-delete backup management.
 - Added deterministic offline, TLS/proxy, cancellation, hostile/truncated ZIP,
   validation-failure, replacement, and rollback coverage. Fixed snapshot
   provenance metadata being omitted when the validated tree was installed.

@@ -89,10 +89,11 @@ On first run, use one of these two corpus modes:
 
 - Choose *File ▸ Download Latest OP-songs…* to download the head of OP-songs'
   public `main` branch into OPE's managed application-data directory. OPE first
-  shows the exact destination. It downloads and extracts into temporary storage,
-  rejects unsafe archive entries, and runs the complete `ope-check` suite before
-  changing the destination. If a managed corpus already exists, it is moved to
-  a timestamped backup rather than deleted.
+  resolves the exact commit SHA, then downloads that immutable archive. It shows
+  the exact destination, extracts into temporary storage, rejects unsafe archive
+  entries, and runs the complete `ope-check` suite before changing anything. If
+  a managed corpus already exists, it is moved to a timestamped backup rather
+  than deleted.
 - Press *Folder…* under the song list (or *File ▸ Preferences*) to use an
   existing OP-songs checkout — the folder holding the numbered song
   directories. OPE does not run `git pull`; you retain complete control of that
@@ -102,7 +103,14 @@ The editor never silently updates or merges either corpus. A managed download
 replaces only OPE's managed directory after a warning; an external checkout is
 never overwritten by the download command. Editing itself needs no Rust
 toolchain, OpenPsalm checkout, LilyPond, or soundfont. Network access is needed
-only while downloading a managed snapshot or opening GitHub in a browser.
+only while checking or downloading a managed snapshot, or opening GitHub in a
+browser.
+
+For a managed corpus, the Songs dock displays its commit and “current as of”
+time. OPE compares it with OP-songs HEAD at startup and every six hours. A newer
+HEAD turns the textual **Update OP-songs…** button yellow; installation still
+requires an explicit click and confirmation. **Backups…** lists retained
+snapshots and can validate/restore one or permanently delete a selected backup.
 
 The song list stays on screen: click a hymn to open it, and press *Refresh*
 (or `F5`) after a `git pull` or an edit made outside the editor.

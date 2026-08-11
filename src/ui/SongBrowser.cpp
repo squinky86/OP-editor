@@ -55,13 +55,25 @@ SongBrowser::SongBrowser(Library *library, QWidget *parent)
     auto *buttons = new QHBoxLayout;
     buttons->setSpacing(4);
     auto *newSong = new QPushButton(tr("New song…"), this);
-    newSong->setToolTip(tr("Create the next numbered song folder"));
+    newSong->setToolTip(tr("Create a song in an automatically selected local draft folder"));
     auto *folder = new QPushButton(tr("Folder…"), this);
     folder->setToolTip(tr("Point the editor at a different OP-songs checkout"));
     buttons->addWidget(newSong);
     buttons->addWidget(folder);
     buttons->addStretch();
     layout->addLayout(buttons);
+
+    auto *corpusButtons = new QHBoxLayout;
+    corpusButtons->setSpacing(4);
+    m_updateCorpus = new QPushButton(tr("Check OP-songs…"), this);
+    m_manageBackups = new QPushButton(tr("Backups…"), this);
+    corpusButtons->addWidget(m_updateCorpus, 1);
+    corpusButtons->addWidget(m_manageBackups);
+    layout->addLayout(corpusButtons);
+    m_corpusStatus = new QLabel(this);
+    m_corpusStatus->setWordWrap(true);
+    layout->addWidget(m_corpusStatus);
+    setManagedCorpusStatus(CorpusUpdateState::Hidden, {}, {}, 0);
 
     m_status = new QLabel(this);
     m_status->setWordWrap(true);
@@ -71,6 +83,9 @@ SongBrowser::SongBrowser(Library *library, QWidget *parent)
     connect(reload, &QToolButton::clicked, this, &SongBrowser::refresh);
     connect(newSong, &QPushButton::clicked, this, &SongBrowser::newSongRequested);
     connect(folder, &QPushButton::clicked, this, &SongBrowser::changeFolderRequested);
+    connect(m_updateCorpus, &QPushButton::clicked, this, &SongBrowser::updateCorpusRequested);
+    connect(m_manageBackups, &QPushButton::clicked, this,
+        &SongBrowser::manageBackupsRequested);
     connect(m_search, &QLineEdit::textChanged, this, &SongBrowser::repopulate);
     // A click opens; the arrow keys only move, so browsing with the keyboard
     // does not load two hundred songs on the way past.
@@ -80,6 +95,47 @@ SongBrowser::SongBrowser(Library *library, QWidget *parent)
         [this](QTreeWidgetItem *item, int) { openItem(item); });
 
     repopulate();
+}
+
+void SongBrowser::setManagedCorpusStatus(CorpusUpdateState state, const QString &summary,
+    const QString &toolTip, int backupCount)
+{
+    const bool visible = state != CorpusUpdateState::Hidden;
+    m_updateCorpus->setVisible(visible);
+    m_manageBackups->setVisible(visible);
+    m_corpusStatus->setVisible(visible);
+    if (!visible)
+        return;
+
+    m_corpusStatus->setText(summary);
+    m_corpusStatus->setToolTip(toolTip);
+    m_updateCorpus->setToolTip(toolTip);
+    m_manageBackups->setText(tr("Backups (%1)…").arg(backupCount));
+    m_manageBackups->setEnabled(backupCount > 0);
+    m_updateCorpus->setEnabled(state != CorpusUpdateState::Checking);
+    m_updateCorpus->setStyleSheet({});
+    m_corpusStatus->setStyleSheet(QStringLiteral("color: palette(mid);"));
+    switch (state) {
+    case CorpusUpdateState::Checking:
+        m_updateCorpus->setText(tr("Checking OP-songs…"));
+        break;
+    case CorpusUpdateState::Current:
+        m_updateCorpus->setText(tr("OP-songs is current"));
+        break;
+    case CorpusUpdateState::UpdateAvailable:
+        m_updateCorpus->setText(tr("Update OP-songs…"));
+        m_updateCorpus->setStyleSheet(QStringLiteral(
+            "QPushButton { background-color: #f0c84b; color: #202124; font-weight: 600; "
+            "border: 1px solid #9a7a00; border-radius: 4px; padding: 5px; } "
+            "QPushButton:hover { background-color: #ffda62; }"));
+        m_corpusStatus->setStyleSheet(QStringLiteral("color: #8a6500; font-weight: 600;"));
+        break;
+    case CorpusUpdateState::CheckFailed:
+        m_updateCorpus->setText(tr("Check for updates…"));
+        break;
+    case CorpusUpdateState::Hidden:
+        break;
+    }
 }
 
 void SongBrowser::refresh()

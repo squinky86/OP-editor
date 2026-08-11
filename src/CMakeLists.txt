@@ -11,6 +11,7 @@ add_library(ope_core STATIC
     core/Validator.cpp
     core/Library.cpp
     core/CorpusArchive.cpp
+    core/CorpusSnapshot.cpp
     core/Playback.cpp
 )
 target_include_directories(ope_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -35,6 +36,7 @@ qt_add_executable(ope
     ui/LyricsPanel.cpp
     ui/Dialogs.cpp
     ui/CorpusDownloadDialog.cpp
+    ui/CorpusBackupDialog.cpp
     ui/MainWindow.cpp
 )
 target_compile_definitions(ope PRIVATE OPE_VERSION="${PROJECT_VERSION}")

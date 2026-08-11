@@ -11,8 +11,10 @@
 #include <QEventLoop>
 #include <QFileInfo>
 #include <QLabel>
+#include <QLocale>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProgressBar>
@@ -26,6 +28,63 @@
 #include <utility>
 
 namespace ope::ui {
+namespace {
+
+constexpr qsizetype MaxHeadResponseBytes = 1024 * 1024;
+
+QNetworkRequest githubRequest(const QUrl &url)
+{
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+        QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setHeader(QNetworkRequest::UserAgentHeader,
+        QStringLiteral("OpenPsalm-Editor/%1").arg(QCoreApplication::applicationVersion()));
+    request.setRawHeader("Accept", "application/vnd.github+json");
+    request.setRawHeader("X-GitHub-Api-Version", "2022-11-28");
+    return request;
+}
+
+} // namespace
+
+QNetworkRequest corpusHeadRequest()
+{
+    QNetworkRequest request = githubRequest(QUrl(QString::fromLatin1(CorpusHeadApiUrl)));
+    request.setTransferTimeout(15'000);
+    return request;
+}
+
+QString ResolvedCorpusHead::archiveUrl() const
+{
+    return QStringLiteral("https://api.github.com/repos/squinky86/OP-songs/zipball/%1")
+        .arg(sha);
+}
+
+std::expected<ResolvedCorpusHead, QString> parseCorpusHeadResponse(
+    const QByteArray &json, const QDateTime &checkedAt)
+{
+    QJsonParseError error;
+    const QJsonDocument document = QJsonDocument::fromJson(json, &error);
+    if (error.error != QJsonParseError::NoError || !document.isObject())
+        return std::unexpected(QStringLiteral("GitHub returned invalid commit metadata: %1")
+                                   .arg(error.errorString()));
+    const QJsonObject object = document.object();
+    ResolvedCorpusHead result;
+    result.sha = object.value(QStringLiteral("sha")).toString().toLower();
+    static const QRegularExpression validSha(QStringLiteral("^[0-9a-f]{40,64}$"));
+    if (!validSha.match(result.sha).hasMatch())
+        return std::unexpected(QStringLiteral("GitHub commit metadata has no valid SHA."));
+    const QJsonObject commit = object.value(QStringLiteral("commit")).toObject();
+    result.committedAt = QDateTime::fromString(
+        commit.value(QStringLiteral("committer"))
+            .toObject()
+            .value(QStringLiteral("date"))
+            .toString(),
+        Qt::ISODate);
+    if (!result.committedAt.isValid())
+        return std::unexpected(QStringLiteral("GitHub commit metadata has no valid date."));
+    result.checkedAt = checkedAt.isValid() ? checkedAt.toUTC() : QDateTime::currentDateTimeUtc();
+    return result;
+}
 
 CorpusDownloadDialog::CorpusDownloadDialog(QString target, QWidget *parent)
     : CorpusDownloadDialog(std::move(target), {}, parent)
@@ -38,6 +97,7 @@ CorpusDownloadDialog::CorpusDownloadDialog(
     , m_target(std::move(target))
     , m_network(options.network ? options.network : &m_ownedNetwork)
     , m_maxDownloadBytes(options.maxDownloadBytes)
+    , m_resolvedHeadOverride(std::move(options.resolvedHead))
     , m_temporary(QDir::temp().filePath(QStringLiteral("openpsalm-corpus-XXXXXX")))
 {
     setWindowTitle(tr("Download Latest OP-songs"));
@@ -60,11 +120,7 @@ CorpusDownloadDialog::CorpusDownloadDialog(
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, this);
     m_cancel = buttons->button(QDialogButtonBox::Cancel);
     layout->addWidget(buttons);
-    connect(buttons, &QDialogButtonBox::rejected, this, [this] {
-        if (m_reply)
-            m_reply->abort();
-        reject();
-    });
+    connect(buttons, &QDialogButtonBox::rejected, this, &CorpusDownloadDialog::reject);
     QTimer::singleShot(0, this, &CorpusDownloadDialog::start);
 }
 
@@ -72,6 +128,26 @@ void CorpusDownloadDialog::setStage(const QString &message)
 {
     m_stage->setText(message);
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+}
+
+void CorpusDownloadDialog::reject()
+{
+    // Installation happens before the completion page is shown. Treat any way
+    // of closing that page as success so MainWindow switches to the corpus that
+    // is already active on disk.
+    if (!m_installResult.target.isEmpty()) {
+        QDialog::accept();
+        return;
+    }
+    m_cancelled = true;
+    if (m_reply)
+        m_reply->abort();
+    if (m_validating) {
+        m_stage->setText(tr("Cancelling validation…"));
+        m_cancel->setEnabled(false);
+        return;
+    }
+    QDialog::reject();
 }
 
 void CorpusDownloadDialog::start()
@@ -85,13 +161,64 @@ void CorpusDownloadDialog::start()
         return;
     }
 
-    setStage(tr("Downloading the head of OP-songs/main…"));
-    QNetworkRequest request(QUrl(QString::fromLatin1(corpus::HeadArchiveUrl)));
-    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-        QNetworkRequest::NoLessSafeRedirectPolicy);
-    request.setHeader(QNetworkRequest::UserAgentHeader,
-        QStringLiteral("OpenPsalm-Editor/%1").arg(QCoreApplication::applicationVersion()));
-    m_reply = m_network->get(request);
+    if (m_resolvedHeadOverride) {
+        m_head = *m_resolvedHeadOverride;
+        startArchiveDownload();
+    } else {
+        startHeadResolution();
+    }
+}
+
+void CorpusDownloadDialog::startHeadResolution()
+{
+    setStage(tr("Resolving the latest OP-songs commit…"));
+    m_reply = m_network->get(corpusHeadRequest());
+    connect(m_reply, &QIODevice::readyRead, this, [this] {
+        m_headResponse.append(m_reply->readAll());
+        if (m_headResponse.size() > MaxHeadResponseBytes) {
+            m_failure = tr("GitHub commit metadata exceeded the safety limit.");
+            m_reply->abort();
+        }
+    });
+    connect(m_reply, &QNetworkReply::finished, this, &CorpusDownloadDialog::headFinished);
+}
+
+void CorpusDownloadDialog::headFinished()
+{
+    m_headResponse.append(m_reply->readAll());
+    if (m_headResponse.size() > MaxHeadResponseBytes && m_failure.isEmpty())
+        m_failure = tr("GitHub commit metadata exceeded the safety limit.");
+    const QNetworkReply::NetworkError networkError = m_reply->error();
+    const QString networkMessage = m_reply->errorString();
+    m_reply->deleteLater();
+    m_reply = nullptr;
+    if (m_cancelled) {
+        QDialog::reject();
+        return;
+    }
+    if (!m_failure.isEmpty()) {
+        fail(m_failure);
+        return;
+    }
+    if (networkError != QNetworkReply::NoError) {
+        fail(tr("Could not resolve OP-songs HEAD: %1").arg(networkMessage));
+        return;
+    }
+    const auto parsed = parseCorpusHeadResponse(m_headResponse, QDateTime::currentDateTimeUtc());
+    m_headResponse.clear();
+    if (!parsed) {
+        fail(parsed.error());
+        return;
+    }
+    m_head = *parsed;
+    startArchiveDownload();
+}
+
+void CorpusDownloadDialog::startArchiveDownload()
+{
+    setStage(tr("Downloading OP-songs commit %1…").arg(corpus::abbreviatedSha(m_head.sha)));
+    m_failure.clear();
+    m_reply = m_network->get(githubRequest(QUrl(m_head.archiveUrl())));
     connect(m_reply, &QNetworkReply::downloadProgress, this,
         [this](qint64 received, qint64 total) {
             if (total > 0 && total <= std::numeric_limits<int>::max()) {
@@ -115,12 +242,20 @@ void CorpusDownloadDialog::start()
 void CorpusDownloadDialog::downloadFinished()
 {
     m_download.append(m_reply->readAll());
+    if (m_download.size() > m_maxDownloadBytes && m_failure.isEmpty()) {
+        m_failure = tr("The download exceeded the %1 byte safety limit.")
+                        .arg(m_maxDownloadBytes);
+    }
     const QNetworkReply::NetworkError networkError = m_reply->error();
     const QString networkMessage = m_reply->errorString();
     m_finalUrl = m_reply->url().toString(QUrl::FullyEncoded);
     m_etag = QString::fromLatin1(m_reply->rawHeader("ETag"));
     m_reply->deleteLater();
     m_reply = nullptr;
+    if (m_cancelled) {
+        QDialog::reject();
+        return;
+    }
     if (!m_failure.isEmpty()) {
         fail(m_failure);
         return;
@@ -155,28 +290,19 @@ void CorpusDownloadDialog::downloadFinished()
         return;
     }
 
-    QJsonObject provenance;
-    provenance.insert(QStringLiteral("schema"), 1);
-    provenance.insert(QStringLiteral("repository"), QStringLiteral("squinky86/OP-songs"));
-    provenance.insert(QStringLiteral("branch"), QStringLiteral("main"));
-    provenance.insert(QStringLiteral("requested_url"),
-        QString::fromLatin1(corpus::HeadArchiveUrl));
-    provenance.insert(QStringLiteral("download_url"), m_finalUrl);
-    provenance.insert(QStringLiteral("downloaded_at"),
-        QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
-    provenance.insert(QStringLiteral("archive_sha256"), archiveSha256);
-    provenance.insert(QStringLiteral("http_etag"), m_etag);
-    provenance.insert(QStringLiteral("archive_root"), extracted->archiveRoot);
-    provenance.insert(QStringLiteral("editor_version"),
-        QCoreApplication::applicationVersion());
-    QSaveFile provenanceFile(
-        QDir(unpacked).filePath(QStringLiteral(".openpsalm-snapshot.json")));
-    const QByteArray provenanceBytes = QJsonDocument(provenance).toJson();
-    if (!provenanceFile.open(QIODevice::WriteOnly)
-        || provenanceFile.write(provenanceBytes) != provenanceBytes.size()
-        || !provenanceFile.commit()) {
-        fail(tr("Could not record download provenance: %1")
-                 .arg(provenanceFile.errorString()));
+    corpus::SnapshotInfo snapshot;
+    snapshot.commitSha = m_head.sha;
+    snapshot.commitDate = m_head.committedAt;
+    snapshot.currentAsOf = m_head.checkedAt;
+    snapshot.downloadedAt = QDateTime::currentDateTimeUtc();
+    snapshot.requestedUrl = m_head.archiveUrl();
+    snapshot.downloadUrl = m_finalUrl;
+    snapshot.archiveSha256 = archiveSha256;
+    snapshot.httpEtag = m_etag;
+    snapshot.archiveRoot = extracted->archiveRoot;
+    snapshot.editorVersion = QCoreApplication::applicationVersion();
+    if (auto written = corpus::writeSnapshot(unpacked, snapshot); !written) {
+        fail(tr("Could not record download provenance: %1").arg(written.error()));
         return;
     }
 
@@ -185,7 +311,22 @@ void CorpusDownloadDialog::downloadFinished()
     options.root = unpacked;
     options.warnings = true;
     options.info = true;
+    options.progress = [this](int completed, int total, const QString &path) {
+        m_progress->setRange(0, total);
+        m_progress->setValue(completed);
+        m_detail->setText(tr("Checking %1 of %2:\n%3").arg(completed).arg(total).arg(path));
+    };
+    options.cancelled = [this] {
+        QCoreApplication::processEvents(QEventLoop::AllEvents);
+        return m_cancelled;
+    };
+    m_validating = true;
     m_checkSummary = cli::check(options);
+    m_validating = false;
+    if (m_cancelled) {
+        QDialog::reject();
+        return;
+    }
     if (!m_checkSummary.passed()) {
         fail(tr("The downloaded corpus did not pass integrity checking. The installed corpus "
                 "was not changed.\n\n%1")
@@ -203,7 +344,13 @@ void CorpusDownloadDialog::downloadFinished()
     m_progress->setRange(0, 1);
     m_progress->setValue(1);
     m_stage->setText(tr("The latest OP-songs corpus is ready."));
-    QString detail = m_checkSummary.description();
+    QString detail = tr("Commit: %1\nCommitted: %2\nCurrent as of: %3\n\n%4")
+                         .arg(m_head.sha,
+                             QLocale::system().toString(
+                                 m_head.committedAt.toLocalTime(), QLocale::ShortFormat),
+                             QLocale::system().toString(
+                                 m_head.checkedAt.toLocalTime(), QLocale::ShortFormat),
+                             m_checkSummary.description());
     if (!m_installResult.backup.isEmpty())
         detail += tr("\n\nThe previous directory was retained at:\n%1")
                       .arg(m_installResult.backup);

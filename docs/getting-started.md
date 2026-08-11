@@ -18,8 +18,10 @@ continuing.
 
 OPE then performs these steps:
 
-1. Downloads a ZIP snapshot of the head of the public OP-songs `main` branch.
-2. Keeps the download in a temporary staging directory. The current corpus has
+1. Resolves the exact commit at the head of the public OP-songs `main` branch,
+   including its full SHA and commit date.
+2. Downloads the ZIP for that immutable commit—not a moving branch URL—and
+   keeps it in a temporary staging directory. The current corpus has
    not changed yet.
 3. Rejects paths that could escape the staging directory, links and special
    files, more than 10,000 entries, individual files over 32 MiB, a download
@@ -34,9 +36,20 @@ OPE then performs these steps:
 8. Installs only if there are no parse failures, round-trip changes, notation
    mismatches, or validation errors.
 
-The installed `.openpsalm-snapshot.json` records the source branch, requested
-and final download URLs, UTC download time, HTTP ETag, archive SHA-256, archive
-root, and OPE version. A resolved Git commit SHA will be added before 0.1.0.
+The installed `.openpsalm-snapshot.json` records the source branch, full commit
+SHA, commit date, “current as of” time, requested and final download URLs, UTC
+download time, HTTP ETag, archive SHA-256, archive root, and OPE version. The
+commit date says when upstream changed; “current as of” says when OPE last
+successfully confirmed that this exact commit was still OP-songs HEAD.
+
+When the managed corpus is selected, OPE checks HEAD automatically at startup
+and every six hours while it remains open. If the installed SHA still matches,
+the Songs dock displays the abbreviated SHA and refreshed “current as of” time.
+If HEAD changed, the update button becomes yellow and says **Update OP-songs…**;
+the text and tooltip show both SHAs and the check time, so color is never the
+only indication. A failed network check leaves the installed corpus untouched
+and continues to show its last known freshness. OPE never installs an update
+automatically—you must choose the update command and confirm the destination.
 
 If this is an update, OPE moves the old directory to a sibling path ending in
 `.backup-YYYYMMDD-HHMMSS`. It does not merge the download with local edits. If
@@ -110,19 +123,21 @@ Writes use an atomic replacement file on the destination filesystem. New songs
 and translations remain only in memory until the first explicit save; cancelling
 their dialogs creates no directories.
 
-## 5. Recover a managed corpus backup
+## 5. Recover or remove a managed corpus backup
 
-The current UI retains and reports the backup path but does not yet have a
-one-click restore command. To restore manually:
+Choose **File ▸ Manage OP-songs Backups…** or the **Backups…** button in the
+Songs dock. The list shows each backup's full path, abbreviated commit SHA,
+commit date, and “current as of” time when its metadata is available.
 
-1. Close OPE so no corpus file is open.
-2. Locate the managed destination shown by the download dialog.
-3. Rename the current `OP-songs` directory to a clearly marked temporary name.
-4. Rename the chosen `OP-songs.backup-YYYYMMDD-HHMMSS` directory to `OP-songs`.
-5. Start OPE and press **F5**.
+To restore, select a backup and choose **Restore selected…**. OPE reruns the
+complete parser, byte-round-trip, note re-emission, and validation suite with
+visible progress. You may cancel between files; cancellation changes nothing.
+Only a passing backup can become active. The corpus it replaces is retained as
+another timestamped backup, so restore is itself reversible.
 
-Do not delete the current directory until the restored backup opens and passes
-`ope-check`. A restore/delete-backup interface is planned before 0.1.0.
+**Delete selected permanently…** removes only the explicitly selected sibling
+backup after a second confirmation. It cannot be undone. Prefer restoring or
+keeping a backup until you are certain it is no longer needed.
 
 ## Where to learn the song format
 

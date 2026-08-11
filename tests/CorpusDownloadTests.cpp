@@ -206,12 +206,38 @@ QPushButton *buttonWithText(QWidget &widget, const QString &text)
     return nullptr;
 }
 
+ResolvedCorpusHead testHead()
+{
+    return ResolvedCorpusHead { QString(40, u'a'),
+        QDateTime::fromString(QStringLiteral("2026-08-10T12:34:56Z"), Qt::ISODate),
+        QDateTime::fromString(QStringLiteral("2026-08-11T13:00:00Z"), Qt::ISODate) };
+}
+
 } // namespace
 
 class CorpusDownloadTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void parsesResolvedHeadAndBuildsImmutableArchiveUrl()
+    {
+        const QDateTime checked
+            = QDateTime::fromString(QStringLiteral("2026-08-11T14:00:00Z"), Qt::ISODate);
+        const QByteArray json = QByteArray(R"({
+            "sha": "0123456789abcdef0123456789abcdef01234567",
+            "commit": { "committer": { "date": "2026-08-10T12:34:56Z" } }
+        })");
+        const auto parsed = parseCorpusHeadResponse(json, checked);
+        const QString error = parsed ? QString() : parsed.error();
+        QVERIFY2(parsed, qPrintable(error));
+        QCOMPARE(parsed->sha, QStringLiteral("0123456789abcdef0123456789abcdef01234567"));
+        QCOMPARE(parsed->checkedAt, checked);
+        QVERIFY(parsed->archiveUrl().endsWith(parsed->sha));
+
+        QVERIFY(!parseCorpusHeadResponse(QByteArray("{}"), checked));
+        QVERIFY(!parseCorpusHeadResponse(QByteArray("not json"), checked));
+    }
+
     void networkFailuresLeaveInstalledCorpusUntouched_data()
     {
         QTest::addColumn<int>("error");
@@ -283,6 +309,7 @@ private Q_SLOTS:
         CorpusDownloadOptions options;
         options.network = &network;
         options.maxDownloadBytes = 64;
+        options.resolvedHead = testHead();
         CorpusDownloadDialog dialog(target, options);
         dialog.show();
 
@@ -336,6 +363,7 @@ private Q_SLOTS:
             Response { zip, QNetworkReply::NoError, {}, 0 });
         CorpusDownloadOptions options;
         options.network = &network;
+        options.resolvedHead = testHead();
         CorpusDownloadDialog dialog(target, options);
         dialog.show();
 
@@ -363,6 +391,7 @@ private Q_SLOTS:
             Response { zip, QNetworkReply::NoError, {}, 0 });
         CorpusDownloadOptions options;
         options.network = &network;
+        options.resolvedHead = testHead();
         CorpusDownloadDialog dialog(target, options);
         dialog.show();
 
@@ -389,6 +418,7 @@ private Q_SLOTS:
             Response { zip, QNetworkReply::NoError, {}, 0 });
         CorpusDownloadOptions options;
         options.network = &network;
+        options.resolvedHead = testHead();
         CorpusDownloadDialog dialog(target, options);
         dialog.show();
 
@@ -396,6 +426,11 @@ private Q_SLOTS:
         QCOMPARE(readFile(QDir(target).filePath(QStringLiteral("42/song.toml"))), baseSong());
         QVERIFY(QFileInfo::exists(
             QDir(target).filePath(QStringLiteral(".openpsalm-snapshot.json"))));
+        const auto snapshot = corpus::readSnapshot(target);
+        QVERIFY(snapshot);
+        QCOMPARE(snapshot->commitSha, testHead().sha);
+        QCOMPARE(snapshot->commitDate, testHead().committedAt);
+        QCOMPARE(snapshot->currentAsOf, testHead().checkedAt);
         QVERIFY(!dialog.installResult().backup.isEmpty());
         QCOMPARE(readFile(QDir(dialog.installResult().backup)
                               .filePath(QStringLiteral("sentinel.txt"))),
@@ -403,7 +438,9 @@ private Q_SLOTS:
 
         QPushButton *continueButton = buttonWithText(dialog, QStringLiteral("Continue"));
         QVERIFY(continueButton);
-        QTest::mouseClick(continueButton, Qt::LeftButton);
+        // The window close path must also report success because installation
+        // has already completed before this page is displayed.
+        dialog.reject();
         QCOMPARE(dialog.result(), static_cast<int>(QDialog::Accepted));
     }
 };

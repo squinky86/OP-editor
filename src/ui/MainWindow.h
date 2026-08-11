@@ -7,12 +7,18 @@
 #include "audio/AudioEngine.h"
 #include "core/Library.h"
 
+#include <QByteArray>
+#include <QDateTime>
 #include <QMainWindow>
+#include <QNetworkAccessManager>
 
 QT_BEGIN_NAMESPACE
+class QAction;
 class QDockWidget;
 class QLabel;
+class QNetworkReply;
 class QTabWidget;
+class QTimer;
 QT_END_NAMESPACE
 
 namespace ope::ui {
@@ -59,6 +65,11 @@ private:
     void reloadFromDisk();
     void editPreferences();
     void downloadLatestCorpus();
+    void checkCorpusUpdates(bool notifyOnFailure = false);
+    void corpusHeadCheckFinished();
+    void refreshManagedCorpusStatus();
+    void manageCorpusBackups();
+    void restoreCorpusBackup(const QString &backup);
     void prepareContribution();
     void reportSongProblem();
     [[nodiscard]] bool confirmDiscard();
@@ -82,6 +93,16 @@ private:
     QTabWidget *m_centre = nullptr;
     QTabWidget *m_languageTabs = nullptr;
     QLabel *m_statusSummary = nullptr;
+    QAction *m_downloadCorpusAction = nullptr;
+    QNetworkAccessManager m_corpusNetwork;
+    QNetworkReply *m_corpusHeadReply = nullptr;
+    QTimer *m_corpusRecheckTimer = nullptr;
+    QByteArray m_corpusHeadResponse;
+    QString m_latestCorpusSha;
+    QDateTime m_latestCorpusCommitDate;
+    QDateTime m_corpusCheckedAt;
+    QString m_corpusCheckError;
+    bool m_notifyCorpusCheckFailure = false;
     bool m_planStale = true;
 };
 

@@ -10,9 +10,6 @@
 
 namespace ope::corpus {
 
-inline constexpr auto HeadArchiveUrl
-    = "https://github.com/squinky86/OP-songs/archive/refs/heads/main.zip";
-
 struct ExtractResult {
     int files = 0;
     qint64 bytes = 0;

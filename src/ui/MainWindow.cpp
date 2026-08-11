@@ -4,6 +4,8 @@
 #include "MainWindow.h"
 
 #include "cli/Contribution.h"
+#include "core/CorpusSnapshot.h"
+#include "CorpusBackupDialog.h"
 #include "CorpusDownloadDialog.h"
 #include "Dialogs.h"
 #include "LyricsPanel.h"
@@ -19,12 +21,16 @@
 #include <QDir>
 #include <QDesktopServices>
 #include <QDockWidget>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QLabel>
+#include <QLocale>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QNetworkReply>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QSettings>
 #include <QStandardPaths>
@@ -32,6 +38,7 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QToolBar>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QUrlQuery>
 
@@ -39,6 +46,9 @@ namespace ope::ui {
 namespace {
 
 QString settingsKeyRoot() { return QStringLiteral("songsRoot"); }
+
+constexpr qsizetype MaxHeadResponseBytes = 1024 * 1024;
+constexpr int CorpusRecheckMilliseconds = 6 * 60 * 60 * 1000;
 
 QString internalCorpusRoot()
 {
@@ -69,6 +79,13 @@ QString tomlCodeBlock(const QByteArray &toml)
     return QString::fromUtf8(block);
 }
 
+QString displayDate(const QDateTime &date)
+{
+    return date.isValid()
+        ? QLocale::system().toString(date.toLocalTime(), QLocale::ShortFormat)
+        : QObject::tr("unknown date");
+}
+
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_session(this), m_audio(this)
@@ -80,6 +97,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_session(this), 
 
     buildLayout();
     buildMenus();
+    m_corpusRecheckTimer = new QTimer(this);
+    m_corpusRecheckTimer->setSingleShot(true);
+    m_corpusRecheckTimer->setInterval(CorpusRecheckMilliseconds);
+    connect(m_corpusRecheckTimer, &QTimer::timeout, this,
+        [this] { checkCorpusUpdates(); });
     updateWindowTitle();
 
     if (!m_audio.isAvailable())
@@ -119,6 +141,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_session(this), 
     // need to be readable and no more.
     resizeDocks({ m_browserDock, m_songDock }, { 270, 330 }, Qt::Horizontal);
     resizeDocks({ m_problemsDock }, { 170 }, Qt::Vertical);
+    refreshManagedCorpusStatus();
+    if (QFileInfo::exists(internalCorpusRoot()))
+        QTimer::singleShot(0, this, [this] { checkCorpusUpdates(); });
 }
 
 void MainWindow::buildLayout()
@@ -158,6 +183,14 @@ void MainWindow::buildLayout()
     connect(m_browser, &SongBrowser::openRequested, this, &MainWindow::openPath);
     connect(m_browser, &SongBrowser::newSongRequested, this, &MainWindow::newSong);
     connect(m_browser, &SongBrowser::changeFolderRequested, this, &MainWindow::editPreferences);
+    connect(m_browser, &SongBrowser::updateCorpusRequested, this, [this] {
+        if (m_latestCorpusSha.isEmpty() && !m_corpusCheckError.isEmpty())
+            checkCorpusUpdates(true);
+        else
+            downloadLatestCorpus();
+    });
+    connect(m_browser, &SongBrowser::manageBackupsRequested, this,
+        &MainWindow::manageCorpusBackups);
 
     m_header = new HeaderPanel(&m_session, this);
     m_songDock = new QDockWidget(tr("Song"), this);
@@ -227,8 +260,10 @@ void MainWindow::buildMenus()
     fileMenu->addAction(tr("&Find Song…"), QKeySequence::Open, this, &MainWindow::showBrowser);
     fileMenu->addAction(tr("Re&fresh Song List"), QKeySequence(Qt::Key_F5), this,
         [this] { m_browser->refresh(); });
-    fileMenu->addAction(tr("Download &Latest OP-songs…"), this,
+    m_downloadCorpusAction = fileMenu->addAction(tr("Download &Latest OP-songs…"), this,
         &MainWindow::downloadLatestCorpus);
+    fileMenu->addAction(tr("Manage OP-songs &Backups…"), this,
+        &MainWindow::manageCorpusBackups);
     fileMenu->addAction(tr("&New Song…"), QKeySequence::New, this, &MainWindow::newSong);
     fileMenu->addAction(tr("Add &Translation…"), this, &MainWindow::addTranslation);
     fileMenu->addAction(tr("Prepare &Contribution…"), this,
@@ -642,6 +677,168 @@ void MainWindow::editPreferences()
     m_library.setRoot(root);
     QSettings().setValue(settingsKeyRoot(), root);
     m_browser->refresh();
+    refreshManagedCorpusStatus();
+    if (QDir::cleanPath(root) == QDir::cleanPath(internalCorpusRoot()))
+        checkCorpusUpdates();
+}
+
+void MainWindow::checkCorpusUpdates(bool notifyOnFailure)
+{
+    const QString target = internalCorpusRoot();
+    const bool managedSelected
+        = QDir::cleanPath(m_library.root()) == QDir::cleanPath(target);
+    if (!QFileInfo::exists(target) || !managedSelected) {
+        if (m_corpusRecheckTimer)
+            m_corpusRecheckTimer->stop();
+        refreshManagedCorpusStatus();
+        return;
+    }
+    if (m_corpusHeadReply) {
+        m_notifyCorpusCheckFailure |= notifyOnFailure;
+        return;
+    }
+    if (m_corpusRecheckTimer)
+        m_corpusRecheckTimer->stop();
+    m_notifyCorpusCheckFailure = notifyOnFailure;
+    m_corpusHeadResponse.clear();
+    m_corpusCheckError.clear();
+    m_latestCorpusSha.clear();
+    m_latestCorpusCommitDate = {};
+    m_corpusCheckedAt = {};
+    m_corpusHeadReply = m_corpusNetwork.get(corpusHeadRequest());
+    refreshManagedCorpusStatus();
+    connect(m_corpusHeadReply, &QIODevice::readyRead, this, [this] {
+        m_corpusHeadResponse.append(m_corpusHeadReply->readAll());
+        if (m_corpusHeadResponse.size() > MaxHeadResponseBytes) {
+            m_corpusCheckError = tr("GitHub commit metadata exceeded the safety limit.");
+            m_corpusHeadReply->abort();
+        }
+    });
+    connect(m_corpusHeadReply, &QNetworkReply::finished, this,
+        &MainWindow::corpusHeadCheckFinished);
+}
+
+void MainWindow::corpusHeadCheckFinished()
+{
+    m_corpusHeadResponse.append(m_corpusHeadReply->readAll());
+    if (m_corpusHeadResponse.size() > MaxHeadResponseBytes && m_corpusCheckError.isEmpty())
+        m_corpusCheckError = tr("GitHub commit metadata exceeded the safety limit.");
+    const QNetworkReply::NetworkError error = m_corpusHeadReply->error();
+    const QString networkError = m_corpusHeadReply->errorString();
+    m_corpusHeadReply->deleteLater();
+    m_corpusHeadReply = nullptr;
+    if (m_corpusCheckError.isEmpty() && error != QNetworkReply::NoError)
+        m_corpusCheckError = tr("Could not check OP-songs HEAD: %1").arg(networkError);
+    if (m_corpusCheckError.isEmpty()) {
+        const auto parsed
+            = parseCorpusHeadResponse(m_corpusHeadResponse, QDateTime::currentDateTimeUtc());
+        if (!parsed) {
+            m_corpusCheckError = parsed.error();
+        } else {
+            m_latestCorpusSha = parsed->sha;
+            m_latestCorpusCommitDate = parsed->committedAt;
+            m_corpusCheckedAt = parsed->checkedAt;
+            const auto installed = corpus::readSnapshot(internalCorpusRoot());
+            if (installed
+                && installed->commitSha.compare(parsed->sha, Qt::CaseInsensitive) == 0) {
+                if (auto marked = corpus::markSnapshotCurrent(internalCorpusRoot(), parsed->sha,
+                        parsed->committedAt, parsed->checkedAt);
+                    !marked) {
+                    m_corpusCheckError = tr("HEAD was checked, but freshness metadata could not "
+                                            "be saved: %1")
+                                             .arg(marked.error());
+                }
+            }
+        }
+    }
+    m_corpusHeadResponse.clear();
+    refreshManagedCorpusStatus();
+    if (m_notifyCorpusCheckFailure && !m_corpusCheckError.isEmpty()) {
+        QMessageBox::warning(this, tr("Could not check for corpus updates"),
+            tr("%1\n\nThe installed corpus was not changed.").arg(m_corpusCheckError));
+    }
+    m_notifyCorpusCheckFailure = false;
+    const bool managedSelected = QDir::cleanPath(m_library.root())
+        == QDir::cleanPath(internalCorpusRoot());
+    if (managedSelected && QFileInfo::exists(internalCorpusRoot())
+        && m_corpusRecheckTimer) {
+        m_corpusRecheckTimer->start();
+    }
+}
+
+void MainWindow::refreshManagedCorpusStatus()
+{
+    const QString target = internalCorpusRoot();
+    const bool managedSelected
+        = QDir::cleanPath(m_library.root()) == QDir::cleanPath(target);
+    if (!managedSelected) {
+        m_browser->setManagedCorpusStatus(CorpusUpdateState::Hidden, {}, {}, 0);
+        if (m_downloadCorpusAction)
+            m_downloadCorpusAction->setText(tr("Download &Latest OP-songs…"));
+        return;
+    }
+
+    const int backups = corpus::backupDirectories(target).size();
+    const auto snapshot = corpus::readSnapshot(target);
+    QString installed = tr("Installed snapshot has no resolved commit metadata.");
+    QString details = snapshot ? QString() : snapshot.error();
+    if (snapshot && snapshot->hasResolvedCommit()) {
+        installed = tr("Installed %1 • commit %2")
+                        .arg(corpus::abbreviatedSha(snapshot->commitSha),
+                            displayDate(snapshot->commitDate));
+        if (snapshot->currentAsOf.isValid())
+            installed += tr(" • current as of %1").arg(displayDate(snapshot->currentAsOf));
+        details = tr("Installed commit: %1\nCommitted: %2\nCurrent as of: %3")
+                      .arg(snapshot->commitSha, displayDate(snapshot->commitDate),
+                          displayDate(snapshot->currentAsOf));
+    }
+
+    if (m_corpusHeadReply) {
+        m_browser->setManagedCorpusStatus(
+            CorpusUpdateState::Checking, installed, tr("Checking OP-songs HEAD…"), backups);
+        return;
+    }
+    if (!m_latestCorpusSha.isEmpty()) {
+        const bool current = snapshot
+            && snapshot->commitSha.compare(m_latestCorpusSha, Qt::CaseInsensitive) == 0;
+        if (current) {
+            const QString summary = tr("Installed %1 • current as of %2")
+                                        .arg(corpus::abbreviatedSha(m_latestCorpusSha),
+                                            displayDate(m_corpusCheckedAt));
+            const QString tip = tr("Installed commit: %1\nCommitted: %2\nCurrent as of: %3")
+                                    .arg(m_latestCorpusSha,
+                                        displayDate(m_latestCorpusCommitDate),
+                                        displayDate(m_corpusCheckedAt));
+            m_browser->setManagedCorpusStatus(
+                CorpusUpdateState::Current, summary, tip, backups);
+            if (m_downloadCorpusAction)
+                m_downloadCorpusAction->setText(tr("Re-download Current OP-songs…"));
+            return;
+        }
+        const QString summary = snapshot && snapshot->hasResolvedCommit()
+            ? tr("Update available: %1 → %2 • checked %3")
+                  .arg(corpus::abbreviatedSha(snapshot->commitSha),
+                      corpus::abbreviatedSha(m_latestCorpusSha), displayDate(m_corpusCheckedAt))
+            : tr("Update recommended • latest %1 • checked %2")
+                  .arg(corpus::abbreviatedSha(m_latestCorpusSha),
+                      displayDate(m_corpusCheckedAt));
+        details += tr("\nLatest commit: %1\nLatest commit date: %2\nChecked: %3")
+                       .arg(m_latestCorpusSha, displayDate(m_latestCorpusCommitDate),
+                           displayDate(m_corpusCheckedAt));
+        m_browser->setManagedCorpusStatus(
+            CorpusUpdateState::UpdateAvailable, summary, details, backups);
+        if (m_downloadCorpusAction)
+            m_downloadCorpusAction->setText(tr("&Update OP-songs…"));
+        return;
+    }
+
+    QString summary = installed;
+    if (!m_corpusCheckError.isEmpty()) {
+        summary += tr(" • update check unavailable");
+        details += u'\n' + m_corpusCheckError;
+    }
+    m_browser->setManagedCorpusStatus(
+        CorpusUpdateState::CheckFailed, summary, details, backups);
 }
 
 void MainWindow::downloadLatestCorpus()
@@ -658,16 +855,25 @@ void MainWindow::downloadLatestCorpus()
     warning.setText(replacing
             ? tr("This will replace the editor's internal OP-songs directory.")
             : tr("This will create the editor's internal OP-songs directory."));
+    QString installedDetails;
+    if (const auto snapshot = corpus::readSnapshot(target);
+        snapshot && snapshot->hasResolvedCommit()) {
+        installedDetails = tr("\n\nInstalled commit: %1\nCommitted: %2\nCurrent as of: %3")
+                               .arg(snapshot->commitSha, displayDate(snapshot->commitDate),
+                                   displayDate(snapshot->currentAsOf));
+    }
     warning.setInformativeText(
         tr("Destination:\n%1\n\nThe head of the public main branch will be downloaded from "
-           "GitHub into a temporary directory. OPE will reject unsafe archive paths, then "
+           "GitHub. OPE first resolves the exact commit SHA, downloads that immutable "
+           "archive into a temporary directory, rejects unsafe archive paths, then "
            "parse every TOML file, check unchanged byte round trips, re-emit every note "
-           "token, and run the complete validation rule set before changing this path.%2")
+           "token, and run the complete validation rule set before changing this path.%2%3")
             .arg(target,
                 replacing
                     ? tr("\n\nThe existing directory will be moved to a timestamped backup, "
                          "not deleted.")
-                    : QString()));
+                    : QString(),
+                installedDetails));
     auto *download = warning.addButton(
         replacing ? tr("Download and replace") : tr("Download"), QMessageBox::AcceptRole);
     warning.addButton(QMessageBox::Cancel);
@@ -686,6 +892,11 @@ void MainWindow::downloadLatestCorpus()
     m_library.setRoot(target);
     QSettings().setValue(settingsKeyRoot(), target);
     m_browser->refresh();
+    m_latestCorpusSha = dialog.resolvedHead().sha;
+    m_latestCorpusCommitDate = dialog.resolvedHead().committedAt;
+    m_corpusCheckedAt = dialog.resolvedHead().checkedAt;
+    m_corpusCheckError.clear();
+    refreshManagedCorpusStatus();
     if (!currentPath.isEmpty()) {
         if (auto opened = m_session.openSong(currentPath); !opened) {
             showParseError(this, opened.error());
@@ -700,6 +911,104 @@ void MainWindow::downloadLatestCorpus()
         tr("Installed validated OP-songs snapshot: %1")
             .arg(dialog.checkSummary().description()),
         10000);
+}
+
+void MainWindow::manageCorpusBackups()
+{
+    const QString target = internalCorpusRoot();
+    CorpusBackupDialog dialog(target, this);
+    if (dialog.exec() == QDialog::Accepted && !dialog.selectedBackup().isEmpty())
+        restoreCorpusBackup(dialog.selectedBackup());
+    refreshManagedCorpusStatus();
+}
+
+void MainWindow::restoreCorpusBackup(const QString &backup)
+{
+    const QString target = internalCorpusRoot();
+    const bool currentUsesTarget
+        = QDir::cleanPath(m_library.root()) == QDir::cleanPath(target);
+    if (currentUsesTarget && !confirmDiscard())
+        return;
+    if (!corpus::backupDirectories(target).contains(QFileInfo(backup).absoluteFilePath())) {
+        QMessageBox::critical(this, tr("Unsafe backup path"),
+            tr("The selected path is not a managed OP-songs backup:\n\n%1").arg(backup));
+        return;
+    }
+    if (QMessageBox::question(this, tr("Restore this corpus backup?"),
+            tr("OPE will validate every song in:\n\n%1\n\nIf validation succeeds, this "
+               "backup becomes the managed corpus and the current corpus is retained as a "
+               "new timestamped backup.")
+                .arg(backup),
+            QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel)
+        != QMessageBox::Yes) {
+        return;
+    }
+
+    QProgressDialog progress(tr("Validating backup…"), tr("Cancel"), 0, 0, this);
+    progress.setWindowTitle(tr("Restore OP-songs Backup"));
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    cli::Options options;
+    options.root = backup;
+    options.warnings = true;
+    options.info = true;
+    options.progress = [&progress](int completed, int total, const QString &path) {
+        progress.setRange(0, total);
+        progress.setValue(completed);
+        progress.setLabelText(QObject::tr("Checking %1 of %2:\n%3")
+                                  .arg(completed)
+                                  .arg(total)
+                                  .arg(path));
+    };
+    options.cancelled = [&progress] {
+        QCoreApplication::processEvents(QEventLoop::AllEvents);
+        return progress.wasCanceled();
+    };
+    const cli::CheckSummary checks = cli::check(options);
+    if (checks.cancelled)
+        return;
+    if (!checks.passed()) {
+        QMessageBox::warning(this, tr("Backup failed validation"),
+            tr("The managed corpus was not changed.\n\n%1").arg(checks.description()));
+        return;
+    }
+
+    const QString currentPath = currentUsesTarget && m_session.isOpen()
+        ? m_session.currentPath()
+        : QString();
+    const auto installed = corpus::installValidatedSnapshot(backup, target);
+    if (!installed) {
+        QMessageBox::critical(this, tr("Could not restore backup"), installed.error());
+        return;
+    }
+    m_library.setRoot(target);
+    QSettings().setValue(settingsKeyRoot(), target);
+    m_browser->refresh();
+    if (!currentPath.isEmpty() && QFileInfo::exists(currentPath)) {
+        if (auto opened = m_session.openSong(currentPath); !opened) {
+            showParseError(this, opened.error());
+        } else {
+            m_browser->showCurrent(currentPath);
+            updateLanguageTabs();
+            updateWindowTitle();
+            updateTransportDuration();
+        }
+    } else if (currentUsesTarget && m_session.isOpen()) {
+        m_session.close();
+        updateLanguageTabs();
+        updateWindowTitle();
+        updateTransportDuration();
+    }
+    m_latestCorpusSha.clear();
+    m_latestCorpusCommitDate = {};
+    m_corpusCheckedAt = {};
+    m_corpusCheckError.clear();
+    refreshManagedCorpusStatus();
+    checkCorpusUpdates();
+    QMessageBox::information(this, tr("Backup restored"),
+        tr("The backup passed validation and is now active.\n\n%1\n\nThe corpus it "
+           "replaced was retained at:\n%2")
+            .arg(checks.description(), installed->backup));
 }
 
 void MainWindow::prepareContribution()

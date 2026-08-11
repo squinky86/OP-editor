@@ -27,11 +27,13 @@ must never bypass a gate.
 7. Switch the song browser to the managed corpus and report the number of files
    checked. Never merge a downloaded snapshot over local edits.
 
-The first implementation of this journey is now present and records download
-URL, time, HTTP ETag, archive SHA-256, and application version in the installed
-snapshot. Before beta, also resolve and record the commit SHA; add
-progress/cancellation around corpus validation; and add a restore/delete-backup
-UI.
+This journey is implemented. OPE resolves HEAD first, downloads the immutable
+commit archive, records its SHA and commit date, displays a separately tracked
+“current as of” check time, checks automatically at startup and every six hours,
+and highlights an available update without installing it. Validation reports
+per-file progress and supports cancellation. Retained backups can be listed,
+revalidated, restored without discarding the current corpus, or explicitly
+deleted.
 
 ### Report a problem without editing
 
@@ -146,7 +148,9 @@ without them.
 - [x] Add a prefilled OP-songs song-problem action.
 - [x] Record source, time, ETag, archive hash, archive root, and editor version
   in each managed snapshot.
-- [ ] Resolve/display the upstream commit SHA and restore/manage backups.
+- [x] Resolve/display the upstream commit SHA and commit/current-as-of dates;
+  automatically detect updates; add cancellable validation progress and
+  restore/delete backup management.
 - [ ] Add corpus identity and contribution-diff validation rules.
 - [x] Build exact-byte correction/new-song preflight, correction bundles,
   identity-free new-song TOML/code-block handoff, and browser handoff without

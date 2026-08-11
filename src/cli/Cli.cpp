@@ -182,7 +182,21 @@ CheckSummary runChecks(const Options &options, bool announceMissingCorpus)
     CheckSummary totals;
     const QFileInfo info(options.root);
 
+    const auto shouldCancel = [&] {
+        if (options.cancelled && options.cancelled()) {
+            totals.cancelled = true;
+            return true;
+        }
+        return false;
+    };
+    const auto reportProgress = [&](int total, const QString &path) {
+        if (options.progress)
+            options.progress(totals.files, total, path);
+    };
+
     if (info.isFile()) {
+        if (shouldCancel())
+            return totals;
         const QString overlayLanguage = i18n::codeFromFilename(info.fileName());
         if (overlayLanguage.isEmpty()) {
             checkFile(options.root, options, totals, QString());
@@ -200,6 +214,7 @@ CheckSummary runChecks(const Options &options, bool announceMissingCorpus)
             checkFile(options.root, options, totals,
                 base ? base->language : QString(), base ? &*base : nullptr);
         }
+        reportProgress(1, options.root);
         return totals;
     }
 
@@ -215,15 +230,30 @@ CheckSummary runChecks(const Options &options, bool announceMissingCorpus)
         return totals;
     }
     int handled = 0;
+    int totalFiles = 0;
+    int countedSongs = 0;
+    for (const SongEntry &entry : library.entries()) {
+        if (options.limit >= 0 && countedSongs >= options.limit)
+            break;
+        ++countedSongs;
+        ++totalFiles;
+        totalFiles += entry.translationPaths.size();
+    }
     for (const SongEntry &entry : library.entries()) {
         if (options.limit >= 0 && handled >= options.limit)
             break;
         ++handled;
+        if (shouldCancel())
+            return totals;
         checkFile(entry.basePath, options, totals, QString());
+        reportProgress(totalFiles, entry.basePath);
         const auto base = io::load(entry.basePath);
         for (const QString &path : entry.translationPaths) {
+            if (shouldCancel())
+                return totals;
             checkFile(path, options, totals, entry.baseLanguage,
                 base ? &*base : nullptr);
+            reportProgress(totalFiles, path);
         }
     }
     return totals;
@@ -233,12 +263,14 @@ CheckSummary runChecks(const Options &options, bool announceMissingCorpus)
 
 bool CheckSummary::passed() const noexcept
 {
-    return foundCorpus && files > 0 && parseFailures == 0 && roundTripFailures == 0
+    return !cancelled && foundCorpus && files > 0 && parseFailures == 0 && roundTripFailures == 0
         && reemitFailures == 0 && errors == 0;
 }
 
 QString CheckSummary::description() const
 {
+    if (cancelled)
+        return QStringLiteral("Checking was cancelled after %1 file(s).").arg(files);
     if (!foundCorpus)
         return QStringLiteral("No numbered song directories were found.");
     return QStringLiteral(

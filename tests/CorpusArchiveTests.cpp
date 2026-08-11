@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jon Hood, OpenPsalm.com
 
 #include "core/CorpusArchive.h"
+#include "core/CorpusSnapshot.h"
 
 #include <QDir>
 #include <QFile>
@@ -262,6 +263,51 @@ private Q_SLOTS:
         const QStringList backups = root.entryList(
             { QStringLiteral("installed.backup-*") }, QDir::Dirs | QDir::NoDotAndDotDot);
         QVERIFY(backups.isEmpty());
+    }
+
+    void snapshotMetadataTracksResolvedCommitAndFreshness()
+    {
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        SnapshotInfo snapshot;
+        snapshot.commitSha = QString(40, u'a');
+        snapshot.commitDate
+            = QDateTime::fromString(QStringLiteral("2026-08-10T12:00:00Z"), Qt::ISODate);
+        snapshot.currentAsOf
+            = QDateTime::fromString(QStringLiteral("2026-08-11T12:00:00Z"), Qt::ISODate);
+        snapshot.downloadedAt = snapshot.currentAsOf;
+        snapshot.archiveSha256 = QString(64, u'b');
+        QVERIFY(writeSnapshot(temporary.path(), snapshot));
+
+        const auto loaded = readSnapshot(temporary.path());
+        QVERIFY(loaded);
+        QVERIFY(loaded->hasResolvedCommit());
+        QCOMPARE(loaded->commitSha, snapshot.commitSha);
+        QCOMPARE(loaded->commitDate, snapshot.commitDate);
+        QCOMPARE(loaded->currentAsOf, snapshot.currentAsOf);
+
+        const QDateTime later
+            = QDateTime::fromString(QStringLiteral("2026-08-11T18:00:00Z"), Qt::ISODate);
+        QVERIFY(markSnapshotCurrent(
+            temporary.path(), snapshot.commitSha, snapshot.commitDate, later));
+        const auto refreshed = readSnapshot(temporary.path());
+        QVERIFY(refreshed);
+        QCOMPARE(refreshed->currentAsOf, later);
+        QVERIFY(!markSnapshotCurrent(
+            temporary.path(), QString(40, u'c'), snapshot.commitDate, later));
+    }
+
+    void findsOnlyManagedBackupDirectories()
+    {
+        QTemporaryDir temporary;
+        const QString target = temporary.filePath(QStringLiteral("OP-songs"));
+        QVERIFY(QDir().mkpath(target + QStringLiteral(".backup-20260810-120000")));
+        QVERIFY(QDir().mkpath(target + QStringLiteral(".backup-20260811-120000")));
+        QVERIFY(QDir().mkpath(temporary.filePath(QStringLiteral("unrelated"))));
+        const QStringList backups = backupDirectories(target);
+        QCOMPARE(backups.size(), 2);
+        QVERIFY(backups.at(0).contains(QStringLiteral("OP-songs.backup-")));
+        QVERIFY(backups.at(1).contains(QStringLiteral("OP-songs.backup-")));
     }
 
     void extractsARealSnapshotWhenProvided()
