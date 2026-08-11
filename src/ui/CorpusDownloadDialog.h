@@ -19,12 +19,19 @@ QT_END_NAMESPACE
 
 namespace ope::ui {
 
+struct CorpusDownloadOptions {
+    QNetworkAccessManager *network = nullptr; ///< non-owning test/application transport
+    qsizetype maxDownloadBytes = 32 * 1024 * 1024;
+};
+
 /// Downloads OP-songs/main, extracts it into an isolated temporary directory,
 /// runs every ope-check gate, and only then installs it into the app data area.
 class CorpusDownloadDialog : public QDialog {
     Q_OBJECT
 public:
     explicit CorpusDownloadDialog(QString target, QWidget *parent = nullptr);
+    CorpusDownloadDialog(
+        QString target, CorpusDownloadOptions options, QWidget *parent = nullptr);
 
     [[nodiscard]] const corpus::InstallResult &installResult() const noexcept
     {
@@ -42,7 +49,9 @@ private:
     void setStage(const QString &message);
 
     QString m_target;
-    QNetworkAccessManager m_network;
+    QNetworkAccessManager m_ownedNetwork;
+    QNetworkAccessManager *m_network = nullptr;
+    qsizetype m_maxDownloadBytes = 0;
     QNetworkReply *m_reply = nullptr;
     QByteArray m_download;
     QString m_failure;

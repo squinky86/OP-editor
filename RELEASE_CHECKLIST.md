@@ -4,9 +4,9 @@
   move it out of the beta scope in the changelog.
 - [ ] From a clean first-run profile, download OP-songs HEAD and confirm the
   destination, progress, validation summary, library switch, and first song open.
-- [ ] Replace an existing managed corpus and verify its timestamped backup; force
+- [x] Replace an existing managed corpus and verify its timestamped backup; force
   an install failure and verify automatic rollback.
-- [ ] Test offline, TLS/proxy failure, truncated ZIP, traversal/link entries,
+- [x] Test offline, TLS/proxy failure, truncated ZIP, traversal/link entries,
   entry/size limits, corrupt TOML, and a corpus-level validation error. None may
   alter the installed corpus.
 - [ ] Exercise problem-report and edited/new-song contribution workflows with a

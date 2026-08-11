@@ -5,6 +5,9 @@
 - Added a managed OP-songs HEAD download that stages the archive, rejects unsafe
   paths and sizes, runs the complete corpus checker, retains the old directory
   as a timestamped backup, and switches the library only after success.
+- Added deterministic offline, TLS/proxy, cancellation, hostile/truncated ZIP,
+  validation-failure, replacement, and rollback coverage. Fixed snapshot
+  provenance metadata being omitted when the validated tree was installed.
 - Exposed whole-corpus checking as structured data shared by the GUI and CLI.
 - Added a prefilled GitHub song-problem action for the current song.
 - Added exact-byte contribution preflight and ZIP bundles containing proposed

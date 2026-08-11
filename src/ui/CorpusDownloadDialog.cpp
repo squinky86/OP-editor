@@ -26,15 +26,18 @@
 #include <utility>
 
 namespace ope::ui {
-namespace {
-
-constexpr qsizetype MaxDownloadBytes = 32 * 1024 * 1024;
-
-} // namespace
 
 CorpusDownloadDialog::CorpusDownloadDialog(QString target, QWidget *parent)
+    : CorpusDownloadDialog(std::move(target), {}, parent)
+{
+}
+
+CorpusDownloadDialog::CorpusDownloadDialog(
+    QString target, CorpusDownloadOptions options, QWidget *parent)
     : QDialog(parent)
     , m_target(std::move(target))
+    , m_network(options.network ? options.network : &m_ownedNetwork)
+    , m_maxDownloadBytes(options.maxDownloadBytes)
     , m_temporary(QDir::temp().filePath(QStringLiteral("openpsalm-corpus-XXXXXX")))
 {
     setWindowTitle(tr("Download Latest OP-songs"));
@@ -73,6 +76,10 @@ void CorpusDownloadDialog::setStage(const QString &message)
 
 void CorpusDownloadDialog::start()
 {
+    if (m_maxDownloadBytes <= 0) {
+        fail(tr("The configured download safety limit is invalid."));
+        return;
+    }
     if (!m_temporary.isValid()) {
         fail(tr("Could not create a temporary staging directory."));
         return;
@@ -84,7 +91,7 @@ void CorpusDownloadDialog::start()
         QNetworkRequest::NoLessSafeRedirectPolicy);
     request.setHeader(QNetworkRequest::UserAgentHeader,
         QStringLiteral("OpenPsalm-Editor/%1").arg(QCoreApplication::applicationVersion()));
-    m_reply = m_network.get(request);
+    m_reply = m_network->get(request);
     connect(m_reply, &QNetworkReply::downloadProgress, this,
         [this](qint64 received, qint64 total) {
             if (total > 0 && total <= std::numeric_limits<int>::max()) {
@@ -96,8 +103,9 @@ void CorpusDownloadDialog::start()
         });
     connect(m_reply, &QIODevice::readyRead, this, [this] {
         m_download.append(m_reply->readAll());
-        if (m_download.size() > MaxDownloadBytes) {
-            m_failure = tr("The download exceeded the 32 MiB safety limit.");
+        if (m_download.size() > m_maxDownloadBytes) {
+            m_failure = tr("The download exceeded the %1 byte safety limit.")
+                            .arg(m_maxDownloadBytes);
             m_reply->abort();
         }
     });

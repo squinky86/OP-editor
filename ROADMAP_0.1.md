@@ -155,9 +155,11 @@ without them.
   baselines, and support one bundle containing coordinated
   base-plus-translation edits. New-song IDs remain maintainer-assigned.
 - [ ] Expand the installed task documentation and in-app contextual help.
-- [ ] Add tests for interrupted downloads, HTTP/TLS errors, archive limits,
-  install rollback, stale baselines, dirty documents, overlay contributions,
-  and keyboard-only workflows.
+- [x] Add tests for interrupted downloads, HTTP/TLS/proxy errors, rejected and
+  size-limited archives, validation failures, retained backups, and install
+  rollback.
+- [ ] Add tests for stale contribution baselines, dirty documents, coordinated
+  overlay contributions, and keyboard-only workflows.
 - [ ] Exercise the live OP-songs HEAD in CI as a scheduled compatibility job;
   keep release builds pinned to a recorded commit for reproducibility.
 - [ ] Complete the beta release gates in `RELEASE_CHECKLIST.md`, then bump CMake,

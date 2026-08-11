@@ -51,6 +51,16 @@ target_link_libraries(ContributionTests PRIVATE ope_cli Qt6::Test ope_flags)
 add_test(NAME ContributionTests COMMAND ContributionTests)
 set_tests_properties(ContributionTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+qt_add_executable(CorpusDownloadTests
+    CorpusDownloadTests.cpp
+    Fixtures.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/CorpusDownloadDialog.cpp
+)
+target_link_libraries(CorpusDownloadTests PRIVATE
+    ope_cli Qt6::Widgets Qt6::Network Qt6::Test ope_flags)
+add_test(NAME CorpusDownloadTests COMMAND CorpusDownloadTests)
+set_tests_properties(CorpusDownloadTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # Focused widget lifecycle coverage. These tests use real editor panels while
 # keeping files in a temporary directory and audio completely out of process.
 qt_add_executable(UiWorkflowTests

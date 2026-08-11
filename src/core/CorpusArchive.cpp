@@ -9,6 +9,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
+#include <QSet>
 #include <QUuid>
 
 #include <zip.h>
@@ -18,10 +19,6 @@
 
 namespace ope::corpus {
 namespace {
-
-constexpr zip_uint64_t MaxEntries = 10'000;
-constexpr zip_uint64_t MaxFileBytes = 32 * 1024 * 1024;
-constexpr zip_uint64_t MaxExpandedBytes = 256 * 1024 * 1024;
 
 using ZipPtr = std::unique_ptr<zip_t, decltype(&zip_discard)>;
 using ZipFilePtr = std::unique_ptr<zip_file_t, decltype(&zip_fclose)>;
@@ -36,6 +33,18 @@ std::expected<QString, QString> safeEntryPath(const QString &raw, QString &archi
 {
     if (raw.isEmpty() || raw.startsWith(u'/') || raw.contains(u'\\'))
         return std::unexpected(QStringLiteral("unsafe archive path: %1").arg(raw));
+
+    QString segmented = raw;
+    if (segmented.endsWith(u'/'))
+        segmented.chop(1);
+    const QStringList segments = segmented.split(u'/');
+    if (segments.isEmpty()
+        || std::any_of(segments.cbegin(), segments.cend(), [](const QString &segment) {
+               return segment.isEmpty() || segment == QLatin1String(".")
+                   || segment == QLatin1String("..") || segment.contains(u':');
+           })) {
+        return std::unexpected(QStringLiteral("unsafe archive path: %1").arg(raw));
+    }
 
     const QString clean = QDir::cleanPath(raw);
     if (clean == QLatin1String("..") || clean.startsWith(QLatin1String("../"))
@@ -68,7 +77,8 @@ bool copyTree(const QString &source, const QString &destination, QString &error)
         error = QStringLiteral("could not create staging directory %1").arg(destination);
         return false;
     }
-    QDirIterator it(source, QDir::AllEntries | QDir::NoDotAndDotDot,
+    QDirIterator it(source,
+        QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot,
         QDirIterator::Subdirectories);
     const QDir sourceDir(source);
     while (it.hasNext()) {
@@ -103,13 +113,20 @@ bool copyTree(const QString &source, const QString &destination, QString &error)
 } // namespace
 
 std::expected<ExtractResult, QString> extractSnapshotZip(
-    const QString &archivePath, const QString &destination)
+    const QString &archivePath, const QString &destination, const ArchiveLimits &limits)
 {
     if (archivePath.isEmpty() || destination.isEmpty())
         return std::unexpected(QStringLiteral("archive and destination paths are required"));
+    if (limits.maxEntries <= 0 || limits.maxFileBytes <= 0
+        || limits.maxExpandedBytes <= 0) {
+        return std::unexpected(QStringLiteral("archive safety limits must be positive"));
+    }
     const QDir destinationDir(destination);
     if (destinationDir.exists()
-        && !destinationDir.entryList(QDir::AllEntries | QDir::NoDotAndDotDot).isEmpty()) {
+        && !destinationDir
+                .entryList(QDir::AllEntries | QDir::Hidden | QDir::System
+                    | QDir::NoDotAndDotDot)
+                .isEmpty()) {
         return std::unexpected(QStringLiteral("extraction destination is not empty: %1")
                                    .arg(destination));
     }
@@ -128,12 +145,13 @@ std::expected<ExtractResult, QString> extractSnapshotZip(
     }
 
     const zip_int64_t entryCount = zip_get_num_entries(archive.get(), 0);
-    if (entryCount <= 0 || static_cast<zip_uint64_t>(entryCount) > MaxEntries)
+    if (entryCount <= 0 || entryCount > limits.maxEntries)
         return std::unexpected(QStringLiteral("archive has an unsafe entry count: %1")
                                    .arg(entryCount));
 
     ExtractResult result;
     zip_uint64_t expandedBytes = 0;
+    QSet<QString> extractedPaths;
     for (zip_uint64_t index = 0; index < static_cast<zip_uint64_t>(entryCount); ++index) {
         zip_stat_t stat;
         zip_stat_init(&stat);
@@ -147,6 +165,10 @@ std::expected<ExtractResult, QString> extractSnapshotZip(
         const QString relative = *relativeResult;
         if (relative.isEmpty())
             continue;
+        if (extractedPaths.contains(relative))
+            return std::unexpected(QStringLiteral("archive contains a duplicate path: %1")
+                                       .arg(relative));
+        extractedPaths.insert(relative);
 
         const bool directory = rawName.endsWith(u'/');
         zip_uint8_t opsys = 0;
@@ -167,8 +189,11 @@ std::expected<ExtractResult, QString> extractSnapshotZip(
                 return std::unexpected(QStringLiteral("could not create %1").arg(outputPath));
             continue;
         }
-        if (!(stat.valid & ZIP_STAT_SIZE) || stat.size > MaxFileBytes
-            || expandedBytes + stat.size > MaxExpandedBytes) {
+        if (!(stat.valid & ZIP_STAT_SIZE)
+            || stat.size > static_cast<zip_uint64_t>(limits.maxFileBytes)
+            || stat.size > static_cast<zip_uint64_t>(limits.maxExpandedBytes)
+            || expandedBytes
+                    > static_cast<zip_uint64_t>(limits.maxExpandedBytes) - stat.size) {
             return std::unexpected(QStringLiteral("archive entry is too large: %1").arg(rawName));
         }
         if (!QDir().mkpath(QFileInfo(outputPath).path()))
@@ -211,7 +236,7 @@ std::expected<ExtractResult, QString> extractSnapshotZip(
 }
 
 std::expected<InstallResult, QString> installValidatedSnapshot(
-    const QString &stagingRoot, const QString &target)
+    const QString &stagingRoot, const QString &target, const InstallHooks &hooks)
 {
     const QFileInfo sourceInfo(stagingRoot);
     const QString absoluteTarget = QFileInfo(target).absoluteFilePath();
@@ -224,6 +249,11 @@ std::expected<InstallResult, QString> installValidatedSnapshot(
     const QString parentPath = QFileInfo(absoluteTarget).path();
     if (!QDir().mkpath(parentPath))
         return std::unexpected(QStringLiteral("could not create %1").arg(parentPath));
+    const auto renameDirectory = hooks.renameDirectory
+        ? hooks.renameDirectory
+        : [](const QString &source, const QString &destination) {
+              return QDir().rename(source, destination);
+          };
     const QString suffix = QUuid::createUuid().toString(QUuid::WithoutBraces);
     const QString copyPath = QDir(parentPath).filePath(QStringLiteral(".ope-corpus-stage-%1")
                                                           .arg(suffix));
@@ -241,18 +271,20 @@ std::expected<InstallResult, QString> installValidatedSnapshot(
                                     QStringLiteral("yyyyMMdd-HHmmss")));
         if (QFileInfo::exists(result.backup))
             result.backup.append(u'-' + suffix.first(8));
-        if (!QDir().rename(absoluteTarget, result.backup)) {
+        if (!renameDirectory(absoluteTarget, result.backup)) {
             QDir(copyPath).removeRecursively();
             return std::unexpected(QStringLiteral("could not move the existing corpus to %1")
                                        .arg(result.backup));
         }
     }
 
-    if (!QDir().rename(copyPath, absoluteTarget)) {
+    if (!renameDirectory(copyPath, absoluteTarget)) {
         QString rollback;
-        if (!result.backup.isEmpty() && !QDir().rename(result.backup, absoluteTarget))
+        if (!result.backup.isEmpty()
+            && !renameDirectory(result.backup, absoluteTarget)) {
             rollback = QStringLiteral(" The previous corpus also could not be restored from %1.")
                            .arg(result.backup);
+        }
         QDir(copyPath).removeRecursively();
         return std::unexpected(QStringLiteral("could not activate the downloaded corpus.%1")
                                    .arg(rollback));
