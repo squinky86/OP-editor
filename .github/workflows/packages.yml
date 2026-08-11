@@ -109,9 +109,7 @@ jobs:
         shell: pwsh
         run: |
           $root = Join-Path $env:RUNNER_TEMP 'ope-vcpkg'
-          git init $root
-          git -C $root remote add origin https://github.com/microsoft/vcpkg.git
-          git -C $root fetch --depth 1 origin $env:VCPKG_COMMIT
+          git clone --no-checkout https://github.com/microsoft/vcpkg.git $root
           git -C $root checkout --detach $env:VCPKG_COMMIT
           & "$root\bootstrap-vcpkg.bat" -disableMetrics
           "VCPKG_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
