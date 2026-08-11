@@ -75,7 +75,9 @@ jobs:
             XDG_DATA_HOME="$PWD/smoke/data" \
             package-root/usr/bin/ope --screenshot smoke/debian.png
           test -s smoke/debian.png
-          sha256sum "$package" > "${package}.sha256"
+          package_dir="$(dirname "$package")"
+          package_name="$(basename "$package")"
+          (cd "$package_dir" && sha256sum "$package_name" > "${package_name}.sha256")
           dpkg-deb --info "$package"
 
       - name: Upload Debian package
@@ -203,7 +205,9 @@ jobs:
             $headers = & $dumpbin.FullName /HEADERS $exe | Out-String
             if ($headers -notmatch '8664 machine \(x64\)') { throw "$exe is not x64" }
             $imports = & $dumpbin.FullName /DEPENDENTS $exe | Out-String
-            if ($imports -match '(?i)Qt6.*\.dll|VCRUNTIME.*\.dll|MSVCP.*\.dll|libgcc|libstdc\+\+') {
+            # Unversioned icuuc.dll is a Windows system component. Versioned
+            # ICU DLLs are redistributables and must not leak into this archive.
+            if ($imports -match '(?i)Qt6.*\.dll|VCRUNTIME.*\.dll|MSVCP.*\.dll|libgcc|libstdc\+\+|icu(?:dt|in|uc)\d+\.dll') {
               throw "$exe has a non-static toolchain or Qt dependency:`n$imports"
             }
           }
