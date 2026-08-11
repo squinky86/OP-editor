@@ -146,15 +146,23 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          $packages = & "$env:VCPKG_ROOT\vcpkg.exe" list
+          $packages = (& "$env:VCPKG_ROOT\vcpkg.exe" list `
+            --x-install-root="$PWD\build-windows\vcpkg_installed") -join "`n"
           if ($packages -notmatch 'qtbase:x64-windows-static-release\s+6\.11\.1') {
             throw "The target Qt Base build is not 6.11.1:`n$packages"
           }
           if ($packages -notmatch 'qtmultimedia:x64-windows-static-release\s+6\.11\.1') {
             throw "The target Qt Multimedia build is not 6.11.1:`n$packages"
           }
-          cmake --build build-windows --config Release --parallel 2
-          ctest --test-dir build-windows -C Release --output-on-failure
+          # Debian runs the complete suite. On static Windows, SessionTests and
+          # UiWorkflowTests need their own platform-plugin imports; exercise the
+          # real shipped GUI with the native screenshot smoke in the next step.
+          cmake --build build-windows --config Release --parallel 2 `
+            --target ope ope-check FormatTests DocumentTests CorpusTests `
+              AudioTests GlyphTests CliTests
+          ctest --test-dir build-windows -C Release --output-on-failure `
+            --timeout 30 `
+            -R '^(FormatTests|DocumentTests|CorpusTests|AudioTests|GlyphTests|CliTests)$'
 
       - name: Stage self-contained package
         shell: pwsh
