@@ -562,12 +562,18 @@ void ScoreView::paintPart(QPainter &painter, const SystemBox &system, const Staf
             }
 
             // Pitched: draw every notehead of the chord, stem from the primary.
-            qreal primaryPosition = 0;
+            // Invalid empty chords are reported by the validator but must
+            // remain safe to display while the author fixes the source.
+            const qreal primaryPosition = event.pitches.isEmpty()
+                ? 0.0
+                : staffPositionFor(event.pitches.first(), staff.clef);
+            const bool stemUp = forceStemUp ? true
+                : forceStemDown              ? false
+                                             : primaryPosition < 4.0;
+            const QString keySignature = doc.keySignature.valueOr(QStringLiteral("C"));
             for (int p = 0; p < event.pitches.size(); ++p) {
                 const Pitch &pitch = event.pitches.at(p);
                 const qreal position = staffPositionFor(pitch, staff.clef);
-                if (p == 0)
-                    primaryPosition = position;
                 const qreal y = staff.top + 4 * space - position * space;
 
                 // Ledger lines.
@@ -597,10 +603,10 @@ void ScoreView::paintPart(QPainter &painter, const SystemBox &system, const Staf
                 painter.setBrush(ink);
                 painter.translate(x, y);
                 painter.scale(space, space);
-                if (event.duration.base == 1)
-                    painter.drawPath(glyphs::wholeNotehead());
-                else
-                    painter.drawPath(glyphs::notehead(event.duration.base >= 4));
+                const glyphs::AikenShape shape
+                    = glyphs::aikenShapeForPitch(pitch.step, keySignature);
+                painter.drawPath(
+                    glyphs::aikenNotehead(shape, event.duration.base >= 4, stemUp));
                 painter.restore();
 
                 for (int d = 0; d < event.duration.dots; ++d) {
@@ -611,9 +617,6 @@ void ScoreView::paintPart(QPainter &painter, const SystemBox &system, const Staf
                 }
             }
 
-            const bool stemUp = forceStemUp ? true
-                : forceStemDown              ? false
-                                             : primaryPosition < 4.0;
             const qreal headY = staff.top + 4 * space - primaryPosition * space;
             if (event.duration.base >= 2) {
                 const qreal stemX = x + (stemUp ? 0.62 : -0.62) * space;

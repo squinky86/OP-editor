@@ -44,6 +44,20 @@ target_link_libraries(ope PRIVATE
     Qt6::Multimedia
     ope_flags
 )
-set_target_properties(ope PROPERTIES WIN32_EXECUTABLE OFF MACOSX_BUNDLE OFF OUTPUT_NAME ope)
+
+# Static Qt builds must carry their platform and multimedia backends inside the
+# executable. Shared Windows builds keep their normal deployable plugin DLLs.
+# This makes the intended release contents explicit for the source-built static
+# package without changing ordinary developer builds.
+if(WIN32 AND NOT QT6_IS_SHARED_LIBS_BUILD)
+    qt_import_plugins(ope
+        INCLUDE_BY_TYPE platforms Qt6::QWindowsIntegrationPlugin
+        INCLUDE_BY_TYPE multimedia Qt6::QWindowsMediaPlugin)
+endif()
+
+set_target_properties(ope PROPERTIES
+    WIN32_EXECUTABLE "${WIN32}"
+    MACOSX_BUNDLE OFF
+    OUTPUT_NAME ope)
 
 install(TARGETS ope ope-check RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

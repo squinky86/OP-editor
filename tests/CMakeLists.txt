@@ -33,6 +33,14 @@ target_link_libraries(AudioTests PRIVATE ope_core Qt6::Test ope_flags)
 add_test(NAME AudioTests COMMAND AudioTests)
 set_tests_properties(AudioTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# Vector glyph and key-relative shape-note coverage. Keeping this separate from
+# the widget suite makes notation rendering regressions quick to diagnose.
+qt_add_executable(GlyphTests GlyphTests.cpp ${CMAKE_SOURCE_DIR}/src/ui/Glyphs.cpp)
+target_include_directories(GlyphTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(GlyphTests PRIVATE Qt6::Gui Qt6::Test ope_flags)
+add_test(NAME GlyphTests COMMAND GlyphTests)
+set_tests_properties(GlyphTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 qt_add_executable(CliTests CliTests.cpp)
 target_link_libraries(CliTests PRIVATE ope_cli Qt6::Test ope_flags)
 add_test(NAME CliTests COMMAND CliTests)

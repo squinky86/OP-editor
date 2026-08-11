@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=OpenPsalm Editor
+GenericName=Hymn Score Editor
+Comment=Edit and validate OpenPsalm song files
+Exec=ope %f
+Icon=multimedia-sound
+Terminal=false
+Categories=AudioVideo;Audio;Education;Qt;
+StartupNotify=true

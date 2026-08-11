@@ -1,0 +1,204 @@
+name: Build release packages
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packages-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  APP_VERSION: 0.0.1
+  VCPKG_COMMIT: dc31f86a441067d6c2e9e4ad52988eb41ef4f442
+
+jobs:
+  debian-amd64:
+    name: Debian 13 amd64 package
+    runs-on: ubuntu-24.04
+    container: debian:trixie-slim
+    timeout-minutes: 30
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+            build-essential ca-certificates cmake dpkg-dev file git ninja-build \
+            qt6-base-dev qt6-base-dev-tools qt6-multimedia-dev
+
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Configure
+        run: |
+          cmake -S . -B build-debian -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPE_WARNINGS_AS_ERRORS=ON
+
+      - name: Build and test
+        run: |
+          cmake --build build-debian --parallel 2
+          ctest --test-dir build-debian --output-on-failure
+
+      - name: Build Debian package
+        run: cpack --config build-debian/CPackConfig.cmake -G DEB -B artifacts
+
+      - name: Verify Debian package
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="$(find artifacts -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          test -n "$package"
+          test "$(dpkg-deb --field "$package" Architecture)" = "amd64"
+          test "$(dpkg-deb --field "$package" Version)" = "${APP_VERSION}-1"
+          dpkg-deb --field "$package" Depends | grep -q 'libqt6core6'
+          mkdir package-root
+          dpkg-deb --extract "$package" package-root
+          test -x package-root/usr/bin/ope
+          test -x package-root/usr/bin/ope-check
+          test -f package-root/usr/share/applications/openpsalm-editor.desktop
+          test -f package-root/usr/share/doc/OpenPsalmEditor/THIRD_PARTY_NOTICES.md
+          file package-root/usr/bin/ope | grep -q 'ELF 64-bit.*x86-64'
+          package-root/usr/bin/ope --version | grep -F "OpenPsalm Editor ${APP_VERSION}"
+          package-root/usr/bin/ope-check --help | grep -F 'Usage:'
+          mkdir -p smoke/config smoke/data
+          QT_QPA_PLATFORM=offscreen \
+            XDG_CONFIG_HOME="$PWD/smoke/config" \
+            XDG_DATA_HOME="$PWD/smoke/data" \
+            package-root/usr/bin/ope --screenshot smoke/debian.png
+          test -s smoke/debian.png
+          sha256sum "$package" > "${package}.sha256"
+          dpkg-deb --info "$package"
+
+      - name: Upload Debian package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: OpenPsalmEditor-${{ env.APP_VERSION }}-Debian-amd64
+          path: |
+            artifacts/*.deb
+            artifacts/*.deb.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  windows-x64-static:
+    name: Windows x64 static package
+    runs-on: windows-2022
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .vcpkg-binary-cache
+          key: vcpkg-windows-static-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'packaging/vcpkg-triplets/*.cmake') }}
+          restore-keys: |
+            vcpkg-windows-static-${{ env.VCPKG_COMMIT }}-
+
+      - name: Bootstrap pinned vcpkg
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'ope-vcpkg'
+          git clone --filter=blob:none --no-checkout https://github.com/microsoft/vcpkg.git $root
+          git -C $root fetch --depth 1 origin $env:VCPKG_COMMIT
+          git -C $root checkout --detach $env:VCPKG_COMMIT
+          & "$root\bootstrap-vcpkg.bat" -disableMetrics
+          "VCPKG_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
+          New-Item -ItemType Directory -Force .vcpkg-binary-cache | Out-Null
+
+      - name: Configure static release
+        shell: pwsh
+        env:
+          VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\.vcpkg-binary-cache,readwrite
+          VCPKG_FEATURE_FLAGS: manifests,binarycaching
+        run: |
+          cmake -S . -B build-windows -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DVCPKG_OVERLAY_TRIPLETS="${{ github.workspace }}\packaging\vcpkg-triplets" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-release `
+            -DVCPKG_HOST_TRIPLET=x64-windows-release `
+            -DOPE_WARNINGS_AS_ERRORS=ON
+
+      - name: Build and test
+        shell: pwsh
+        run: |
+          $packages = & "$env:VCPKG_ROOT\vcpkg.exe" list
+          if ($packages -notmatch 'qtbase:x64-windows-static-release\s+6\.11\.1') {
+            throw "The target Qt Base build is not 6.11.1:`n$packages"
+          }
+          if ($packages -notmatch 'qtmultimedia:x64-windows-static-release\s+6\.11\.1') {
+            throw "The target Qt Multimedia build is not 6.11.1:`n$packages"
+          }
+          cmake --build build-windows --config Release --parallel 2
+          ctest --test-dir build-windows -C Release --output-on-failure
+
+      - name: Stage self-contained package
+        shell: pwsh
+        run: |
+          $packageName = "OpenPsalmEditor-$env:APP_VERSION-Windows-x64"
+          $package = Join-Path $PWD "artifacts\$packageName"
+          New-Item -ItemType Directory -Force $package | Out-Null
+          Copy-Item build-windows\src\Release\ope.exe $package
+          Copy-Item build-windows\src\Release\ope-check.exe $package
+          Copy-Item README.md,CHANGELOG.md,LICENSE,THIRD_PARTY_NOTICES.md $package
+
+          $dlls = Get-ChildItem $package -Filter '*.dll' -Recurse
+          if ($dlls) { throw "Static package unexpectedly contains DLLs: $dlls" }
+
+          Push-Location $package
+          $version = Start-Process .\ope.exe -ArgumentList '--version' -Wait -PassThru
+          if ($version.ExitCode -ne 0) { throw 'ope.exe --version failed' }
+          $help = Start-Process .\ope-check.exe -ArgumentList '--help' -Wait -PassThru
+          if ($help.ExitCode -ne 0) { throw 'ope-check.exe --help failed' }
+          New-Item -ItemType Directory -Force smoke-config,smoke-data | Out-Null
+          $env:QT_QPA_PLATFORM = 'windows'
+          $env:XDG_CONFIG_HOME = (Resolve-Path smoke-config)
+          $env:XDG_DATA_HOME = (Resolve-Path smoke-data)
+          $smoke = Start-Process .\ope.exe `
+            -ArgumentList '--screenshot','windows-smoke.png' -Wait -PassThru
+          if ($smoke.ExitCode -ne 0 -or !(Test-Path windows-smoke.png)) {
+            throw 'Windows GUI screenshot smoke test failed'
+          }
+          Remove-Item -Recurse -Force smoke-config,smoke-data,windows-smoke.png
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          foreach ($exe in 'ope.exe','ope-check.exe') {
+            $headers = & $dumpbin.FullName /HEADERS $exe | Out-String
+            if ($headers -notmatch '8664 machine \(x64\)') { throw "$exe is not x64" }
+            $imports = & $dumpbin.FullName /DEPENDENTS $exe | Out-String
+            if ($imports -match '(?i)Qt6.*\.dll|VCRUNTIME.*\.dll|MSVCP.*\.dll|libgcc|libstdc\+\+') {
+              throw "$exe has a non-static toolchain or Qt dependency:`n$imports"
+            }
+          }
+          Get-FileHash ope.exe,ope-check.exe -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($_.Path))" } |
+            Set-Content SHA256SUMS.txt
+          Pop-Location
+
+          Compress-Archive -Path $package -DestinationPath "artifacts\$packageName.zip"
+          Get-FileHash "artifacts\$packageName.zip" -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($_.Path))" } |
+            Set-Content "artifacts\$packageName.zip.sha256"
+
+      - name: Upload static Windows package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: OpenPsalmEditor-${{ env.APP_VERSION }}-Windows-x64-static
+          path: |
+            artifacts/*.zip
+            artifacts/*.zip.sha256
+          if-no-files-found: error
+          retention-days: 30

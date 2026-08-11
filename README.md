@@ -62,6 +62,17 @@ Two binaries land in `build/src`:
 | `ope` | the editor |
 | `ope-check` | the same format checks with no GUI, for a terminal or CI |
 
+Tagged and `main` builds also produce two installable workflow artifacts:
+
+- `openpsalm-editor_VERSION-1_amd64.deb`, built and tested on Debian 13.
+- `OpenPsalmEditor-VERSION-Windows-x64.zip`, containing self-contained 64-bit
+  Windows executables. Qt and the MSVC runtime are rebuilt and linked statically;
+  no Qt DLL installation is required.
+
+The exact open-source Qt build inputs are pinned in `vcpkg.json` and
+`packaging/vcpkg-triplets/`. See `THIRD_PARTY_NOTICES.md` for licensing and
+corresponding-source details.
+
 ## Running
 
 ```sh

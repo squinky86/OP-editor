@@ -47,11 +47,34 @@ endif()
 
 install(FILES README.md LICENSE CHANGELOG.md OPE.md RELEASE_CHECKLIST.md
     DESTINATION ${CMAKE_INSTALL_DOCDIR})
+install(FILES THIRD_PARTY_NOTICES.md DESTINATION ${CMAKE_INSTALL_DOCDIR})
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    install(FILES packaging/linux/openpsalm-editor.desktop
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+endif()
 
 set(CPACK_PACKAGE_NAME "OpenPsalmEditor")
 set(CPACK_PACKAGE_VENDOR "OpenPsalm.com")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Editor for OpenPsalm song.toml files")
+set(CPACK_PACKAGE_DESCRIPTION
+    "A desktop editor and validator for OpenPsalm song.toml hymn sources.")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/squinky86/OP-editor")
+set(CPACK_PACKAGE_CONTACT "Jon Hood <jon@openpsalm.com>")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_GENERATOR "TGZ;ZIP")
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND CPACK_GENERATOR DEB)
+    set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
+    set(CPACK_DEBIAN_PACKAGE_NAME "openpsalm-editor")
+    set(CPACK_DEBIAN_PACKAGE_MAINTAINER "${CPACK_PACKAGE_CONTACT}")
+    set(CPACK_DEBIAN_PACKAGE_SECTION "sound")
+    set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+    set(CPACK_DEBIAN_PACKAGE_RELEASE "1")
+    set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+    set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+endif()
+
 include(CPack)

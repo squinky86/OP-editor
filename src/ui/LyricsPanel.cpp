@@ -13,6 +13,7 @@
 #include <QPlainTextEdit>
 #include <QRegularExpression>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QToolButton>
@@ -798,6 +799,14 @@ void LyricsPanel::showBreakMenu(int column, QPoint where)
 
 void LyricsPanel::rebuildGrid()
 {
+    // A phrase-break edit changes the document and rebuilds this table. Keep
+    // the user's place in a long hymn instead of snapping the alignment view
+    // back to its first syllable after every click.
+    const int horizontalScroll = m_grid->horizontalScrollBar()->value();
+    const int verticalScroll = m_grid->verticalScrollBar()->value();
+    const int currentRow = m_grid->currentRow();
+    const int currentColumn = m_grid->currentColumn();
+
     const bool wasLoading = m_loading;
     m_loading = true;
     m_grid->clear();
@@ -892,6 +901,14 @@ void LyricsPanel::rebuildGrid()
             m_gridHint->setText(hints.join(QStringLiteral("  ·  ")));
         }
     }
+
+    if (currentRow >= 0 && currentRow < m_grid->rowCount()
+        && currentColumn >= 0 && currentColumn < m_grid->columnCount()) {
+        m_grid->setCurrentCell(currentRow, currentColumn);
+    }
+    m_grid->resizeColumnsToContents();
+    m_grid->horizontalScrollBar()->setValue(horizontalScroll);
+    m_grid->verticalScrollBar()->setValue(verticalScroll);
     m_loading = wasLoading;
 }
 

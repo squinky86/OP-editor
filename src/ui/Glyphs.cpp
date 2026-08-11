@@ -3,7 +3,10 @@
 
 #include "Glyphs.h"
 
+#include <QPolygonF>
 #include <QTransform>
+
+#include <array>
 
 namespace ope::ui::glyphs {
 namespace {
@@ -16,7 +19,119 @@ QPainterPath tiltedOval(qreal width, qreal height, qreal degrees)
     return QTransform().rotate(degrees).map(path);
 }
 
+QPainterPath polygon(std::initializer_list<QPointF> points)
+{
+    QPainterPath path;
+    const QPolygonF polygon(points);
+    path.addPolygon(polygon);
+    path.closeSubpath();
+    return path;
+}
+
+QPainterPath hollowed(const QPainterPath &outer, const QPainterPath &inner, bool filled)
+{
+    return filled ? outer : outer.subtracted(inner);
+}
+
 } // namespace
+
+AikenShape aikenShapeForPitch(QChar pitchStep, QStringView keySignature)
+{
+    const auto stepIndex = [](QChar step) {
+        switch (step.toUpper().toLatin1()) {
+        case 'C': return 0;
+        case 'D': return 1;
+        case 'E': return 2;
+        case 'F': return 3;
+        case 'G': return 4;
+        case 'A': return 5;
+        case 'B': return 6;
+        default: return 0;
+        }
+    };
+
+    // The key's first letter is its tonic. For la-based minor, moving forward
+    // two letter names finds the relative-major tonic: A -> C, E -> G, etc.
+    int tonic = keySignature.isEmpty() ? 0 : stepIndex(keySignature.front());
+    if (keySignature.endsWith(u'm', Qt::CaseInsensitive))
+        tonic = (tonic + 2) % 7;
+
+    const int degree = (stepIndex(pitchStep) - tonic + 7) % 7;
+    static constexpr std::array shapes { AikenShape::Do, AikenShape::Re, AikenShape::Mi,
+        AikenShape::Fa, AikenShape::Sol, AikenShape::La, AikenShape::Ti };
+    return shapes.at(static_cast<std::size_t>(degree));
+}
+
+QPainterPath aikenNotehead(AikenShape shape, bool filled, bool stemUp)
+{
+    switch (shape) {
+    case AikenShape::Do: {
+        const QPainterPath outer = polygon({ QPointF(-0.72, 0.50), QPointF(0.0, -0.50),
+            QPointF(0.72, 0.50) });
+        const QPainterPath inner = polygon({ QPointF(-0.35, 0.24), QPointF(0.0, -0.24),
+            QPointF(0.35, 0.24) });
+        return hollowed(outer, inner, filled);
+    }
+    case AikenShape::Re: {
+        QPainterPath outer;
+        outer.moveTo(-0.72, -0.50);
+        outer.lineTo(0.72, -0.50);
+        outer.lineTo(0.72, -0.20);
+        outer.cubicTo(0.72, 0.73, -0.72, 0.73, -0.72, -0.20);
+        outer.closeSubpath();
+        QPainterPath inner;
+        inner.moveTo(-0.56, -0.20);
+        inner.lineTo(0.56, -0.20);
+        inner.cubicTo(0.52, 0.38, -0.52, 0.38, -0.56, -0.20);
+        inner.closeSubpath();
+        return hollowed(outer, inner, filled);
+    }
+    case AikenShape::Mi: {
+        const QPainterPath outer = polygon({ QPointF(-0.72, 0.0), QPointF(0.0, -0.50),
+            QPointF(0.72, 0.0), QPointF(0.0, 0.50) });
+        // Aiken's mirrored-mi cavity is a diagonal lozenge, rather than a
+        // smaller concentric diamond.
+        const QPainterPath inner = polygon({ QPointF(-0.36, 0.08), QPointF(0.12, -0.25),
+            QPointF(0.40, -0.06), QPointF(-0.08, 0.27) });
+        return hollowed(outer, inner, filled);
+    }
+    case AikenShape::Fa: {
+        const QPainterPath outer = stemUp
+            ? polygon({ QPointF(-0.72, -0.50), QPointF(0.72, -0.50), QPointF(0.72, 0.50) })
+            : polygon({ QPointF(-0.72, -0.50), QPointF(-0.72, 0.50), QPointF(0.72, 0.50) });
+        const QPainterPath inner = stemUp
+            ? polygon({ QPointF(-0.22, -0.25), QPointF(0.48, -0.25), QPointF(0.48, 0.24) })
+            : polygon({ QPointF(-0.48, -0.24), QPointF(-0.48, 0.25), QPointF(0.22, 0.25) });
+        return hollowed(outer, inner, filled);
+    }
+    case AikenShape::Sol: {
+        const QPainterPath outer = tiltedOval(1.42, 0.98, -22);
+        const QPainterPath inner = tiltedOval(0.92, 0.46, -22);
+        return hollowed(outer, inner, filled);
+    }
+    case AikenShape::La: {
+        QPainterPath outer;
+        outer.addRoundedRect(QRectF(-0.72, -0.50, 1.44, 1.0), 0.06, 0.06);
+        QPainterPath inner;
+        inner.addRect(QRectF(-0.56, -0.22, 1.12, 0.44));
+        return hollowed(outer, inner, filled);
+    }
+    case AikenShape::Ti: {
+        QPainterPath outer;
+        outer.moveTo(0.0, 0.50);
+        outer.lineTo(-0.70, -0.10);
+        outer.cubicTo(-0.34, -0.63, 0.34, -0.63, 0.70, -0.10);
+        outer.closeSubpath();
+        QPainterPath inner;
+        inner.moveTo(0.0, 0.22);
+        inner.lineTo(-0.42, -0.08);
+        inner.cubicTo(-0.22, -0.34, 0.22, -0.34, 0.42, -0.08);
+        inner.closeSubpath();
+        return hollowed(outer, inner, filled);
+    }
+    }
+    return notehead(filled);
+}
 
 QPainterPath notehead(bool filled)
 {

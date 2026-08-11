@@ -1,4 +1,7 @@
 build/
+build-*/
+vcpkg_installed/
+.vcpkg-binary-cache/
 *.user
 .cache/
 compile_commands.json

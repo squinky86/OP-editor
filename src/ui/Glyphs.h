@@ -14,8 +14,20 @@
 #pragma once
 
 #include <QPainterPath>
+#include <QStringView>
 
 namespace ope::ui::glyphs {
+
+/// The seven syllables and notehead shapes used by Aiken notation.
+enum class AikenShape { Do, Re, Mi, Fa, Sol, La, Ti };
+
+/// Choose a movable-do Aiken shape for a pitch letter in a key signature.
+/// Minor keys follow OpenPsalm's la-based-minor convention (Am uses C major's
+/// shape assignment). Accidentals do not change a note's diatonic shape.
+[[nodiscard]] AikenShape aikenShapeForPitch(QChar pitchStep, QStringView keySignature);
+/// A filled (quarter or shorter) or hollow (whole/half) Aiken notehead.
+/// Fa heads mirror with the stem direction, as they do in LilyPond.
+[[nodiscard]] QPainterPath aikenNotehead(AikenShape shape, bool filled, bool stemUp = true);
 
 /// Filled or hollow notehead, centred on the origin, one staff space tall.
 [[nodiscard]] QPainterPath notehead(bool filled);

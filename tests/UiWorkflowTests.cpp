@@ -15,8 +15,11 @@
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollBar>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTabWidget>
 
 using namespace ope;
 using namespace ope::fixtures;
@@ -55,6 +58,49 @@ class UiWorkflowTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void phraseBreakEditKeepsTheAlignmentScrollPosition()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, QStringLiteral("song.toml"),
+            "title = \"Long alignment\"\n"
+            "time_sig_numerator = 4\n"
+            "time_sig_denominator = 4\n\n"
+            "[parts.Soprano]\n"
+            "choral_type = \"soprano\"\n"
+            "notes = \"\"\"\n"
+            "c'4 d'4 e'4 f'4 | g'4 a'4 b'4 c''4 | c''4 b'4 a'4 g'4 |\n"
+            "f'4 e'4 d'4 c'4 | c'4 d'4 e'4 f'4 | g'4 a'4 b'4 c''4\n"
+            "\"\"\"\n\n"
+            "[lyrics.1]\n"
+            "text = \"one two three four five six seven eight nine ten eleven twelve "
+            "thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty "
+            "twentyone twentytwo twentythree twentyfour\"\n");
+        Session session;
+        QVERIFY(session.openSong(root.filePath(QStringLiteral("song.toml"))));
+        LyricsPanel panel(&session);
+        panel.resize(360, 420);
+        panel.show();
+
+        QTabWidget *tabs = panel.findChild<QTabWidget *>();
+        QTableWidget *grid = panel.findChild<QTableWidget *>();
+        QVERIFY(tabs);
+        QVERIFY(grid);
+        tabs->setCurrentIndex(1);
+        QCoreApplication::processEvents();
+
+        QVERIFY(grid->columnCount() >= 20);
+        grid->setCurrentCell(2, 18);
+        grid->scrollToItem(grid->item(2, 18));
+        QCoreApplication::processEvents();
+        const int before = grid->horizontalScrollBar()->value();
+        QVERIFY(before > 0);
+
+        session.togglePhraseBreak(PhraseBreak { 1, 16 }, BreakKind::Required);
+        QCOMPARE(grid->horizontalScrollBar()->value(), before);
+        QCOMPARE(grid->currentColumn(), 18);
+    }
+
     void delayedLyricsCommitStaysWithItsOriginalLanguage()
     {
         QTemporaryDir dir;

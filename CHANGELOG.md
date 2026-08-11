@@ -14,5 +14,11 @@
 - Protected delayed lyric and header edits across tab, song, undo, reload, and
   window transitions.
 - Added time-signature, tempo, verse, notation, lyric, and overlay validation.
+- Made Aiken seven-shape noteheads the default score view, including la-based
+  minor-key assignments and duration-appropriate filled and hollow heads.
+- Preserved the alignment grid's horizontal position when phrase-break edits
+  rebuild the Lyrics view.
 - Added `ope-check`, full-corpus compatibility checks, deterministic audio/CLI
   tests, and focused widget workflow tests.
+- Added reproducible Debian amd64 and self-contained static Windows x64 package
+  builds with runtime and architecture verification in GitHub Actions.
