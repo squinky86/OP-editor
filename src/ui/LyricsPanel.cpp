@@ -748,8 +748,9 @@ void LyricsPanel::clickBreakCell(int column)
     if (item->data(Qt::UserRole + 3).isValid()) {
         // Something is already here — including a break that straddles this
         // syllable's notes. Clicking clears that one rather than adding a second.
-        m_session->setPhraseBreak(PhraseBreak { item->data(Qt::UserRole + 3).toInt(),
-                                      item->data(Qt::UserRole + 4).toInt() },
+        setPhraseBreakKeepingGridPosition(
+            PhraseBreak { item->data(Qt::UserRole + 3).toInt(),
+                item->data(Qt::UserRole + 4).toInt() },
             std::nullopt);
         return;
     }
@@ -757,9 +758,30 @@ void LyricsPanel::clickBreakCell(int column)
         Q_EMIT statusMessage(tr("That boundary is inside a tuplet and has no 64th to sit on."));
         return;
     }
-    m_session->togglePhraseBreak(
-        PhraseBreak { item->data(Qt::UserRole).toInt(), item->data(Qt::UserRole + 1).toInt() },
-        BreakKind::Required);
+    const PhraseBreak position {
+        item->data(Qt::UserRole).toInt(), item->data(Qt::UserRole + 1).toInt()
+    };
+    const std::optional<BreakKind> current = m_session->phraseBreakAt(position);
+    setPhraseBreakKeepingGridPosition(
+        position, current == BreakKind::Required ? std::nullopt
+                                                 : std::optional(BreakKind::Required));
+}
+
+void LyricsPanel::setPhraseBreakKeepingGridPosition(
+    PhraseBreak position, std::optional<BreakKind> kind)
+{
+    const int horizontalScroll = m_grid->horizontalScrollBar()->value();
+    const int verticalScroll = m_grid->verticalScrollBar()->value();
+    m_session->setPhraseBreak(position, kind);
+
+    // documentChanged rebuilds the grid synchronously, but some Qt platform
+    // styles finish their current-cell scrolling after cellClicked/triggered
+    // returns. Restore again after that event has unwound so a break edit made
+    // at the right of a long hymn cannot snap the viewport back to column 0.
+    QTimer::singleShot(0, this, [this, horizontalScroll, verticalScroll] {
+        m_grid->horizontalScrollBar()->setValue(horizontalScroll);
+        m_grid->verticalScrollBar()->setValue(verticalScroll);
+    });
 }
 
 void LyricsPanel::showBreakMenu(int column, QPoint where)
@@ -786,14 +808,14 @@ void LyricsPanel::showBreakMenu(int column, QPoint where)
         action->setChecked(current && *current == style.kind);
         const BreakKind kind = style.kind;
         connect(action, &QAction::triggered, this,
-            [this, target, kind] { m_session->setPhraseBreak(target, kind); });
+            [this, target, kind] { setPhraseBreakKeepingGridPosition(target, kind); });
     }
     menu.addSeparator();
     QAction *none = menu.addAction(tr("no break here"));
     none->setCheckable(true);
     none->setChecked(!current);
     connect(none, &QAction::triggered, this,
-        [this, target] { m_session->setPhraseBreak(target, std::nullopt); });
+        [this, target] { setPhraseBreakKeepingGridPosition(target, std::nullopt); });
     menu.exec(where);
 }
 

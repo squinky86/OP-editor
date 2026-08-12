@@ -95,13 +95,19 @@ private Q_SLOTS:
         QCoreApplication::processEvents();
 
         QVERIFY(grid->columnCount() >= 20);
-        grid->setCurrentCell(2, 18);
-        grid->scrollToItem(grid->item(2, 18));
+        grid->setCurrentCell(0, 18);
+        grid->scrollToItem(grid->item(0, 18));
         QCoreApplication::processEvents();
         const int before = grid->horizontalScrollBar()->value();
         QVERIFY(before > 0);
 
-        session.togglePhraseBreak(PhraseBreak { 1, 16 }, BreakKind::Required);
+        const QRect breakCell = grid->visualItemRect(grid->item(0, 18));
+        QVERIFY(grid->viewport()->rect().contains(breakCell.center()));
+        QTest::mouseClick(grid->viewport(), Qt::LeftButton, Qt::NoModifier,
+            breakCell.center());
+        QCoreApplication::processEvents();
+
+        QVERIFY(session.phraseBreakAt(PhraseBreak { 5, 48 }).has_value());
         QCOMPARE(grid->horizontalScrollBar()->value(), before);
         QCOMPARE(grid->currentColumn(), 18);
     }

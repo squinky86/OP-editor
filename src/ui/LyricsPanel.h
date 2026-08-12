@@ -90,6 +90,8 @@ private:
     void fillBreakRow(const PartAlignment &alignment, const Part &part);
     void clickBreakCell(int column);
     void showBreakMenu(int column, QPoint where);
+    void setPhraseBreakKeepingGridPosition(
+        PhraseBreak position, std::optional<BreakKind> kind);
     void commitText(const QString &language, const QString &key, const QString &partName,
         const QString &text);
     void addOverride(const QString &key, const QString &partName);
