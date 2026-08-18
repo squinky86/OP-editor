@@ -219,6 +219,12 @@ namespace io {
 /// the caller refuses to open the document.
 [[nodiscard]] std::expected<SongDocument, LoadError> load(const QString &path);
 
+/// Parse authored bytes as `path` without touching the filesystem. The editable
+/// Source panel uses this so a valid source draft can become the session's exact
+/// document while disk-conflict checks continue to use their separate baseline.
+[[nodiscard]] std::expected<SongDocument, LoadError> loadBytes(
+    const QString &path, QByteArray bytes);
+
 /// Serialize a document by splicing the spans of its dirty fields into the
 /// original bytes. With nothing dirty the result is the original file.
 [[nodiscard]] QByteArray serialize(const SongDocument &doc);

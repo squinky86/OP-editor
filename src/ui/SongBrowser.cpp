@@ -14,6 +14,22 @@
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
+namespace {
+
+class SongTreeItem final : public QTreeWidgetItem {
+public:
+    using QTreeWidgetItem::QTreeWidgetItem;
+
+    bool operator<(const QTreeWidgetItem &other) const override
+    {
+        if (treeWidget() && treeWidget()->sortColumn() == 0)
+            return text(0).toInt() < other.text(0).toInt();
+        return QTreeWidgetItem::operator<(other);
+    }
+};
+
+} // namespace
+
 namespace ope::ui {
 
 SongBrowser::SongBrowser(Library *library, QWidget *parent)
@@ -50,6 +66,8 @@ SongBrowser::SongBrowser(Library *library, QWidget *parent)
     m_tree->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_tree->setSelectionMode(QAbstractItemView::SingleSelection);
     m_tree->setTextElideMode(Qt::ElideRight);
+    m_tree->setSortingEnabled(true);
+    m_tree->sortItems(0, Qt::DescendingOrder);
     layout->addWidget(m_tree, 1);
 
     auto *buttons = new QHBoxLayout;
@@ -185,7 +203,7 @@ void SongBrowser::repopulate()
 
     const QList<SongEntry> matches = m_library->search(m_search->text());
     for (const SongEntry &entry : matches) {
-        auto *item = new QTreeWidgetItem(m_tree);
+        auto *item = new SongTreeItem(m_tree);
         item->setText(0, QString::number(entry.id));
         item->setText(1, entry.displayTitle());
         item->setText(2, entry.allLanguages().join(u' '));

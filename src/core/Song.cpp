@@ -499,18 +499,8 @@ void loadLyricMap(QMap<QString, LyricSection> &target, const toml::Document &doc
 
 } // namespace
 
-std::expected<SongDocument, LoadError> load(const QString &path)
+std::expected<SongDocument, LoadError> loadBytes(const QString &path, QByteArray bytes)
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        LoadError err;
-        err.path = path;
-        err.message = file.errorString();
-        return std::unexpected(err);
-    }
-    const QByteArray bytes = file.readAll();
-    file.close();
-
     auto parsed = toml::parse(bytes);
     if (!parsed) {
         LoadError err;
@@ -611,6 +601,18 @@ std::expected<SongDocument, LoadError> load(const QString &path)
 
     loadLyricMap(doc.lyrics, src, { QStringLiteral("lyrics") });
     return doc;
+}
+
+std::expected<SongDocument, LoadError> load(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        LoadError err;
+        err.path = path;
+        err.message = file.errorString();
+        return std::unexpected(err);
+    }
+    return loadBytes(path, file.readAll());
 }
 
 namespace {

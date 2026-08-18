@@ -17,6 +17,7 @@ class QAction;
 class QDockWidget;
 class QLabel;
 class QNetworkReply;
+class QSplitter;
 class QTabWidget;
 class QTimer;
 QT_END_NAMESPACE
@@ -31,6 +32,7 @@ class ScoreView;
 class SongBrowser;
 class SourcePanel;
 class TransportBar;
+class WorkspaceSection;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -39,7 +41,7 @@ public:
 
     /// Open a file directly (a path on the command line).
     void openPath(const QString &path);
-    /// Select a centre tab by index: 0 score, 1 lyrics, 2 source.
+    /// Expand and focus a workspace section: 0 score, 1 lyrics, 2 source.
     void selectTab(int index);
 
 protected:
@@ -52,8 +54,11 @@ private:
     void updateLanguageTabs();
     void refreshPlaybackPlan();
     void updateTransportDuration();
-    void flushPendingEdits();
+    [[nodiscard]] bool flushPendingEdits();
     [[nodiscard]] bool hasUnsavedWork() const;
+    void focusWorkspaceSection(int index);
+    void updateProblemsTab();
+    void setStructuredEditingBlocked(bool blocked);
 
     void showBrowser();
     void newSong();
@@ -82,17 +87,23 @@ private:
     ScoreView *m_score = nullptr;
     SongBrowser *m_browser = nullptr;
     QDockWidget *m_browserDock = nullptr;
-    QDockWidget *m_songDock = nullptr;
-    QDockWidget *m_problemsDock = nullptr;
+    QDockWidget *m_toolsDock = nullptr;
     LyricsPanel *m_lyrics = nullptr;
     SourcePanel *m_source = nullptr;
     HeaderPanel *m_header = nullptr;
     InspectorPanel *m_inspector = nullptr;
     ProblemsPanel *m_problems = nullptr;
     TransportBar *m_transport = nullptr;
-    QTabWidget *m_centre = nullptr;
+    QSplitter *m_workspace = nullptr;
+    WorkspaceSection *m_scoreSection = nullptr;
+    WorkspaceSection *m_lyricsSection = nullptr;
+    WorkspaceSection *m_sourceSection = nullptr;
+    QTabWidget *m_toolsTabs = nullptr;
+    int m_problemsTab = -1;
     QTabWidget *m_languageTabs = nullptr;
     QLabel *m_statusSummary = nullptr;
+    QAction *m_saveCurrentAction = nullptr;
+    QAction *m_saveAllAction = nullptr;
     QAction *m_downloadCorpusAction = nullptr;
     QNetworkAccessManager m_corpusNetwork;
     QNetworkReply *m_corpusHeadReply = nullptr;

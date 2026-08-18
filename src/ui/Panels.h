@@ -9,6 +9,7 @@
 #include "app/Session.h"
 
 #include <QSet>
+#include <QTimer>
 #include <QWidget>
 
 QT_BEGIN_NAMESPACE
@@ -72,6 +73,7 @@ class ProblemsPanel : public QWidget {
 public:
     explicit ProblemsPanel(Session *session, QWidget *parent = nullptr);
     void refresh();
+    void setSourceError(const QString &message);
     [[nodiscard]] QString summary() const;
 
 Q_SIGNALS:
@@ -83,6 +85,7 @@ private:
     QCheckBox *m_showWarnings = nullptr;
     QCheckBox *m_showInfo = nullptr;
     QLabel *m_summary = nullptr;
+    QString m_sourceError;
 };
 
 /// Context-sensitive: the selected note, else the selected part, else the song.
@@ -108,18 +111,46 @@ private:
     QString m_partName;
 };
 
-/// Exactly the bytes that will be written, with a diff against the file on disk.
+/// Editable, highlighted TOML kept in two-way sync with the structured views.
 class SourcePanel : public QWidget {
     Q_OBJECT
 public:
     explicit SourcePanel(Session *session, QWidget *parent = nullptr);
     void refresh();
+    [[nodiscard]] bool commitPendingEdits();
+    void discardPendingEdits();
+    void focusEditor();
+    void undoPendingEdit();
+    void redoPendingEdit();
+    [[nodiscard]] bool hasPendingEdits() const noexcept { return m_pending; }
+    [[nodiscard]] bool hasParseError() const noexcept { return m_parseError; }
+
+Q_SIGNALS:
+    /// Gives the other editors a chance to land debounced fields before the
+    /// source buffer becomes authoritative.
+    void editingActivated();
+    void pendingEditsChanged(bool pending);
+    /// Structured editors are paused while unparsed source text exists, so two
+    /// independent drafts can never overwrite one another.
+    void structuredEditingBlocked(bool blocked);
+    void sourceErrorChanged(const QString &message);
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
+    void setPending(bool pending);
+    void showParseError(const LoadError &error);
+
     Session *m_session = nullptr;
     QPlainTextEdit *m_text = nullptr;
     QLabel *m_status = nullptr;
-    QPushButton *m_openExternal = nullptr;
+    QPushButton *m_revert = nullptr;
+    QTimer m_commitTimer;
+    bool m_loading = false;
+    bool m_pending = false;
+    bool m_parseError = false;
+    QString m_editLanguage;
 };
 
 /// Play, pause, stop, verse, per-part mute, tempo override.

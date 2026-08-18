@@ -30,9 +30,9 @@ Choose **File ▸ Prepare Contribution…** while the edited file is still open.
 OPE keeps the bytes first opened in this session even if you saved afterward,
 so the bundle can still describe the session's before and after states.
 
-1. Start from a fresh OP-songs `main` checkout or a newly downloaded managed
-   snapshot. Do not build a correction on an unknown old copy.
-2. Edit the affected song in OPE and resolve every error in the Problems dock.
+1. Prefer a fresh OP-songs `main` checkout or a newly downloaded managed
+   snapshot so maintainers receive a proposal based on current song content.
+2. Edit the affected song in OPE and resolve every error in the Problems tab.
 3. Choose **Prepare Contribution…** and select a destination directory. Saving
    first is allowed but not required. If the disk file changed outside OPE, the
    operation stops until you reload and reconcile it.
@@ -77,9 +77,9 @@ attachment is inconvenient, include its complete contents as a TOML code block.
 
 ## What remains before 0.1
 
-The current bundle validates exact proposed bytes and blocks errors, but it does
-not yet download the resolved upstream commit for comparison. Before beta it
-will reject stale baselines for updates, add corpus-level path and integrity
-checks, and make warning acknowledgement more explicit. New songs deliberately
-carry no proposed upstream ID. OPE will not store a personal access token or
-silently push to OP-songs.
+The current bundle validates exact proposed bytes and blocks errors. Before beta
+it will add corpus-level path and identity checks and make warning
+acknowledgement more explicit. Automated upstream comparison and stale-baseline
+rejection are intentionally outside the 0.1 scope. New songs deliberately carry
+no proposed upstream ID. OPE will not store a personal access token or silently
+push to OP-songs.

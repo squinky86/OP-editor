@@ -2,8 +2,7 @@
 
 This guide takes a new user from an empty installation to a safely saved song.
 OpenPsalm Editor (OPE) edits the TOML source files used by OpenPsalm; it does not
-keep a separate song database. The file shown in the Source tab is the source of
-truth.
+keep a separate song database. The editable Source pane is the source of truth.
 
 ## 1. Choose where the songs come from
 
@@ -83,19 +82,22 @@ number, then click the result.
 - **Lyrics** edits global and per-part text and shows lyric slots aligned with
   notes. The alignment grid is the safest place to diagnose a missing or extra
   syllable.
-- **Source** previews the exact bytes OPE will write. Unknown TOML fields remain
-  untouched. Advanced fields can be edited in a system text editor; OPE will
-  detect the external change before its next save.
-- **Problems** lists rule IDs, severity, location, and explanation. Clicking a
+- **Source** edits the exact bytes OPE will write, with TOML syntax highlighting
+  and word wrapping. Valid source edits immediately update Score, Lyrics, Song,
+  and Inspector. Invalid TOML stays visible to repair, but Save and structured
+  editing pause until it is fixed or reverted.
+- **Problems** is the third right-column tab beside Song and Inspector. It lists
+  rule IDs, severity, location, and explanation. Its tab turns yellow for
+  information, amber for warnings, and red for errors. Clicking a
   navigable finding moves to its note or lyric slot.
 
 ## 3. Make and validate an edit
 
-Edit through the score, Lyrics tab, Song dock, or Inspector. The window title
+Edit through Score, Lyrics, Source, Song, or Inspector. The window title
 and language tab gain a dot when that language has unsaved work. Translations
 have independent dirty state and undo history.
 
-Watch the Problems dock while editing. An **Error** means the song may not seed
+Watch the Problems tab while editing. An **Error** means the song may not seed
 or may seed incorrectly. OPE allows an explicit “Save anyway” for recovery and
 expert work, but such a file is not ready to contribute. A **Warning** identifies
 a likely style or consistency problem that needs judgment. **Info** documents

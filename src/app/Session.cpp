@@ -100,6 +100,7 @@ std::expected<void, LoadError> Session::openSong(const QString &basePath)
     m_selection = {};
     for (const QString &language : std::as_const(m_languages))
         m_openedBytes.insert(language, m_documents.value(language).originalBytes);
+    m_diskBytes = m_openedBytes;
     for (const QString &language : std::as_const(m_languages))
         ensureUndoStack(language);
     if (!requestedLanguage.isEmpty() && m_documents.contains(requestedLanguage))
@@ -118,8 +119,12 @@ void Session::adoptNewDocument(SongDocument document)
         = document.language.isEmpty() ? i18n::defaultLanguage() : document.language;
     document.language = language;
     m_baseLanguage = document.isOverlay ? QString() : language;
-    m_documents.insert(language, std::move(document));
+    const QString path = document.path;
+    const QByteArray bytes = io::serializeFresh(document);
+    auto parsed = io::loadBytes(path, bytes);
+    m_documents.insert(language, parsed ? std::move(*parsed) : std::move(document));
     m_openedBytes.insert(language, QByteArray());
+    m_diskBytes.insert(language, QByteArray());
     m_languages = { language };
     m_currentLanguage = language;
     m_newFiles.insert(language);
@@ -136,8 +141,12 @@ bool Session::adoptNewOverlay(SongDocument document)
     const QString language = document.language;
     if (language.isEmpty() || !document.isOverlay || m_documents.contains(language))
         return false;
-    m_documents.insert(language, std::move(document));
+    const QString path = document.path;
+    const QByteArray bytes = io::serializeFresh(document);
+    auto parsed = io::loadBytes(path, bytes);
+    m_documents.insert(language, parsed ? std::move(*parsed) : std::move(document));
     m_openedBytes.insert(language, QByteArray());
+    m_diskBytes.insert(language, QByteArray());
     m_languages.append(language);
     m_newFiles.insert(language);
     ensureUndoStack(language);
@@ -155,6 +164,7 @@ void Session::close()
     m_undoStacks.clear();
     m_documents.clear();
     m_openedBytes.clear();
+    m_diskBytes.clear();
     m_alignments.clear();
     m_languages.clear();
     m_currentLanguage.clear();
@@ -242,7 +252,9 @@ bool Session::isDirty() const
 bool Session::isDirty(const QString &language) const
 {
     const SongDocument *doc = document(language);
-    return doc && (m_newFiles.contains(language) || doc->isDirty());
+    const QUndoStack *stack = m_undoStacks.value(language, nullptr);
+    return doc && (m_newFiles.contains(language) || doc->isDirty()
+        || (stack && !stack->isClean()));
 }
 
 QStringList Session::dirtyLanguages() const
@@ -265,6 +277,21 @@ QString Session::currentPath() const { return document().path; }
 QByteArray Session::openedBytes(const QString &language) const
 {
     return m_openedBytes.value(language);
+}
+
+QByteArray Session::currentBytes(const QString &language) const
+{
+    const SongDocument *doc = document(language);
+    if (!doc)
+        return {};
+    return doc->source.bytes().isEmpty() && m_newFiles.contains(language)
+        ? io::serializeFresh(*doc)
+        : io::serialize(*doc);
+}
+
+QByteArray Session::diskBytes(const QString &language) const
+{
+    return m_diskBytes.value(language);
 }
 
 std::expected<void, Session::SaveError> Session::save(
@@ -302,13 +329,13 @@ std::expected<void, Session::SaveError> Session::save(
             return std::unexpected(SaveError { SaveError::Kind::Conflict, doc.path,
                 tr("%1 was deleted, moved, or made unreadable after it was opened.")
                     .arg(doc.path) });
-        } else if (disk.readAll() != doc.originalBytes) {
+        } else if (disk.readAll() != m_diskBytes.value(language)) {
             return std::unexpected(SaveError { SaveError::Kind::Conflict, doc.path,
                 tr("%1 changed on disk after it was opened.").arg(doc.path) });
         }
     }
 
-    const QByteArray bytes = newFile ? io::serializeFresh(doc) : io::serialize(doc);
+    const QByteArray bytes = currentBytes(language);
     if (!toml::parse(bytes)) {
         return std::unexpected(SaveError { SaveError::Kind::Io, doc.path,
             tr("The generated TOML did not parse, so nothing was written.") });
@@ -339,6 +366,7 @@ std::expected<void, Session::SaveError> Session::save(
     }
     reloaded->language = language;
     m_documents.insert(language, *reloaded);
+    m_diskBytes.insert(language, reloaded->originalBytes);
     m_newFiles.remove(language);
     // Snapshot commands retain the byte spans that were current when they were
     // created. Once the file has been rewritten those spans are no longer a
@@ -373,11 +401,8 @@ void Session::mutate(const QString &language, const QString &description,
         part.stream.reindex();
     }
     SongDocument after = *found;
-    const bool newFile = m_newFiles.contains(language);
-    const QByteArray beforeBytes
-        = newFile ? io::serializeFresh(before) : io::serialize(before);
-    const QByteArray afterBytes
-        = newFile ? io::serializeFresh(after) : io::serialize(after);
+    const QByteArray beforeBytes = io::serialize(before);
+    const QByteArray afterBytes = io::serialize(after);
     if (beforeBytes == afterBytes) {
         *found = std::move(before);
         return;
@@ -388,6 +413,39 @@ void Session::mutate(const QString &language, const QString &description,
     refresh();
     Q_EMIT documentChanged();
     Q_EMIT dirtyChanged();
+}
+
+std::expected<void, LoadError> Session::replaceSource(
+    const QString &language, const QByteArray &bytes)
+{
+    auto found = m_documents.find(language);
+    if (found == m_documents.end()) {
+        LoadError error;
+        error.message = tr("the selected language is no longer open");
+        return std::unexpected(error);
+    }
+    if (currentBytes(language) == bytes)
+        return {};
+
+    auto parsed = io::loadBytes(found->path, bytes);
+    if (!parsed)
+        return std::unexpected(parsed.error());
+    if (parsed->language != language || parsed->isOverlay != found->isOverlay) {
+        LoadError error;
+        error.path = found->path;
+        error.message = tr("Source edits cannot change this tab's language or file type.");
+        return std::unexpected(error);
+    }
+
+    SongDocument before = *found;
+    SongDocument after = std::move(*parsed);
+    *found = after;
+    ensureUndoStack(language)->push(new SnapshotCommand(this, language,
+        std::move(before), std::move(after), tr("Edit TOML source")));
+    refresh();
+    Q_EMIT documentChanged();
+    Q_EMIT dirtyChanged();
+    return {};
 }
 
 void Session::restore(const QString &language, const SongDocument &document)

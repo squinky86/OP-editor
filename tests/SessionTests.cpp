@@ -30,6 +30,53 @@ class SessionTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void exactSourceEditsJoinTheSessionUndoAndSaveModel()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        const QString path = root.filePath(QStringLiteral("song.toml"));
+        const QByteArray original = baseSong();
+        write(root, QStringLiteral("song.toml"), original);
+        Session session;
+        QVERIFY(session.openSong(path));
+
+        QByteArray edited = original;
+        edited.prepend("# edited directly in Source\n");
+        edited.replace("Face to Face", "Source title");
+        QVERIFY(session.replaceSource(QStringLiteral("en"), edited));
+        QCOMPARE(session.document().title.valueOr(QString()), QStringLiteral("Source title"));
+        QCOMPARE(session.currentBytes(), edited);
+        QCOMPARE(session.diskBytes(), original);
+        QVERIFY(session.isDirty());
+        QCOMPARE(session.undoStack()->count(), 1);
+
+        session.mutate(QStringLiteral("Structured title"),
+            [](SongDocument &doc) { doc.title.set(QStringLiteral("Structured title")); });
+        QVERIFY(session.currentBytes().startsWith("# edited directly in Source\n"));
+        QVERIFY(session.currentBytes().contains("title = \"Structured title\""));
+
+        QVERIFY(session.save());
+        QCOMPARE(session.diskBytes(), session.currentBytes());
+        QVERIFY(!session.isDirty());
+    }
+
+    void invalidSourceNeverReplacesTheStructuredDocument()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, QStringLiteral("song.toml"), baseSong());
+        Session session;
+        QVERIFY(session.openSong(root.filePath(QStringLiteral("song.toml"))));
+        const QByteArray before = session.currentBytes();
+
+        const auto replaced
+            = session.replaceSource(QStringLiteral("en"), QByteArray("title = \"unfinished\n"));
+        QVERIFY(!replaced);
+        QVERIFY(replaced.error().parse.line > 0);
+        QCOMPARE(session.currentBytes(), before);
+        QVERIFY(!session.isDirty());
+    }
+
     void openedBytesSurviveSaveForContributionDiffs()
     {
         QTemporaryDir dir;

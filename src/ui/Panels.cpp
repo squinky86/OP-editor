@@ -8,7 +8,6 @@
 #include <QCheckBox>
 #include <QEvent>
 #include <QComboBox>
-#include <QDesktopServices>
 #include <QFontDatabase>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -18,10 +17,15 @@
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRegularExpression>
+#include <QScrollBar>
 #include <QSlider>
 #include <QSpinBox>
+#include <QSyntaxHighlighter>
+#include <QTextBlock>
+#include <QTextCharFormat>
+#include <QTextOption>
 #include <QTreeWidget>
-#include <QUrl>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -54,6 +58,68 @@ QString severityLabel(Severity severity)
     }
     return {};
 }
+
+class TomlHighlighter final : public QSyntaxHighlighter {
+public:
+    explicit TomlHighlighter(QTextDocument *document) : QSyntaxHighlighter(document) {}
+
+protected:
+    void highlightBlock(const QString &text) override
+    {
+        QTextCharFormat comment;
+        comment.setForeground(QColor(0x6a, 0x73, 0x7d));
+        comment.setFontItalic(true);
+        apply(QStringLiteral("#[^\\n]*$"), text, comment);
+
+        QTextCharFormat table;
+        table.setForeground(QColor(0x82, 0x5a, 0xc2));
+        table.setFontWeight(QFont::Bold);
+        apply(QStringLiteral("^\\s*\\[\\[?[^]\\n]+\\]\\]?\\s*$"), text, table);
+
+        QTextCharFormat key;
+        key.setForeground(QColor(0x05, 0x5f, 0xa3));
+        key.setFontWeight(QFont::DemiBold);
+        apply(QStringLiteral("^\\s*[A-Za-z0-9_.\\\"'-]+(?=\\s*=)"), text, key);
+
+        QTextCharFormat literal;
+        literal.setForeground(QColor(0x95, 0x3d, 0x00));
+        apply(QStringLiteral("\\b(?:true|false|[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+))\\b"),
+            text, literal);
+
+        QTextCharFormat string;
+        string.setForeground(QColor(0x1a, 0x7f, 0x37));
+        apply(QStringLiteral("\"(?:\\\\.|[^\"\\\\])*\"|'[^']*'"), text, string);
+
+        // TOML multiline strings need block state so wrapped note and lyric
+        // bodies remain highlighted between their delimiters.
+        const QString delimiter = QStringLiteral("\"\"\"");
+        int start = previousBlockState() == 1 ? 0 : text.indexOf(delimiter);
+        if (start < 0) {
+            setCurrentBlockState(0);
+            return;
+        }
+        const int searchFrom = previousBlockState() == 1 ? 0 : start + delimiter.size();
+        const int end = text.indexOf(delimiter, searchFrom);
+        if (end < 0) {
+            setFormat(start, text.size() - start, string);
+            setCurrentBlockState(1);
+        } else {
+            setFormat(start, end + delimiter.size() - start, string);
+            setCurrentBlockState(0);
+        }
+    }
+
+private:
+    void apply(const QString &pattern, const QString &text, const QTextCharFormat &format)
+    {
+        QRegularExpression expression(pattern);
+        auto matches = expression.globalMatch(text);
+        while (matches.hasNext()) {
+            const QRegularExpressionMatch match = matches.next();
+            setFormat(match.capturedStart(), match.capturedLength(), format);
+        }
+    }
+};
 
 void addTimeSignatureDenominators(QComboBox *box)
 {
@@ -379,7 +445,7 @@ ProblemsPanel::ProblemsPanel(Session *session, QWidget *parent)
     m_showWarnings = new QCheckBox(tr("Warnings"), this);
     m_showWarnings->setChecked(true);
     m_showInfo = new QCheckBox(tr("Info"), this);
-    m_showInfo->setChecked(false);
+    m_showInfo->setChecked(true);
     controls->addWidget(m_summary, 1);
     controls->addWidget(m_showWarnings);
     controls->addWidget(m_showInfo);
@@ -409,6 +475,16 @@ void ProblemsPanel::refresh()
     m_tree->clear();
     const QList<Finding> &findings = m_session->findings();
 
+    if (!m_sourceError.isEmpty()) {
+        auto *source = new QTreeWidgetItem(m_tree);
+        source->setText(0, severityLabel(Severity::Error));
+        source->setForeground(0, severityColor(Severity::Error));
+        source->setText(1, QStringLiteral("E-TOML"));
+        source->setText(2, tr("Source pane"));
+        source->setText(3, m_sourceError);
+        source->setData(0, Qt::UserRole, -1);
+    }
+
     QList<int> order;
     for (int i = 0; i < findings.size(); ++i)
         order.append(i);
@@ -437,14 +513,26 @@ void ProblemsPanel::refresh()
     m_summary->setText(summary());
 }
 
+void ProblemsPanel::setSourceError(const QString &message)
+{
+    if (m_sourceError == message)
+        return;
+    m_sourceError = message;
+    refresh();
+}
+
 QString ProblemsPanel::summary() const
 {
     const QList<Finding> &findings = m_session->findings();
-    const int errors = countBySeverity(findings, Severity::Error);
+    const int errors = countBySeverity(findings, Severity::Error)
+        + (m_sourceError.isEmpty() ? 0 : 1);
     const int warnings = countBySeverity(findings, Severity::Warning);
-    if (errors == 0 && warnings == 0)
+    const int infos = countBySeverity(findings, Severity::Info);
+    if (errors == 0 && warnings == 0 && infos == 0)
         return tr("No problems found.");
-    return tr("%n error(s), ", nullptr, errors) + tr("%n warning(s)", nullptr, warnings);
+    return tr("%n error(s), ", nullptr, errors)
+        + tr("%n warning(s), ", nullptr, warnings)
+        + tr("%n information item(s)", nullptr, infos);
 }
 
 // ---------------------------------------------------------- InspectorPanel ---
@@ -651,23 +739,44 @@ SourcePanel::SourcePanel(Session *session, QWidget *parent) : QWidget(parent), m
     layout->setContentsMargins(4, 4, 4, 4);
     m_status = new QLabel(this);
     m_status->setWordWrap(true);
-    m_openExternal = new QPushButton(tr("Open file in text editor…"), this);
-    m_openExternal->setToolTip(
-        tr("Use the system editor for advanced or newly introduced TOML fields. OPE will "
-           "detect the external change before it overwrites anything."));
+    m_revert = new QPushButton(tr("Revert source draft"), this);
+    m_revert->setToolTip(tr("Discard uncommitted Source text and return to the last valid model"));
+    m_revert->hide();
+    auto *statusRow = new QHBoxLayout;
+    statusRow->addWidget(m_status, 1);
+    statusRow->addWidget(m_revert);
     m_text = new QPlainTextEdit(this);
-    m_text->setReadOnly(true);
     m_text->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-    m_text->setLineWrapMode(QPlainTextEdit::NoWrap);
-    auto *top = new QHBoxLayout;
-    top->addWidget(m_status, 1);
-    top->addWidget(m_openExternal);
-    layout->addLayout(top);
+    m_text->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    m_text->setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+    m_text->setPlaceholderText(tr("Open a song to edit its TOML source."));
+    m_text->installEventFilter(this);
+    new TomlHighlighter(m_text->document());
+    layout->addLayout(statusRow);
     layout->addWidget(m_text);
 
-    connect(m_openExternal, &QPushButton::clicked, this, [this] {
-        if (m_session->isOpen())
-            QDesktopServices::openUrl(QUrl::fromLocalFile(m_session->currentPath()));
+    m_commitTimer.setSingleShot(true);
+    m_commitTimer.setInterval(450);
+    connect(&m_commitTimer, &QTimer::timeout, this, [this] { (void)commitPendingEdits(); });
+    connect(m_revert, &QPushButton::clicked, this, &SourcePanel::discardPendingEdits);
+    connect(m_text, &QPlainTextEdit::textChanged, this, [this] {
+        if (m_loading)
+            return;
+        m_editLanguage = m_session->currentLanguage();
+        const bool changed = m_text->toPlainText().toUtf8() != m_session->currentBytes();
+        setPending(changed);
+        if (m_parseError)
+            Q_EMIT sourceErrorChanged({});
+        m_parseError = false;
+        m_text->setExtraSelections({});
+        if (changed) {
+            m_status->setText(tr("Checking TOML… Structured editing and Save are paused."));
+            m_status->setStyleSheet(QStringLiteral("color: #9a6700;"));
+            m_commitTimer.start();
+        } else {
+            m_commitTimer.stop();
+            refresh();
+        }
     });
 
     connect(session, &Session::documentChanged, this, &SourcePanel::refresh);
@@ -677,43 +786,120 @@ SourcePanel::SourcePanel(Session *session, QWidget *parent) : QWidget(parent), m
 
 void SourcePanel::refresh()
 {
+    if (m_pending)
+        return;
     if (!m_session->isOpen()) {
+        m_loading = true;
         m_text->clear();
+        m_loading = false;
         m_status->clear();
-        m_openExternal->setEnabled(false);
+        m_text->setEnabled(false);
         return;
     }
-    const SongDocument &doc = m_session->document();
-    const QByteArray bytes
-        = m_session->isNewFile() ? io::serializeFresh(doc) : io::serialize(doc);
-    m_text->setPlainText(QString::fromUtf8(bytes));
-    m_openExternal->setEnabled(!m_session->isNewFile() && !m_session->isDirty(
-        m_session->currentLanguage()));
-    if (!m_openExternal->isEnabled())
-        m_openExternal->setToolTip(tr("Save this file first, then open it externally."));
-    else
-        m_openExternal->setToolTip(
-            tr("Use the system editor for advanced or newly introduced TOML fields. OPE "
-               "will detect external changes before it overwrites anything."));
+    m_text->setEnabled(true);
+    const QString wanted = QString::fromUtf8(m_session->currentBytes());
+    if (m_text->toPlainText() != wanted) {
+        const QTextCursor cursor = m_text->textCursor();
+        const int position = cursor.position();
+        const int anchor = cursor.anchor();
+        const int scroll = m_text->verticalScrollBar()->value();
+        m_loading = true;
+        m_text->setPlainText(wanted);
+        m_loading = false;
+        QTextCursor restored = m_text->textCursor();
+        const int lastPosition = static_cast<int>(wanted.size());
+        restored.setPosition(std::min(anchor, lastPosition));
+        restored.setPosition(std::min(position, lastPosition), QTextCursor::KeepAnchor);
+        m_text->setTextCursor(restored);
+        m_text->verticalScrollBar()->setValue(scroll);
+    }
+    m_editLanguage = m_session->currentLanguage();
+    m_parseError = false;
+    Q_EMIT sourceErrorChanged({});
+    m_text->setExtraSelections({});
+    m_status->setText(tr("TOML is valid. Score, lyrics, and details are synchronized."));
+    m_status->setStyleSheet(QStringLiteral("color: #1a7f37;"));
+}
 
-    if (bytes == doc.originalBytes) {
-        m_status->setText(tr("Identical to the file on disk."));
-        m_status->setStyleSheet(QStringLiteral("color: #1a7f37;"));
+bool SourcePanel::commitPendingEdits()
+{
+    m_commitTimer.stop();
+    if (!m_pending)
+        return true;
+    if (m_editLanguage != m_session->currentLanguage())
+        return false;
+    const auto replaced
+        = m_session->replaceSource(m_editLanguage, m_text->toPlainText().toUtf8());
+    if (!replaced) {
+        showParseError(replaced.error());
+        return false;
+    }
+    setPending(false);
+    m_parseError = false;
+    Q_EMIT sourceErrorChanged({});
+    refresh();
+    return true;
+}
+
+void SourcePanel::discardPendingEdits()
+{
+    m_commitTimer.stop();
+    setPending(false);
+    m_parseError = false;
+    Q_EMIT sourceErrorChanged({});
+    refresh();
+}
+
+void SourcePanel::focusEditor()
+{
+    m_text->setFocus();
+}
+
+void SourcePanel::undoPendingEdit()
+{
+    m_text->undo();
+}
+
+void SourcePanel::redoPendingEdit()
+{
+    m_text->redo();
+}
+
+bool SourcePanel::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_text && event->type() == QEvent::FocusIn)
+        Q_EMIT editingActivated();
+    return QWidget::eventFilter(watched, event);
+}
+
+void SourcePanel::setPending(bool pending)
+{
+    if (m_pending == pending)
         return;
-    }
+    m_pending = pending;
+    m_revert->setVisible(pending);
+    Q_EMIT pendingEditsChanged(pending);
+    Q_EMIT structuredEditingBlocked(pending);
+}
 
-    // A line-level diff summary: enough to see the change is the size it should be.
-    const QStringList before = QString::fromUtf8(doc.originalBytes).split(u'\n');
-    const QStringList after = QString::fromUtf8(bytes).split(u'\n');
-    int changed = 0;
-    for (qsizetype i = 0; i < std::max(before.size(), after.size()); ++i) {
-        const QString a = i < before.size() ? before.at(i) : QString();
-        const QString b = i < after.size() ? after.at(i) : QString();
-        if (a != b)
-            ++changed;
-    }
-    m_status->setText(tr("%n line(s) differ from the file on disk.", nullptr, changed));
-    m_status->setStyleSheet(QStringLiteral("color: #9a6700;"));
+void SourcePanel::showParseError(const LoadError &error)
+{
+    m_parseError = true;
+    const QString detail = error.message.isEmpty() ? error.parse.formatted() : error.message;
+    Q_EMIT sourceErrorChanged(detail);
+    m_status->setText(tr("Source is not valid TOML: %1 Save and structured editing remain "
+                         "paused.")
+                          .arg(detail));
+    m_status->setStyleSheet(QStringLiteral("color: #d1242f; font-weight: 600;"));
+    m_text->setExtraSelections({});
+    if (error.parse.line <= 0)
+        return;
+    QTextEdit::ExtraSelection selection;
+    selection.format.setBackground(QColor(0xd1, 0x24, 0x2f, 55));
+    selection.format.setProperty(QTextFormat::FullWidthSelection, true);
+    QTextCursor cursor(m_text->document()->findBlockByLineNumber(error.parse.line - 1));
+    selection.cursor = cursor;
+    m_text->setExtraSelections({ selection });
 }
 
 // ------------------------------------------------------------ TransportBar ---

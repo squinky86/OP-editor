@@ -33,11 +33,15 @@
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QSettings>
+#include <QSplitter>
 #include <QStandardPaths>
 #include <QStatusBar>
+#include <QStyleOptionTab>
+#include <QStylePainter>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QUrlQuery>
@@ -88,6 +92,105 @@ QString displayDate(const QDateTime &date)
 
 } // namespace
 
+class WorkspaceSection final : public QWidget {
+public:
+    WorkspaceSection(const QString &title, const QString &settingsName, QWidget *content,
+        QWidget *parent = nullptr)
+        : QWidget(parent), m_content(content), m_settingsName(settingsName)
+    {
+        setObjectName(settingsName + QStringLiteral("WorkspaceSection"));
+        auto *layout = new QVBoxLayout(this);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(0);
+        m_toggle = new QToolButton(this);
+        m_toggle->setObjectName(settingsName + QStringLiteral("WorkspaceToggle"));
+        m_toggle->setText(title);
+        m_toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        m_toggle->setArrowType(Qt::DownArrow);
+        m_toggle->setCheckable(true);
+        m_toggle->setChecked(true);
+        m_toggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        m_toggle->setStyleSheet(QStringLiteral(
+            "QToolButton { text-align: left; font-weight: 600; padding: 5px 8px; "
+            "border: 0; border-bottom: 1px solid palette(mid); }"));
+        layout->addWidget(m_toggle);
+        layout->addWidget(content, 1);
+        connect(m_toggle, &QToolButton::toggled, this,
+            [this](bool expanded) { setExpanded(expanded); });
+        setExpanded(QSettings().value(
+            QStringLiteral("workspace/%1Expanded").arg(settingsName), true).toBool());
+    }
+
+    void setExpanded(bool expanded)
+    {
+        if (m_toggle->isChecked() != expanded) {
+            m_toggle->blockSignals(true);
+            m_toggle->setChecked(expanded);
+            m_toggle->blockSignals(false);
+        }
+        m_toggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+        m_content->setVisible(expanded);
+        setMaximumHeight(expanded ? QWIDGETSIZE_MAX : m_toggle->sizeHint().height());
+        setSizePolicy(QSizePolicy::Preferred,
+            expanded ? QSizePolicy::Expanding : QSizePolicy::Fixed);
+        QSettings().setValue(
+            QStringLiteral("workspace/%1Expanded").arg(m_settingsName), expanded);
+        updateGeometry();
+    }
+
+private:
+    QWidget *m_content = nullptr;
+    QString m_settingsName;
+    QToolButton *m_toggle = nullptr;
+};
+
+class AlertTabBar final : public QTabBar {
+public:
+    using QTabBar::QTabBar;
+
+    void setAlert(int index, QColor background, QColor foreground)
+    {
+        if (background.isValid())
+            m_alerts.insert(index, { background, foreground });
+        else
+            m_alerts.remove(index);
+        update(tabRect(index));
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QStylePainter painter(this);
+        for (int index = 0; index < count(); ++index) {
+            QStyleOptionTab option;
+            initStyleOption(&option, index);
+            painter.drawControl(QStyle::CE_TabBarTabShape, option);
+            const auto found = m_alerts.constFind(index);
+            if (found != m_alerts.constEnd()) {
+                QColor background = found->first;
+                if (!(option.state & QStyle::State_Selected))
+                    background.setAlpha(215);
+                painter.fillRect(tabRect(index).adjusted(2, 2, -2, -1), background);
+                option.palette.setColor(QPalette::ButtonText, found->second);
+                option.palette.setColor(QPalette::WindowText, found->second);
+                option.palette.setColor(QPalette::Text, found->second);
+            }
+            painter.drawControl(QStyle::CE_TabBarTabLabel, option);
+        }
+    }
+
+private:
+    QHash<int, QPair<QColor, QColor>> m_alerts;
+};
+
+class DetailsTabWidget final : public QTabWidget {
+public:
+    explicit DetailsTabWidget(QWidget *parent = nullptr) : QTabWidget(parent)
+    {
+        setTabBar(new AlertTabBar(this));
+    }
+};
+
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_session(this), m_audio(this)
 {
     QSettings settings;
@@ -111,6 +214,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_session(this), 
         m_planStale = true;
         updateWindowTitle();
         m_statusSummary->setText(m_problems->summary());
+        updateProblemsTab();
     });
     connect(&m_session, &Session::dirtyChanged, this, &MainWindow::updateWindowTitle);
     connect(&m_session, &Session::dirtyChanged, this, &MainWindow::updateLanguageTabs);
@@ -121,6 +225,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_session(this), 
     };
     connect(m_header, &HeaderPanel::pendingEditsChanged, this, pendingChanged);
     connect(m_lyrics, &LyricsPanel::pendingEditsChanged, this, pendingChanged);
+    connect(m_source, &SourcePanel::pendingEditsChanged, this, pendingChanged);
 
     connect(&m_audio, &audio::AudioEngine::positionChanged, this, [this](double seconds) {
         m_transport->setPosition(seconds, m_audio.duration());
@@ -139,8 +244,16 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_session(this), 
     resize(1500, 940);
     // The score is the point of the window; the two side docks get what they
     // need to be readable and no more.
-    resizeDocks({ m_browserDock, m_songDock }, { 270, 330 }, Qt::Horizontal);
-    resizeDocks({ m_problemsDock }, { 170 }, Qt::Vertical);
+    resizeDocks({ m_browserDock, m_toolsDock }, { 270, 350 }, Qt::Horizontal);
+    QTimer::singleShot(0, this, [this] {
+        const QVariantList stored = QSettings().value(QStringLiteral("workspace/sizes")).toList();
+        if (stored.size() == 3) {
+            m_workspace->setSizes(
+                { stored.at(0).toInt(), stored.at(1).toInt(), stored.at(2).toInt() });
+        } else {
+            m_workspace->setSizes({ 460, 280, 180 });
+        }
+    });
     refreshManagedCorpusStatus();
     if (QFileInfo::exists(internalCorpusRoot()))
         QTimer::singleShot(0, this, [this] { checkCorpusUpdates(); });
@@ -152,10 +265,27 @@ void MainWindow::buildLayout()
     m_lyrics = new LyricsPanel(&m_session, this);
     m_source = new SourcePanel(&m_session, this);
 
-    m_centre = new QTabWidget(this);
-    m_centre->addTab(m_score, tr("Score"));
-    m_centre->addTab(m_lyrics, tr("Lyrics"));
-    m_centre->addTab(m_source, tr("Source"));
+    m_workspace = new QSplitter(Qt::Vertical, this);
+    m_workspace->setObjectName(QStringLiteral("workspaceSplitter"));
+    m_workspace->setChildrenCollapsible(false);
+    m_scoreSection = new WorkspaceSection(tr("Score"), QStringLiteral("score"), m_score,
+        m_workspace);
+    m_lyricsSection = new WorkspaceSection(tr("Lyrics"), QStringLiteral("lyrics"), m_lyrics,
+        m_workspace);
+    m_sourceSection = new WorkspaceSection(tr("Source"), QStringLiteral("source"), m_source,
+        m_workspace);
+    m_workspace->addWidget(m_scoreSection);
+    m_workspace->addWidget(m_lyricsSection);
+    m_workspace->addWidget(m_sourceSection);
+    m_workspace->setStretchFactor(0, 5);
+    m_workspace->setStretchFactor(1, 3);
+    m_workspace->setStretchFactor(2, 2);
+    connect(m_workspace, &QSplitter::splitterMoved, this, [this] {
+        QVariantList stored;
+        for (const int size : m_workspace->sizes())
+            stored.append(size);
+        QSettings().setValue(QStringLiteral("workspace/sizes"), stored);
+    });
 
     m_languageTabs = new QTabWidget(this);
     m_languageTabs->setDocumentMode(true);
@@ -169,7 +299,7 @@ void MainWindow::buildLayout()
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
     layout->addWidget(m_languageTabs);
-    layout->addWidget(m_centre, 1);
+    layout->addWidget(m_workspace, 1);
     layout->addWidget(m_transport);
     setCentralWidget(central);
 
@@ -192,25 +322,20 @@ void MainWindow::buildLayout()
     connect(m_browser, &SongBrowser::manageBackupsRequested, this,
         &MainWindow::manageCorpusBackups);
 
-    m_header = new HeaderPanel(&m_session, this);
-    m_songDock = new QDockWidget(tr("Song"), this);
-    m_songDock->setObjectName(QStringLiteral("songDock"));
-    m_songDock->setWidget(m_header);
-    addDockWidget(Qt::RightDockWidgetArea, m_songDock);
-
+    m_toolsTabs = new DetailsTabWidget(this);
+    m_toolsTabs->setObjectName(QStringLiteral("detailsTabs"));
+    m_toolsTabs->setDocumentMode(true);
+    m_header = new HeaderPanel(&m_session, m_toolsTabs);
     m_inspector = new InspectorPanel(&m_session, this);
-    auto *inspectorDock = new QDockWidget(tr("Inspector"), this);
-    inspectorDock->setObjectName(QStringLiteral("inspectorDock"));
-    inspectorDock->setWidget(m_inspector);
-    addDockWidget(Qt::RightDockWidgetArea, inspectorDock);
-    tabifyDockWidget(m_songDock, inspectorDock);
-    m_songDock->raise();
-
-    m_problems = new ProblemsPanel(&m_session, this);
-    m_problemsDock = new QDockWidget(tr("Problems"), this);
-    m_problemsDock->setObjectName(QStringLiteral("problemsDock"));
-    m_problemsDock->setWidget(m_problems);
-    addDockWidget(Qt::BottomDockWidgetArea, m_problemsDock);
+    m_problems = new ProblemsPanel(&m_session, m_toolsTabs);
+    m_toolsTabs->addTab(m_header, tr("Song"));
+    m_toolsTabs->addTab(m_inspector, tr("Inspector"));
+    m_problemsTab = m_toolsTabs->addTab(m_problems, tr("Problems"));
+    m_toolsDock = new QDockWidget(tr("Details"), this);
+    m_toolsDock->setObjectName(QStringLiteral("detailsDock"));
+    m_toolsDock->setWidget(m_toolsTabs);
+    addDockWidget(Qt::RightDockWidgetArea, m_toolsDock);
+    updateProblemsTab();
 
     m_statusSummary = new QLabel(this);
     statusBar()->addPermanentWidget(m_statusSummary);
@@ -221,9 +346,21 @@ void MainWindow::buildLayout()
     connect(m_lyrics, &LyricsPanel::statusMessage, this,
         [this](const QString &message) { statusBar()->showMessage(message, 4000); });
     connect(m_score, &ScoreView::requestLyricEdit, this, [this](const QString &part, int slot) {
-        m_centre->setCurrentWidget(m_lyrics);
+        m_lyricsSection->setExpanded(true);
         m_lyrics->focusSlot(part, slot);
     });
+    connect(m_source, &SourcePanel::editingActivated, this, [this] {
+        m_header->commitPendingEdits();
+        m_lyrics->commitPendingEdits();
+    });
+    connect(m_source, &SourcePanel::structuredEditingBlocked, this,
+        &MainWindow::setStructuredEditingBlocked);
+    connect(m_source, &SourcePanel::sourceErrorChanged, this,
+        [this](const QString &message) {
+            m_problems->setSourceError(message);
+            m_statusSummary->setText(m_problems->summary());
+            updateProblemsTab();
+        });
 
     connect(m_transport, &TransportBar::playRequested, this, [this] {
         refreshPlaybackPlan();
@@ -248,7 +385,12 @@ void MainWindow::buildLayout()
         if (!code.isEmpty()) {
             // The widgets still belong to the old language at this point. Land
             // their drafts there before changing the session's identity.
-            flushPendingEdits();
+            if (!flushPendingEdits()) {
+                updateLanguageTabs();
+                m_sourceSection->setExpanded(true);
+                m_source->focusEditor();
+                return;
+            }
             m_session.setCurrentLanguage(code);
         }
     });
@@ -269,9 +411,10 @@ void MainWindow::buildMenus()
     fileMenu->addAction(tr("Prepare &Contribution…"), this,
         &MainWindow::prepareContribution);
     fileMenu->addSeparator();
-    fileMenu->addAction(tr("&Save Current"), QKeySequence::Save, this, &MainWindow::save);
-    fileMenu->addAction(tr("Save &All"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S), this,
-        [this] { (void)saveAll(); });
+    m_saveCurrentAction
+        = fileMenu->addAction(tr("&Save Current"), QKeySequence::Save, this, &MainWindow::save);
+    m_saveAllAction = fileMenu->addAction(tr("Save &All"),
+        QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S), this, [this] { (void)saveAll(); });
     fileMenu->addAction(tr("&Reload from Disk"), this, &MainWindow::reloadFromDisk);
     fileMenu->addSeparator();
     fileMenu->addAction(tr("&Preferences…"), this, &MainWindow::editPreferences);
@@ -283,7 +426,12 @@ void MainWindow::buildMenus()
     undo->setShortcut(QKeySequence::Undo);
     undo->setEnabled(false);
     connect(undo, &QAction::triggered, this, [this] {
-        flushPendingEdits();
+        if (m_source->hasPendingEdits()) {
+            m_source->undoPendingEdit();
+            return;
+        }
+        if (!flushPendingEdits())
+            return;
         m_session.undoGroup()->undo();
     });
     connect(m_session.undoGroup(), &QUndoGroup::canUndoChanged, undo, &QAction::setEnabled);
@@ -295,7 +443,12 @@ void MainWindow::buildMenus()
     redo->setShortcut(QKeySequence::Redo);
     redo->setEnabled(false);
     connect(redo, &QAction::triggered, this, [this] {
-        flushPendingEdits();
+        if (m_source->hasPendingEdits()) {
+            m_source->redoPendingEdit();
+            return;
+        }
+        if (!flushPendingEdits())
+            return;
         m_session.undoGroup()->redo();
     });
     connect(m_session.undoGroup(), &QUndoGroup::canRedoChanged, redo, &QAction::setEnabled);
@@ -323,11 +476,11 @@ void MainWindow::buildMenus()
         &MainWindow::showBrowser);
     viewMenu->addSeparator();
     viewMenu->addAction(tr("&Score"), QKeySequence(Qt::CTRL | Qt::Key_1), this,
-        [this] { m_centre->setCurrentWidget(m_score); });
+        [this] { focusWorkspaceSection(0); });
     viewMenu->addAction(tr("&Lyrics"), QKeySequence(Qt::CTRL | Qt::Key_2), this,
-        [this] { m_centre->setCurrentWidget(m_lyrics); });
+        [this] { focusWorkspaceSection(1); });
     viewMenu->addAction(tr("So&urce"), QKeySequence(Qt::CTRL | Qt::Key_3), this,
-        [this] { m_centre->setCurrentWidget(m_source); });
+        [this] { focusWorkspaceSection(2); });
 
     auto *playMenu = menuBar()->addMenu(tr("&Play"));
     playMenu->addAction(tr("&Play / Pause"), QKeySequence(Qt::Key_Space), this, [this] {
@@ -351,15 +504,16 @@ void MainWindow::buildMenus()
             "<b>Song dock</b><br>title, subtitle, active, copyrights, key_signature, "
             "time_sig_numerator, time_sig_denominator, tempo_bpm, verse_count, "
             "converge_verses, commentary, and [[time_sig_changes]].<br><br>"
-            "<b>Score and Lyrics tabs</b><br>notes, text, phrase_breaks, "
+            "<b>Score and Lyrics panes</b><br>notes, text, phrase_breaks, "
             "optional_phrase_breaks, and non_breaking_phrase_breaks.<br><br>"
             "<b>Inspector dock</b><br>choral_type, clef, staff_number, "
             "splice_lyrics_into, suppress_verses, and suppress_verses_when.<br><br>"
             "<b>Translations</b><br>File → Add Translation creates song_LANG.toml safely. "
             "The language is its filename suffix.<br><br>"
-            "For a future or advanced field OPE does not yet model, use Source → Open "
-            "file in text editor. Unknown TOML is preserved byte-for-byte, and OPE "
-            "detects external changes before saving."));
+            "The editable <b>Source pane</b> handles advanced or newly introduced TOML "
+            "fields directly. Valid source changes update every structured pane; invalid "
+            "TOML pauses structured editing and Save until it is fixed or reverted. "
+            "Unknown TOML is preserved byte-for-byte."));
         box.setStandardButtons(QMessageBox::Ok);
         box.exec();
     });
@@ -383,7 +537,7 @@ void MainWindow::buildMenus()
                "<br><br><b>Anywhere</b><br>"
                "Space  play / pause &nbsp; F5  re-read the songs folder<br>"
                "Ctrl+O or Ctrl+L  jump to the song list<br>"
-               "Ctrl+1 / Ctrl+2 / Ctrl+3  score / lyrics / source"));
+               "Ctrl+1 / Ctrl+2 / Ctrl+3  expand and focus score / lyrics / source"));
     });
     helpMenu->addAction(tr("&Report a Song Problem…"), this,
         &MainWindow::reportSongProblem);
@@ -414,7 +568,8 @@ void MainWindow::updateLanguageTabs()
         QString label = info ? QStringLiteral("%1 (%2)").arg(info->nativeName, code) : code;
         const bool pending = code == m_session.currentLanguage()
             && ((m_header && m_header->hasPendingEdits())
-                || (m_lyrics && m_lyrics->hasPendingEdits()));
+                || (m_lyrics && m_lyrics->hasPendingEdits())
+                || (m_source && m_source->hasPendingEdits()));
         if (m_session.isDirty(code) || pending)
             label.append(QStringLiteral(" •"));
         const int index = m_languageTabs->addTab(new QWidget(m_languageTabs), label);
@@ -472,8 +627,69 @@ void MainWindow::openPath(const QString &path)
 
 void MainWindow::selectTab(int index)
 {
-    if (index >= 0 && index < m_centre->count())
-        m_centre->setCurrentIndex(index);
+    focusWorkspaceSection(index);
+}
+
+void MainWindow::focusWorkspaceSection(int index)
+{
+    WorkspaceSection *section = index == 0 ? m_scoreSection
+        : index == 1                         ? m_lyricsSection
+        : index == 2                         ? m_sourceSection
+                                             : nullptr;
+    if (section)
+        section->setExpanded(true);
+    if (index == 0)
+        m_score->setFocus(Qt::ShortcutFocusReason);
+    else if (index == 1)
+        m_lyrics->focusEditor();
+    else if (index == 2)
+        m_source->focusEditor();
+}
+
+void MainWindow::updateProblemsTab()
+{
+    if (!m_toolsTabs || m_problemsTab < 0)
+        return;
+    const QList<Finding> &findings = m_session.findings();
+    const int errors = countBySeverity(findings, Severity::Error)
+        + (m_source && m_source->hasParseError() ? 1 : 0);
+    const int warnings = countBySeverity(findings, Severity::Warning);
+    const int infos = countBySeverity(findings, Severity::Info);
+    const int total = findings.size() + (m_source && m_source->hasParseError() ? 1 : 0);
+    m_toolsTabs->setTabText(m_problemsTab,
+        total > 0 ? tr("Problems (%1)").arg(total) : tr("Problems"));
+    m_toolsTabs->setTabToolTip(m_problemsTab,
+        tr("%1 error(s), %2 warning(s), %3 information item(s)")
+            .arg(errors)
+            .arg(warnings)
+            .arg(infos));
+    auto *tabs = static_cast<AlertTabBar *>(m_toolsTabs->tabBar());
+    if (errors > 0) {
+        tabs->setAlert(m_problemsTab, QColor(0xd1, 0x24, 0x2f), Qt::white);
+    } else if (warnings > 0) {
+        tabs->setAlert(m_problemsTab, QColor(0xd9, 0x77, 0x06), Qt::white);
+    } else if (infos > 0) {
+        tabs->setAlert(m_problemsTab, QColor(0xf0, 0xc8, 0x4b), QColor(0x20, 0x21, 0x24));
+    } else {
+        tabs->setAlert(m_problemsTab, {}, {});
+    }
+}
+
+void MainWindow::setStructuredEditingBlocked(bool blocked)
+{
+    m_score->setEnabled(!blocked);
+    m_lyrics->setEnabled(!blocked);
+    m_header->setEnabled(!blocked);
+    m_inspector->setEnabled(!blocked);
+    if (m_saveCurrentAction)
+        m_saveCurrentAction->setEnabled(!blocked);
+    if (m_saveAllAction)
+        m_saveAllAction->setEnabled(!blocked);
+    if (blocked)
+        statusBar()->showMessage(
+            tr("Finish or revert the Source edit before using structured editors or Save."));
+    else
+        statusBar()->clearMessage();
 }
 
 void MainWindow::showBrowser()
@@ -527,6 +743,8 @@ void MainWindow::addTranslation()
         QMessageBox::information(this, tr("Add Translation"), tr("Open a song first."));
         return;
     }
+    if (!flushPendingEdits())
+        return;
     const SongDocument *base = m_session.baseDocument();
     if (!base) {
         QMessageBox::information(this, tr("Add Translation"),
@@ -555,7 +773,8 @@ void MainWindow::save()
 {
     if (!m_session.isOpen())
         return;
-    flushPendingEdits();
+    if (!flushPendingEdits())
+        return;
     (void)saveLanguage(m_session.currentLanguage());
 }
 
@@ -629,7 +848,8 @@ bool MainWindow::saveAll()
 {
     if (!m_session.isOpen())
         return true;
-    flushPendingEdits();
+    if (!flushPendingEdits())
+        return false;
     const QStringList dirty = m_session.dirtyLanguages();
     for (const QString &language : dirty) {
         if (!saveLanguage(language))
@@ -1018,7 +1238,8 @@ void MainWindow::prepareContribution()
             tr("Open or create the song you want to contribute first."));
         return;
     }
-    flushPendingEdits();
+    if (!flushPendingEdits())
+        return;
 
     const SongDocument &doc = m_session.document();
     const QByteArray baseline = m_session.openedBytes();
@@ -1033,7 +1254,7 @@ void MainWindow::prepareContribution()
     }
     if (!m_session.isNewFile()) {
         QFile disk(doc.path);
-        if (!disk.open(QIODevice::ReadOnly) || disk.readAll() != doc.originalBytes) {
+        if (!disk.open(QIODevice::ReadOnly) || disk.readAll() != m_session.diskBytes()) {
             QMessageBox::warning(this, tr("Prepare Contribution"),
                 tr("%1 changed on disk after it was opened or saved. Reload and reconcile "
                    "that change before preparing a contribution.")
@@ -1079,8 +1300,7 @@ void MainWindow::prepareContribution()
     request.language = m_session.currentLanguage();
     request.fileName = QFileInfo(doc.path).fileName();
     request.editorVersion = QCoreApplication::applicationVersion();
-    request.proposedToml
-        = m_session.isNewFile() ? io::serializeFresh(doc) : io::serialize(doc);
+    request.proposedToml = m_session.currentBytes();
     request.baselineToml = baseline;
     request.baseToml = baseBytes;
     const QString copyrightPath
@@ -1091,16 +1311,22 @@ void MainWindow::prepareContribution()
 
     const auto prepared = contrib::prepare(request);
     if (!prepared) {
-        m_problemsDock->show();
-        m_problemsDock->raise();
+        m_toolsDock->show();
+        m_toolsDock->raise();
+        m_toolsTabs->setCurrentIndex(m_problemsTab);
         QMessageBox::warning(this, tr("Contribution Not Ready"), prepared.error());
         return;
     }
 
     QMessageBox result(this);
-    result.setIcon(QMessageBox::Information);
+    result.setIcon(prepared->checks.warnings > 0 ? QMessageBox::Warning
+                                                 : QMessageBox::Information);
     result.setWindowTitle(tr("Contribution Bundle Ready"));
-    result.setText(tr("The exact proposed TOML passed preflight and was packaged for review."));
+    result.setText(prepared->checks.warnings > 0
+            ? tr("The exact proposed TOML passed every blocking check with %n warning(s). "
+                 "Review and explain them before submitting.",
+                nullptr, prepared->checks.warnings)
+            : tr("The exact proposed TOML passed preflight and was packaged for review."));
     if (prepared->newSong) {
         result.setInformativeText(
             tr("%1\n\nNew song file:\n%2\n\nOpen the GitHub form and drag this "
@@ -1194,7 +1420,8 @@ void MainWindow::reportSongProblem()
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("template"), QStringLiteral("song-problem.yml"));
     if (m_session.isOpen()) {
-        flushPendingEdits();
+        if (!flushPendingEdits())
+            return;
         const SongDocument &doc = m_session.document();
         const QString identity = QStringLiteral("#%1 — %2")
                                      .arg(doc.workId)
@@ -1230,7 +1457,16 @@ void MainWindow::reportSongProblem()
 
 bool MainWindow::confirmDiscard()
 {
-    flushPendingEdits();
+    if (!flushPendingEdits()) {
+        const QMessageBox::StandardButton answer = QMessageBox::warning(this,
+            tr("Invalid source draft"),
+            tr("The Source pane contains TOML that cannot update the score or lyrics. "
+               "Discard that source draft and continue?"),
+            QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Cancel);
+        if (answer != QMessageBox::Discard)
+            return false;
+        m_source->discardPendingEdits();
+    }
     if (!m_session.isDirty())
         return true;
     QStringList files;
@@ -1251,25 +1487,33 @@ bool MainWindow::confirmDiscard()
     return true;
 }
 
-void MainWindow::flushPendingEdits()
+bool MainWindow::flushPendingEdits()
 {
     if (m_header)
         m_header->commitPendingEdits();
     if (m_lyrics)
         m_lyrics->commitPendingEdits();
+    if (m_source && !m_source->commitPendingEdits()) {
+        m_sourceSection->setExpanded(true);
+        m_source->focusEditor();
+        statusBar()->showMessage(tr("Fix or revert the invalid TOML source before continuing."));
+        return false;
+    }
+    return true;
 }
 
 bool MainWindow::hasUnsavedWork() const
 {
     return m_session.isDirty() || (m_header && m_header->hasPendingEdits())
-        || (m_lyrics && m_lyrics->hasPendingEdits());
+        || (m_lyrics && m_lyrics->hasPendingEdits())
+        || (m_source && m_source->hasPendingEdits());
 }
 
 void MainWindow::navigateTo(const Finding &finding)
 {
     const SongDocument &doc = m_session.effectiveDocument();
     if (!finding.lyricKey.isEmpty() && finding.measure < 0) {
-        m_centre->setCurrentWidget(m_lyrics);
+        m_lyricsSection->setExpanded(true);
         m_lyrics->focusSlot(finding.partName, std::max(0, finding.slot));
         return;
     }
@@ -1279,7 +1523,7 @@ void MainWindow::navigateTo(const Finding &finding)
             if (doc.parts.at(i).name == finding.partName)
                 partIndex = i;
         }
-        m_centre->setCurrentWidget(m_score);
+        m_scoreSection->setExpanded(true);
         m_session.setSelection(Selection { partIndex, finding.measure - 1,
             std::max(0, finding.eventIndex) });
     }

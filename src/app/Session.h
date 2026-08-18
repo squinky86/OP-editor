@@ -79,6 +79,13 @@ public:
     /// still describe the whole editing session. Empty for a newly created file.
     [[nodiscard]] QByteArray openedBytes(const QString &language) const;
     [[nodiscard]] QByteArray openedBytes() const { return openedBytes(m_currentLanguage); }
+    /// Exact bytes currently represented by the structured document.
+    [[nodiscard]] QByteArray currentBytes(const QString &language) const;
+    [[nodiscard]] QByteArray currentBytes() const { return currentBytes(m_currentLanguage); }
+    /// Bytes last read from or successfully written to disk, used only for
+    /// external-change detection.
+    [[nodiscard]] QByteArray diskBytes(const QString &language) const;
+    [[nodiscard]] QByteArray diskBytes() const { return diskBytes(m_currentLanguage); }
     [[nodiscard]] bool isNewFile() const noexcept { return isNewFile(m_currentLanguage); }
     [[nodiscard]] bool isNewFile(const QString &language) const noexcept;
 
@@ -105,6 +112,12 @@ public:
     /// commit safely to the document where typing began even after a tab switch.
     void mutate(const QString &language, const QString &description,
         const std::function<void(SongDocument &)> &mutate);
+
+    /// Replace one authored document with exact, valid TOML source as a single
+    /// undo step. Invalid bytes are returned to the editor and never enter the
+    /// structured model.
+    [[nodiscard]] std::expected<void, LoadError> replaceSource(
+        const QString &language, const QByteArray &bytes);
 
     /// Replace the document wholesale (used by undo/redo).
     void restore(const QString &language, const SongDocument &document);
@@ -138,6 +151,7 @@ private:
 
     QHash<QString, SongDocument> m_documents;  ///< keyed by language code
     QHash<QString, QByteArray> m_openedBytes;  ///< immutable contribution baseline
+    QHash<QString, QByteArray> m_diskBytes;    ///< external-change baseline
     QHash<QString, PartAlignment> m_alignments;
     mutable SongDocument m_effective;
     QStringList m_languages;

@@ -8,23 +8,32 @@
 #include "ui/CorpusBackupDialog.h"
 #include "ui/Dialogs.h"
 #include "ui/LyricsPanel.h"
+#include "ui/MainWindow.h"
 #include "ui/Panels.h"
 #include "ui/SongBrowser.h"
 
+#include <QAction>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QDockWidget>
 #include <QFile>
+#include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QSignalSpy>
+#include <QSplitter>
+#include <QSettings>
+#include <QSyntaxHighlighter>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTabWidget>
 #include <QTreeWidget>
+#include <QToolButton>
 
 using namespace ope;
 using namespace ope::fixtures;
@@ -63,6 +72,157 @@ class UiWorkflowTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void mainWindowUsesThreeCollapsibleWorkspacePanesAndRightDetailsTabs()
+    {
+        QSettings().remove(QStringLiteral("workspace"));
+        MainWindow window;
+        window.resize(1200, 800);
+        window.show();
+        QCoreApplication::processEvents();
+
+        QSplitter *workspace = window.findChild<QSplitter *>(QStringLiteral("workspaceSplitter"));
+        QVERIFY(workspace);
+        QCOMPARE(workspace->orientation(), Qt::Vertical);
+        QCOMPARE(workspace->count(), 3);
+        for (const QString &name : { QStringLiteral("score"), QStringLiteral("lyrics"),
+                 QStringLiteral("source") }) {
+            QToolButton *toggle
+                = window.findChild<QToolButton *>(name + QStringLiteral("WorkspaceToggle"));
+            QVERIFY(toggle);
+            QVERIFY(toggle->isChecked());
+        }
+
+        QTabWidget *details = window.findChild<QTabWidget *>(QStringLiteral("detailsTabs"));
+        QVERIFY(details);
+        QCOMPARE(details->count(), 3);
+        QCOMPARE(details->tabText(0), QStringLiteral("Song"));
+        QCOMPARE(details->tabText(1), QStringLiteral("Inspector"));
+        QVERIFY(details->tabText(2).startsWith(QStringLiteral("Problems")));
+        QDockWidget *dock = window.findChild<QDockWidget *>(QStringLiteral("detailsDock"));
+        QVERIFY(dock);
+        QCOMPARE(window.dockWidgetArea(dock), Qt::RightDockWidgetArea);
+
+        QToolButton *sourceToggle
+            = window.findChild<QToolButton *>(QStringLiteral("sourceWorkspaceToggle"));
+        sourceToggle->click();
+        QVERIFY(!sourceToggle->isChecked());
+        sourceToggle->click();
+        QVERIFY(sourceToggle->isChecked());
+    }
+
+    void sourcePanelSynchronizesValidTomlAndRetainsInvalidDrafts()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, QStringLiteral("song.toml"), baseSong());
+        Session session;
+        QVERIFY(session.openSong(root.filePath(QStringLiteral("song.toml"))));
+        HeaderPanel header(&session);
+        SourcePanel source(&session);
+        ProblemsPanel problems(&session);
+        connect(&source, &SourcePanel::sourceErrorChanged,
+            &problems, &ProblemsPanel::setSourceError);
+        QPlainTextEdit *editor = source.findChild<QPlainTextEdit *>();
+        QVERIFY(editor);
+        QCOMPARE(editor->lineWrapMode(), QPlainTextEdit::WidgetWidth);
+        QVERIFY(!editor->document()->findChildren<QSyntaxHighlighter *>().isEmpty());
+
+        QString valid = editor->toPlainText();
+        valid.replace(QStringLiteral("Face to Face"), QStringLiteral("Edited in Source"));
+        editor->setPlainText(valid);
+        QVERIFY(source.hasPendingEdits());
+        QVERIFY(source.commitPendingEdits());
+        QCOMPARE(session.document().title.valueOr(QString()), QStringLiteral("Edited in Source"));
+        QVERIFY(lineEditWithText(header, QStringLiteral("Edited in Source")));
+
+        session.mutate(QStringLiteral("Structured edit"),
+            [](SongDocument &doc) { doc.title.set(QStringLiteral("Edited in Song pane")); });
+        QVERIFY(editor->toPlainText().contains(QStringLiteral("Edited in Song pane")));
+
+        editor->setPlainText(QStringLiteral("title = \"unfinished\n"));
+        QVERIFY(!source.commitPendingEdits());
+        QVERIFY(source.hasPendingEdits());
+        QVERIFY(source.hasParseError());
+        QCOMPARE(session.document().title.valueOr(QString()), QStringLiteral("Edited in Song pane"));
+        QTreeWidget *problemTree = problems.findChild<QTreeWidget *>();
+        QVERIFY(problemTree);
+        QVERIFY(problemTree->topLevelItemCount() > 0);
+        QCOMPARE(problemTree->topLevelItem(0)->text(1), QStringLiteral("E-TOML"));
+
+        source.discardPendingEdits();
+        QVERIFY(!source.hasPendingEdits());
+        QVERIFY(editor->toPlainText().contains(QStringLiteral("Edited in Song pane")));
+    }
+
+    void invalidMainWindowSourceDisablesSaveAndRaisesAProblemsError()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        const QString path = root.filePath(QStringLiteral("song.toml"));
+        write(root, QStringLiteral("song.toml"), baseSong());
+        MainWindow window;
+        window.openPath(path);
+        SourcePanel *source = window.findChild<SourcePanel *>();
+        HeaderPanel *header = window.findChild<HeaderPanel *>();
+        QTabWidget *details = window.findChild<QTabWidget *>(QStringLiteral("detailsTabs"));
+        QVERIFY(source);
+        QVERIFY(header);
+        QVERIFY(details);
+
+        QPlainTextEdit *editor = source->findChild<QPlainTextEdit *>();
+        editor->setPlainText(QStringLiteral("title = \"unfinished\n"));
+        QVERIFY(!source->commitPendingEdits());
+        QVERIFY(!header->isEnabled());
+        QVERIFY(source->isEnabled());
+        QVERIFY(details->tabText(2).startsWith(QStringLiteral("Problems (")));
+        QVERIFY(!details->tabToolTip(2).startsWith(QStringLiteral("0 error")));
+
+        QAction *save = nullptr;
+        for (QAction *action : window.findChildren<QAction *>()) {
+            if (action->shortcut() == QKeySequence::Save) {
+                save = action;
+                break;
+            }
+        }
+        QVERIFY(save);
+        QVERIFY(!save->isEnabled());
+
+        source->discardPendingEdits();
+        QVERIFY(header->isEnabled());
+        QVERIFY(save->isEnabled());
+    }
+
+    void songBrowserSortsNumericIdsDescendingByDefault()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        for (const int id : { 1, 2, 10 }) {
+            QVERIFY(root.mkpath(QString::number(id)));
+            write(QDir(root.filePath(QString::number(id))), QStringLiteral("song.toml"),
+                QStringLiteral("title = \"Song %1\"\nlanguage = \"en\"\n").arg(id).toUtf8());
+        }
+
+        Library library;
+        library.setRoot(dir.path());
+        library.rescan();
+        SongBrowser browser(&library);
+        QTreeWidget *tree = browser.findChild<QTreeWidget *>();
+        QVERIFY(tree);
+        QVERIFY(tree->isSortingEnabled());
+        QVERIFY(tree->header()->sectionsClickable());
+        QCOMPARE(tree->header()->sortIndicatorSection(), 0);
+        QCOMPARE(tree->header()->sortIndicatorOrder(), Qt::DescendingOrder);
+        QCOMPARE(tree->topLevelItemCount(), 3);
+        QCOMPARE(tree->topLevelItem(0)->text(0), QStringLiteral("10"));
+        QCOMPARE(tree->topLevelItem(1)->text(0), QStringLiteral("2"));
+        QCOMPARE(tree->topLevelItem(2)->text(0), QStringLiteral("1"));
+
+        tree->sortItems(0, Qt::AscendingOrder);
+        QCOMPARE(tree->topLevelItem(0)->text(0), QStringLiteral("1"));
+        QCOMPARE(tree->topLevelItem(1)->text(0), QStringLiteral("2"));
+        QCOMPARE(tree->topLevelItem(2)->text(0), QStringLiteral("10"));
+    }
+
     void phraseBreakEditKeepsTheAlignmentScrollPosition()
     {
         QTemporaryDir dir;
@@ -100,6 +260,7 @@ private Q_SLOTS:
         QCoreApplication::processEvents();
         const int before = grid->horizontalScrollBar()->value();
         QVERIFY(before > 0);
+        QSignalSpy scrollChanges(grid->horizontalScrollBar(), &QScrollBar::valueChanged);
 
         const QRect breakCell = grid->visualItemRect(grid->item(0, 18));
         QVERIFY(grid->viewport()->rect().contains(breakCell.center()));
@@ -110,6 +271,19 @@ private Q_SLOTS:
         QVERIFY(session.phraseBreakAt(PhraseBreak { 5, 48 }).has_value());
         QCOMPARE(grid->horizontalScrollBar()->value(), before);
         QCOMPARE(grid->currentColumn(), 18);
+
+        const QRect sameBreakCell = grid->visualItemRect(grid->item(0, 18));
+        QTest::mouseClick(grid->viewport(), Qt::LeftButton, Qt::NoModifier,
+            sameBreakCell.center());
+        QCoreApplication::processEvents();
+
+        QVERIFY(!session.phraseBreakAt(PhraseBreak { 5, 48 }).has_value());
+        QCOMPARE(grid->horizontalScrollBar()->value(), before);
+        QCOMPARE(grid->currentColumn(), 18);
+        bool jumpedToStart = false;
+        for (const QList<QVariant> &arguments : scrollChanges)
+            jumpedToStart = jumpedToStart || arguments.constFirst().toInt() == 0;
+        QVERIFY(!jumpedToStart);
     }
 
     void delayedLyricsCommitStaysWithItsOriginalLanguage()

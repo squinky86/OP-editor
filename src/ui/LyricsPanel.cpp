@@ -240,6 +240,15 @@ LyricsPanel::LyricsPanel(Session *session, QWidget *parent) : QWidget(parent), m
 
 void LyricsPanel::refresh()
 {
+    // setPhraseBreak() emits documentChanged synchronously. Phrase breaks do
+    // not affect this grid's shape or lyrics, so keep the existing table and
+    // its viewport intact instead of rebuilding it and attempting to restore
+    // a scrollbar whose range may still be awaiting a queued layout.
+    if (m_phraseBreakEditInProgress) {
+        refreshBreakRow();
+        return;
+    }
+
     m_loading = true;
 
     const SongDocument &doc = m_session->effectiveDocument();
@@ -740,6 +749,21 @@ void LyricsPanel::fillBreakRow(const PartAlignment &alignment, const Part &part)
     }
 }
 
+void LyricsPanel::refreshBreakRow()
+{
+    const QString partName = gridPartName();
+    const SongDocument &doc = m_session->effectiveDocument();
+    const Part *part = doc.part(partName);
+    const PartAlignment &alignment = m_session->alignment(partName);
+    if (!part || m_grid->columnCount() != static_cast<int>(alignment.lyricSlots.size()))
+        return;
+
+    const bool wasLoading = m_loading;
+    m_loading = true;
+    fillBreakRow(alignment, *part);
+    m_loading = wasLoading;
+}
+
 void LyricsPanel::clickBreakCell(int column)
 {
     const QTableWidgetItem *item = m_grid->item(0, column);
@@ -770,18 +794,9 @@ void LyricsPanel::clickBreakCell(int column)
 void LyricsPanel::setPhraseBreakKeepingGridPosition(
     PhraseBreak position, std::optional<BreakKind> kind)
 {
-    const int horizontalScroll = m_grid->horizontalScrollBar()->value();
-    const int verticalScroll = m_grid->verticalScrollBar()->value();
+    m_phraseBreakEditInProgress = true;
     m_session->setPhraseBreak(position, kind);
-
-    // documentChanged rebuilds the grid synchronously, but some Qt platform
-    // styles finish their current-cell scrolling after cellClicked/triggered
-    // returns. Restore again after that event has unwound so a break edit made
-    // at the right of a long hymn cannot snap the viewport back to column 0.
-    QTimer::singleShot(0, this, [this, horizontalScroll, verticalScroll] {
-        m_grid->horizontalScrollBar()->setValue(horizontalScroll);
-        m_grid->verticalScrollBar()->setValue(verticalScroll);
-    });
+    m_phraseBreakEditInProgress = false;
 }
 
 void LyricsPanel::showBreakMenu(int column, QPoint where)
@@ -999,6 +1014,15 @@ void LyricsPanel::focusSlot(const QString &partName, int slot)
         m_grid->setCurrentCell(2, slot);  // the first section row
         m_grid->scrollToItem(m_grid->item(2, slot));
     }
+}
+
+void LyricsPanel::focusEditor()
+{
+    if (!m_editors.isEmpty() && m_editors.first().editor) {
+        m_editors.first().editor->setFocus(Qt::ShortcutFocusReason);
+        return;
+    }
+    m_tabs->setFocus(Qt::ShortcutFocusReason);
 }
 
 void LyricsPanel::insertUndertie()

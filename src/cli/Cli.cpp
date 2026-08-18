@@ -303,7 +303,7 @@ QString usage()
         "  --quiet                   summary only\n"
         "\n"
         "GUI automation:\n"
-        "  --tab 0|1|2               open score, lyrics, or source\n"
+        "  --tab 0|1|2               focus score, lyrics, or source\n"
         "  --screenshot FILE         save a PNG after startup and exit\n"
         "\n"
         "With no arguments the graphical editor starts.\n");

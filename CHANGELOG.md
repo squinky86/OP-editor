@@ -20,6 +20,16 @@
 - Made new-song submissions identity-free: attach the generated `song.toml`
   directly or paste its copied TOML code block, and let corpus maintainers
   assign the upstream ID.
+- Scoped automated upstream-baseline comparison, stale-baseline rejection, and
+  an in-app diff viewer out of 0.1. Contribution bundles still include generated
+  patches for automated issue and maintainer workflows, and the exact proposed
+  source remains subject to the shared parser and validation preflight.
+- Replaced the Score/Lyrics/Source tab switcher with independently resizable and
+  collapsible vertical panes, and moved Problems beside Song and Inspector in a
+  right-column tab whose count and color reflect the highest current severity.
+- Made Source an editable, syntax-highlighted, word-wrapped TOML editor with
+  two-way structured-view synchronization, session undo, exact-byte saves, and
+  safe recovery from invalid drafts.
 - Added the 0.1 contribution, documentation, integrity, and release plan.
 
 ## 0.0.1 — first alpha

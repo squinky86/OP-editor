@@ -67,19 +67,18 @@ The remaining beta work is called out in this workflow:
    declarations; measure totals; notation token fidelity; lyric-slot counts;
    phrase boundaries; cross-part rules; parse-after-write; and unchanged-field
    preservation.
-4. For an update, compare against the resolved downloaded HEAD and show a
-   file-level and semantic summary. Block unrelated files and warn when the
-   baseline is stale. For a new song, do not propose or deconflict an upstream
-   ID: validate the standalone `song.toml` and leave directory assignment to a
-   maintainer.
+4. Validate the exact proposed file independently of its editing baseline. For
+   a new song, do not propose or deconflict an upstream ID: validate the
+   standalone `song.toml` and leave directory assignment to a maintainer.
 5. Distinguish errors (submission blocked), warnings (explicit acknowledgement),
    and information. Every finding needs a rule ID, plain-language explanation,
    exact location, and navigation back to the editor.
 6. For corrections and translations, produce a small contribution bundle
-   containing the changed TOML files, any required `copyright.txt`, a unified
-   diff, the preflight report, provenance, and SHA-256 hashes. For a new song,
-   make the standalone `song.toml` the primary attachment and provide a complete
-   TOML code block as fallback. Never include unrelated files or credentials.
+   containing the changed TOML files, any required `copyright.txt`, a generated
+   patch for issue/maintainer automation, the preflight report, provenance, and
+   SHA-256 hashes. For a new song, make the standalone `song.toml` the primary
+   attachment and provide a complete TOML code block as fallback. Never include
+   unrelated files or credentials. OPE does not need a diff-viewing interface.
 7. Open the matching GitHub issue form with a concise prefilled description and
    copy the full Markdown report to the clipboard. Because browser issue forms
    cannot reliably upload local files, give explicit drag-and-drop instructions
@@ -109,8 +108,6 @@ Required gates for beta:
 - Schema and semantic validation for base files and merged overlays.
 - Corpus-level identity checks: directory ID, filename/language, duplicate IDs,
   duplicate languages, and translation base presence.
-- Contribution-diff checks: allowlisted paths, no accidental deletions, no
-  generated/editor files, and no unrelated song changes.
 - Copyright checks that are explicit but honest: software can require complete
   declarations and permission files; it cannot determine public-domain status.
 - Hashes and resolved upstream commit recorded for every installed snapshot and
@@ -146,24 +143,26 @@ without them.
 - [x] Add managed HEAD download, explicit overwrite warning, full pre-install
   checks, retained backup, and automatic library switching.
 - [x] Add a prefilled OP-songs song-problem action.
+- [x] Replace the centre view tabs with a collapsible Score/Lyrics/Source
+  workspace; move severity-aware Problems into the right details column; make
+  exact TOML source editing synchronize through the shared session model.
 - [x] Record source, time, ETag, archive hash, archive root, and editor version
   in each managed snapshot.
 - [x] Resolve/display the upstream commit SHA and commit/current-as-of dates;
   automatically detect updates; add cancellable validation progress and
   restore/delete backup management.
-- [ ] Add corpus identity and contribution-diff validation rules.
+- [ ] Add corpus identity validation rules.
 - [x] Build exact-byte correction/new-song preflight, correction bundles,
   identity-free new-song TOML/code-block handoff, and browser handoff without
   storing GitHub credentials.
-- [ ] Compare updates against independently resolved HEAD, reject stale
-  baselines, and support one bundle containing coordinated
-  base-plus-translation edits. New-song IDs remain maintainer-assigned.
+- [ ] Support one bundle containing coordinated base-plus-translation edits.
+  New-song IDs remain maintainer-assigned.
 - [ ] Expand the installed task documentation and in-app contextual help.
 - [x] Add tests for interrupted downloads, HTTP/TLS/proxy errors, rejected and
   size-limited archives, validation failures, retained backups, and install
   rollback.
-- [ ] Add tests for stale contribution baselines, dirty documents, coordinated
-  overlay contributions, and keyboard-only workflows.
+- [ ] Add tests for dirty documents, coordinated overlay contributions, and
+  keyboard-only workflows.
 - [ ] Exercise the live OP-songs HEAD in CI as a scheduled compatibility job;
   keep release builds pinned to a recorded commit for reproducibility.
 - [ ] Complete the beta release gates in `RELEASE_CHECKLIST.md`, then bump CMake,
@@ -177,3 +176,5 @@ without them.
 - No promise that automated checks prove copyright ownership or musical
   correctness.
 - No direct push to OP-songs without a human-visible review artifact.
+- No automated upstream-baseline comparison, stale-baseline rejection, or
+  contribution-diff gate. The exact proposed source is validated on its own.

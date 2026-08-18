@@ -43,10 +43,12 @@ It does not export anything. MusicXML, LilyPond, PDF, MIDI files, and slides
 stay with the website; this program edits the source of truth.
 
 Every TOML field used by the current corpus is available through the Song and
-Inspector docks, Score or Lyrics tabs, and translation workflow. Help ▸ TOML
-Field Reference maps exact TOML names to those controls. The Source tab previews
-the exact bytes that will be written and can open the file in a system text
-editor for advanced or newly introduced fields; unknown TOML remains untouched.
+Inspector tabs, the Score or Lyrics panes, and the translation workflow. Help ▸
+TOML Field Reference maps exact TOML names to those controls. Score, Lyrics, and
+Source remain visible as independently resizable and collapsible vertical panes.
+Source edits the exact bytes directly with TOML highlighting and word wrapping;
+valid edits immediately update every structured pane, while invalid TOML pauses
+Save and structured editing until it is fixed or reverted.
 
 ## Building
 
@@ -134,10 +136,10 @@ identity-free `song.toml` at the top of the review folder: attach that file
 directly to the issue, or paste the TOML code block OPE copies. The corpus
 maintainer assigns the upstream song ID. No GitHub credential is stored.
 
-The current workflow does not yet fetch an independent upstream baseline. Start
-from a freshly downloaded or pulled corpus, and review every warning and the
-generated patch. See [the 0.1 release plan](ROADMAP_0.1.md) for the remaining
-stale-baseline and corpus-integrity checks.
+Prefer a freshly downloaded or pulled corpus, and review every warning and the
+generated submission artifacts. Automated upstream comparison and
+stale-baseline rejection are intentionally outside the 0.1 scope. See [the 0.1
+release plan](ROADMAP_0.1.md) for the remaining corpus-integrity checks.
 
 ### Checking a corpus from the terminal
 
@@ -195,7 +197,7 @@ Anywhere:
 | `Space` | play / pause |
 | `F5` | re-read the songs folder |
 | `Ctrl+O` / `Ctrl+L` | jump to the song list |
-| `Ctrl+1` `Ctrl+2` `Ctrl+3` | score / lyrics / source |
+| `Ctrl+1` `Ctrl+2` `Ctrl+3` | expand and focus score / lyrics / source |
 
 ## Tests
 

@@ -33,7 +33,8 @@ re-emission, and validation must all complete with zero failures.
 - `src/core/Notation.*`, `Lyrics.*`, `Validator.*`, and `Playback.*` implement
   notation, alignment, diagnostics, and deterministic playback plans.
 - `src/app/Session.*` owns the open document family, per-language undo/dirty
-  state, selections, save conflict checks, and derived effective document.
+  state, exact editable source, disk-conflict baselines, selections, save
+  conflict checks, and the derived effective document.
 - `src/ui/` contains Qt Widgets views. Views mutate authored data only through
   `Session`; delayed lyric drafts carry their original language identity.
 - `ope-check` runs the same parser, serializer, notation, and validation code
@@ -47,6 +48,8 @@ validation where necessary, and expose an editing control with its TOML name in
 the tooltip or field reference. Add a fixture proving unchanged bytes remain
 identical and that editing only the new field reparses correctly.
 
-If OpenPsalm introduces a field before OPE models it, the Source tab can open
-the file in the system text editor. OPE preserves that field and detects the
-external modification before any later save.
+If OpenPsalm introduces a field before OPE models it, edit it directly in the
+Source pane. Valid TOML becomes the session document and updates the structured
+views immediately. Invalid source remains available to repair, but it cannot be
+saved and structured editing is paused so two competing drafts cannot overwrite
+one another.

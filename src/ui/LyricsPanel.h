@@ -44,6 +44,9 @@ public:
     void refresh();
     /// Put the cursor on a slot of a part (the score's double-click target).
     void focusSlot(const QString &partName, int slot);
+    /// Focus the first available lyric editor, or the Lyrics page itself when
+    /// the current song has no editable section yet.
+    void focusEditor();
     /// Flush text still sitting in the debounce timer into the document. Save
     /// must call this: a keystroke followed within 600 ms by Ctrl+S would
     /// otherwise be written nowhere and then wiped by the post-save refresh.
@@ -88,6 +91,9 @@ private:
     [[nodiscard]] BreakCell breakCellFor(const PartAlignment &alignment, const Part &part,
         int column) const;
     void fillBreakRow(const PartAlignment &alignment, const Part &part);
+    /// A break edit does not change notes, lyric slots, or lyric text. Refresh
+    /// only its row so the table viewport never has to be torn down.
+    void refreshBreakRow();
     void clickBreakCell(int column);
     void showBreakMenu(int column, QPoint where);
     void setPhraseBreakKeepingGridPosition(
@@ -127,6 +133,7 @@ private:
     QHash<QString, PendingCommit> m_pendingCommits;
     QTimer m_commitTimer;
     QStringList m_signature;
+    bool m_phraseBreakEditInProgress = false;
 };
 
 } // namespace ope::ui

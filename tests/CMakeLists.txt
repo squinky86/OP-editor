@@ -75,9 +75,16 @@ qt_add_executable(UiWorkflowTests
     ${CMAKE_SOURCE_DIR}/src/ui/Panels.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/Dialogs.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/CorpusBackupDialog.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/CorpusDownloadDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/SongBrowser.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/ScoreView.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/Glyphs.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/MainWindow.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio/Synth.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio/AudioEngine.cpp
 )
-target_link_libraries(UiWorkflowTests PRIVATE ope_core Qt6::Widgets Qt6::Test ope_flags)
+target_link_libraries(UiWorkflowTests PRIVATE
+    ope_core ope_cli libzip::zip Qt6::Widgets Qt6::Multimedia Qt6::Network Qt6::Test ope_flags)
 target_compile_definitions(UiWorkflowTests PRIVATE OPE_VERSION="test")
 add_test(NAME UiWorkflowTests COMMAND UiWorkflowTests)
 set_tests_properties(UiWorkflowTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
