@@ -12,9 +12,9 @@
 // to, each with its own syllable count against that voice's slots, and each
 // removable in one click.
 //
-// The alignment grid is for proving a stanza fits: columns are lyric slots with
-// the note above them, rows are verses, and a melisma slot is greyed out because
-// it takes no syllable.
+// The alignment grid is for proving a stanza fits: columns are lyric slots and
+// rests with the rhythmic event above them, rows are verses, and any column
+// that takes no syllable is greyed out.
 
 #pragma once
 
@@ -80,18 +80,30 @@ private:
 
     void rebuildGrid();
     void commitCell(int row, int column);
-    /// The phrase-break boundary that follows the slot in `column`, and the
+    /// One visible alignment-grid column. Lyric slots retain their original
+    /// indices while rests are inserted between them as non-lyric columns.
+    struct GridColumn {
+        int measureIndex = 0;
+        int eventIndex = 0;
+        int tickInMeasure = 0;
+        int endTickInMeasure = 0;
+        int lyricSlot = -1;
+        bool isRest = false;
+    };
+    [[nodiscard]] QList<GridColumn> gridColumns(
+        const PartAlignment &alignment, const Part &part) const;
+    /// The phrase-break boundary that follows `column`, and the
     /// break already sitting on it (or straddling it) if there is one.
     struct BreakCell {
         PhraseBreak boundary;             ///< where a new break would go
         bool representable = true;        ///< the boundary is a whole 64th
         std::optional<PhraseBreak> existing;
         std::optional<BreakKind> kind;
-        bool onBoundary = true;           ///< false: it splits this voice's notes
+        bool onBoundary = true;           ///< false: it splits this visible event span
     };
-    [[nodiscard]] BreakCell breakCellFor(const PartAlignment &alignment, const Part &part,
-        int column) const;
-    void fillBreakRow(const PartAlignment &alignment, const Part &part);
+    [[nodiscard]] BreakCell breakCellFor(
+        const QList<GridColumn> &columns, const Part &part, int column) const;
+    void fillBreakRow(const QList<GridColumn> &columns, const Part &part);
     /// A break edit does not change notes, lyric slots, or lyric text. Refresh
     /// only its row so the table viewport never has to be torn down.
     void refreshBreakRow();

@@ -441,6 +441,53 @@ private Q_SLOTS:
         QVERIFY(!jumpedToStart);
     }
 
+    void restsAppearInTheAlignmentGridAndTakePhraseBreaks()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, QStringLiteral("song.toml"),
+            "title = \"Rest boundaries\"\n"
+            "time_sig_numerator = 4\n"
+            "time_sig_denominator = 4\n\n"
+            "[parts.Soprano]\n"
+            "choral_type = \"soprano\"\n"
+            "notes = \"c'2 r8 d'8 e'4\"\n\n"
+            "[lyrics.1]\n"
+            "text = \"one two three\"\n");
+        Session session;
+        QVERIFY(session.openSong(root.filePath(QStringLiteral("song.toml"))));
+        LyricsPanel panel(&session);
+
+        QTableWidget *grid = panel.findChild<QTableWidget *>();
+        QVERIFY(grid);
+        QCOMPARE(grid->columnCount(), 4);
+        QCOMPARE(grid->item(1, 0)->text(), QStringLiteral("C4/2"));
+        QCOMPARE(grid->item(1, 1)->text(), QStringLiteral("rest/8"));
+        QCOMPARE(grid->item(1, 2)->text(), QStringLiteral("D4/8"));
+        QCOMPARE(grid->item(2, 0)->text(), QStringLiteral("one"));
+        QVERIFY(grid->item(2, 1)->text().isEmpty());
+        QCOMPARE(grid->item(2, 2)->text(), QStringLiteral("two"));
+
+        // The note before the rest and the rest itself expose distinct break
+        // boundaries, so the latter can place a break after the silent beat.
+        const QModelIndex restBreak = grid->model()->index(0, 1);
+        QVERIFY(QMetaObject::invokeMethod(grid, "cellClicked", Qt::DirectConnection,
+            Q_ARG(int, restBreak.row()), Q_ARG(int, restBreak.column())));
+        QVERIFY(session.phraseBreakAt(PhraseBreak { 1, 40 }).has_value());
+        QVERIFY(!session.phraseBreakAt(PhraseBreak { 1, 32 }).has_value());
+
+        const QModelIndex precedingNoteBreak = grid->model()->index(0, 0);
+        QVERIFY(QMetaObject::invokeMethod(grid, "cellClicked", Qt::DirectConnection,
+            Q_ARG(int, precedingNoteBreak.row()), Q_ARG(int, precedingNoteBreak.column())));
+        QVERIFY(session.phraseBreakAt(PhraseBreak { 1, 32 }).has_value());
+        QVERIFY(session.phraseBreakAt(PhraseBreak { 1, 40 }).has_value());
+
+        // Score double-clicks still address lyric-slot numbers, not the newly
+        // expanded visible-column numbers.
+        panel.focusSlot(QStringLiteral("Soprano"), 1);
+        QCOMPARE(grid->currentColumn(), 2);
+    }
+
     void delayedLyricsCommitStaysWithItsOriginalLanguage()
     {
         QTemporaryDir dir;

@@ -717,21 +717,46 @@ void LyricsPanel::setDefaultVerse(int verse, bool selected)
 
 QString LyricsPanel::gridPartName() const { return m_gridPart->currentData().toString(); }
 
+QList<LyricsPanel::GridColumn> LyricsPanel::gridColumns(
+    const PartAlignment &alignment, const Part &part) const
+{
+    QList<GridColumn> columns;
+    int lyricSlot = 0;
+    for (int measureIndex = 0; measureIndex < part.stream.measureCount(); ++measureIndex) {
+        const Measure &measure = part.stream.measures().at(measureIndex);
+        for (int eventIndex = 0; eventIndex < measure.events.size(); ++eventIndex) {
+            const Event &event = measure.events.at(eventIndex);
+            const bool carriesLyric = lyricSlot < alignment.lyricSlots.size()
+                && alignment.lyricSlots.at(lyricSlot).measureIndex == measureIndex
+                && alignment.lyricSlots.at(lyricSlot).eventIndex == eventIndex;
+            if (!carriesLyric && !event.isRest())
+                continue;
+            columns.append(GridColumn { measureIndex, eventIndex, event.tickInMeasure,
+                event.tickInMeasure + event.playedTicks(), carriesLyric ? lyricSlot : -1,
+                event.isRest() });
+            if (carriesLyric)
+                ++lyricSlot;
+        }
+    }
+    return columns;
+}
+
 LyricsPanel::BreakCell LyricsPanel::breakCellFor(
-    const PartAlignment &alignment, const Part &part, int column) const
+    const QList<GridColumn> &columns, const Part &part, int column) const
 {
     BreakCell cell;
-    const Slot &slot = alignment.lyricSlots.at(column);
-    const int measureIndex = slot.measureIndex;
+    const GridColumn &position = columns.at(column);
+    const int measureIndex = position.measureIndex;
 
-    // The boundary after this syllable is where the *next* one starts — not
-    // where this note ends, because the notes in between are its melisma and a
-    // break may not split them. At the end of a measure it is the barline.
-    int boundaryTick = 0;
-    if (column + 1 < alignment.lyricSlots.size()
-        && alignment.lyricSlots.at(column + 1).measureIndex == measureIndex) {
-        boundaryTick = alignment.lyricSlots.at(column + 1).tickInMeasure;
-    } else if (measureIndex < part.stream.measureCount()) {
+    // The boundary after this column is where the next visible lyric slot or
+    // rest starts. This preserves the old melisma behaviour while exposing
+    // both sides of a rest: the preceding column ends before it, and the rest
+    // column ends after it. At the end of a measure it is the barline.
+    int boundaryTick = position.isRest ? position.endTickInMeasure : 0;
+    if (!position.isRest && column + 1 < columns.size()
+        && columns.at(column + 1).measureIndex == measureIndex) {
+        boundaryTick = columns.at(column + 1).tickInMeasure;
+    } else if (!position.isRest && measureIndex < part.stream.measureCount()) {
         boundaryTick = part.stream.measures().at(measureIndex).playedTicks();
     }
     cell.boundary = PhraseBreak { measureIndex + 1, ticks::toPhraseTicks(boundaryTick) };
@@ -739,7 +764,9 @@ LyricsPanel::BreakCell LyricsPanel::breakCellFor(
     // land on one, and rounding it would move the break somewhere else.
     cell.representable = ticks::fromPhraseTicks(cell.boundary.tick) == boundaryTick;
 
-    const PhraseBreak slotStart { measureIndex + 1, ticks::toPhraseTicks(slot.tickInMeasure) };
+    const PhraseBreak slotStart {
+        measureIndex + 1, ticks::toPhraseTicks(position.tickInMeasure)
+    };
     const SongDocument &doc = m_session->effectiveDocument();
     for (const PhraseBreak &brk : doc.allPhraseBreaks()) {
         if (brk == cell.boundary) {
@@ -747,8 +774,8 @@ LyricsPanel::BreakCell LyricsPanel::breakCellFor(
             cell.onBoundary = true;
             break;
         }
-        // A break between this syllable's own notes belongs to this column too,
-        // flagged: that is R9.4/R9.5 shown where the words are.
+        // A break between this column's visible boundaries belongs to it too,
+        // flagged: that is R9.4/R9.5 shown where the words or rest are.
         if (!breakBefore(brk, slotStart) && breakBefore(brk, cell.boundary)
             && !(brk == slotStart)) {
             cell.existing = brk;
@@ -760,14 +787,15 @@ LyricsPanel::BreakCell LyricsPanel::breakCellFor(
     return cell;
 }
 
-void LyricsPanel::fillBreakRow(const PartAlignment &alignment, const Part &part)
+void LyricsPanel::fillBreakRow(const QList<GridColumn> &columns, const Part &part)
 {
     for (int column = 0; column < m_grid->columnCount(); ++column) {
-        const BreakCell cell = breakCellFor(alignment, part, column);
+        const GridColumn &position = columns.at(column);
+        const BreakCell cell = breakCellFor(columns, part, column);
         auto *item = new QTableWidgetItem;
         item->setFlags(Qt::ItemIsEnabled);
-        // Hard right: a break comes *after* this syllable, and a mark centred
-        // over the word reads as though it came before it.
+        // Hard right: a break comes *after* this syllable or rest, and a mark
+        // centred over it reads as though it came before it.
         item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         item->setData(Qt::UserRole, cell.boundary.measure);
         item->setData(Qt::UserRole + 1, cell.boundary.tick);
@@ -786,19 +814,24 @@ void LyricsPanel::fillBreakRow(const PartAlignment &alignment, const Part &part)
             marker.setPointSizeF(marker.pointSizeF() * 1.5);
             item->setFont(marker);
             if (cell.onBoundary) {
-                item->setToolTip(tr("%1 \"%2\" — the line breaks after this syllable.\n"
+                item->setToolTip(tr("%1 \"%2\" — the line breaks after this %3.\n"
                                     "Click to remove, right-click for the other lanes.")
                                      .arg(QString::fromLatin1(style.field),
-                                         cell.existing->toString()));
+                                         cell.existing->toString(),
+                                         position.isRest ? tr("rest") : tr("syllable")));
             } else {
-                // Drawn hatched: the break is real, but it does not land between
-                // two of *this* voice's syllables.
+                // Drawn hatched: the break is real, but it falls inside this
+                // voice's displayed syllable span or rest.
                 item->setBackground(QBrush(colorMismatch(), Qt::FDiagPattern));
-                item->setToolTip(tr("%1 \"%2\" falls between %3's own notes, not between two "
-                                    "of its syllables — the seeder will still take it, but the "
-                                    "line will break inside a melisma here.")
-                                     .arg(QString::fromLatin1(style.field),
-                                         cell.existing->toString(), part.name));
+                item->setToolTip(position.isRest
+                        ? tr("%1 \"%2\" falls inside %3's rest.")
+                              .arg(QString::fromLatin1(style.field),
+                                  cell.existing->toString(), part.name)
+                        : tr("%1 \"%2\" falls between %3's own notes, not between two "
+                             "of its syllables — the seeder will still take it, but the "
+                             "line will break inside a melisma here.")
+                              .arg(QString::fromLatin1(style.field),
+                                  cell.existing->toString(), part.name));
             }
         } else if (!cell.representable) {
             item->setToolTip(tr("This boundary falls inside a tuplet and cannot be written as "
@@ -806,9 +839,10 @@ void LyricsPanel::fillBreakRow(const PartAlignment &alignment, const Part &part)
             item->setForeground(QColor(0xaa, 0xaa, 0xaa));
             item->setText(QStringLiteral("·"));
         } else {
-            item->setToolTip(tr("Click to break the line after this syllable (%1).\n"
+            item->setToolTip(tr("Click to break the line after this %1 (%2).\n"
                                 "Right-click for optional and non-breaking.")
-                                 .arg(cell.boundary.toString()));
+                                 .arg(position.isRest ? tr("rest") : tr("syllable"),
+                                     cell.boundary.toString()));
         }
         m_grid->setItem(0, column, item);
     }
@@ -820,12 +854,15 @@ void LyricsPanel::refreshBreakRow()
     const SongDocument &doc = m_session->effectiveDocument();
     const Part *part = doc.part(partName);
     const PartAlignment &alignment = m_session->alignment(partName);
-    if (!part || m_grid->columnCount() != static_cast<int>(alignment.lyricSlots.size()))
+    if (!part)
+        return;
+    const QList<GridColumn> columns = gridColumns(alignment, *part);
+    if (m_grid->columnCount() != columns.size())
         return;
 
     const bool wasLoading = m_loading;
     m_loading = true;
-    fillBreakRow(alignment, *part);
+    fillBreakRow(columns, *part);
     m_loading = wasLoading;
 }
 
@@ -921,35 +958,39 @@ void LyricsPanel::rebuildGrid()
         const SongDocument &doc = m_session->effectiveDocument();
         const Part *part = doc.part(partName);
         if (part) {
-            const int columns = static_cast<int>(alignment.lyricSlots.size());
-            m_grid->setColumnCount(columns);
-            // Row 0 phrase breaks, row 1 the note, then one row per section.
+            const QList<GridColumn> columns = gridColumns(alignment, *part);
+            m_grid->setColumnCount(columns.size());
+            // Row 0 phrase breaks, row 1 the note/rest, then one row per section.
             m_grid->setRowCount(static_cast<int>(alignment.sections.size()) + 2);
 
             QStringList headers;
-            for (int slot = 0; slot < columns; ++slot) {
-                headers.append(tr("m%1\n#%2")
-                                   .arg(alignment.lyricSlots.at(slot).measureIndex + 1)
-                                   .arg(slot));
+            for (int column = 0; column < columns.size(); ++column) {
+                const GridColumn &position = columns.at(column);
+                headers.append(position.isRest
+                        ? tr("m%1\nrest").arg(position.measureIndex + 1)
+                        : tr("m%1\n#%2")
+                              .arg(position.measureIndex + 1)
+                              .arg(position.lyricSlot));
             }
             m_grid->setHorizontalHeaderLabels(headers);
 
-            QStringList rowLabels { tr("break"), tr("note") };
+            QStringList rowLabels { tr("break"), tr("note / rest") };
             for (const AttachedSection &section : alignment.sections)
                 rowLabels.append(rowLabel(section));
             m_grid->setVerticalHeaderLabels(rowLabels);
 
-            fillBreakRow(alignment, *part);
+            fillBreakRow(columns, *part);
 
-            for (int slot = 0; slot < columns; ++slot) {
-                const Slot &position = alignment.lyricSlots.at(slot);
+            for (int column = 0; column < columns.size(); ++column) {
+                const GridColumn &position = columns.at(column);
                 QString text;
                 if (position.measureIndex < part->stream.measureCount()) {
                     const Measure &measure = part->stream.measures().at(position.measureIndex);
                     if (position.eventIndex < measure.events.size()) {
                         const Event &event = measure.events.at(position.eventIndex);
-                        text = event.pitches.isEmpty()
-                            ? QStringLiteral("—")
+                        text = event.isRest()
+                            ? tr("rest/%1").arg(event.duration.base)
+                            : event.pitches.isEmpty() ? QStringLiteral("—")
                             : QStringLiteral("%1%2/%3")
                                   .arg(event.pitches.first().step)
                                   .arg(event.pitches.first().octave)
@@ -958,46 +999,58 @@ void LyricsPanel::rebuildGrid()
                 }
                 auto *item = new QTableWidgetItem(text);
                 item->setFlags(Qt::ItemIsEnabled);
-                if (position.dashedContinuation)
+                if (position.lyricSlot >= 0
+                    && alignment.lyricSlots.at(position.lyricSlot).dashedContinuation)
                     item->setBackground(colorPlaceholder());
-                m_grid->setItem(1, slot, item);
+                m_grid->setItem(1, column, item);
             }
 
             for (int row = 0; row < alignment.sections.size(); ++row) {
                 const AttachedSection &section = alignment.sections.at(row);
-                for (int slot = 0; slot < columns; ++slot) {
-                    const bool inSection = slot >= section.slotOffset
-                        && slot < section.slotOffset + section.syllables.size();
+                for (int column = 0; column < columns.size(); ++column) {
+                    const int lyricSlot = columns.at(column).lyricSlot;
+                    const bool inSection = lyricSlot >= section.slotOffset
+                        && lyricSlot < section.slotOffset + section.syllables.size();
                     auto *item = new QTableWidgetItem(
-                        inSection ? alignment.syllableAt(section, slot) : QString());
+                        inSection ? alignment.syllableAt(section, lyricSlot) : QString());
                     if (!inSection) {
                         item->setFlags(Qt::ItemIsEnabled);
                         item->setBackground(colorMelisma());
                     } else {
                         item->setData(Qt::UserRole, section.key);
-                        item->setData(Qt::UserRole + 1, slot - section.slotOffset);
+                        item->setData(Qt::UserRole + 1, lyricSlot - section.slotOffset);
                         if (item->text() == QLatin1String("_"))
                             item->setBackground(colorPlaceholder());
                     }
-                    m_grid->setItem(row + 2, slot, item);
+                    m_grid->setItem(row + 2, column, item);
                 }
                 const int overflow
-                    = section.slotOffset + static_cast<int>(section.syllables.size()) - columns;
-                if (overflow > 0 && columns > 0) {
-                    if (QTableWidgetItem *item = m_grid->item(row + 2, columns - 1))
-                        item->setBackground(colorMismatch());
+                    = section.slotOffset + static_cast<int>(section.syllables.size())
+                    - static_cast<int>(alignment.lyricSlots.size());
+                if (overflow > 0 && !columns.isEmpty()) {
+                    const auto lastLyric = std::find_if(columns.crbegin(), columns.crend(),
+                        [](const GridColumn &column) { return column.lyricSlot >= 0; });
+                    if (lastLyric != columns.crend()) {
+                        const int column
+                            = static_cast<int>(columns.crend() - lastLyric - 1);
+                        if (QTableWidgetItem *item = m_grid->item(row + 2, column))
+                            item->setBackground(colorMismatch());
+                    }
                 }
             }
 
             QStringList hints;
-            hints.append(tr("%1 lyric slots in %2").arg(columns).arg(partName));
+            hints.append(tr("%1 lyric slots and %2 rests in %3")
+                             .arg(alignment.lyricSlots.size())
+                             .arg(columns.size() - alignment.lyricSlots.size())
+                             .arg(partName));
             if (alignment.chorusFirst)
                 hints.append(tr("refrain-first: the chorus starts at slot 0, verses follow it"));
             if (!alignment.errors.isEmpty())
                 hints.append(alignment.errors.join(QStringLiteral("; ")));
-            hints.append(tr("Grey cells take no syllable — a melisma continuation, or outside "
-                            "this section's range."));
-            hints.append(tr("Click the <b>break</b> row to break the line after a syllable; "
+            hints.append(tr("Grey cells take no syllable — a rest, melisma continuation, or "
+                            "outside this section's range."));
+            hints.append(tr("Click the <b>break</b> row to break the line after a syllable or rest; "
                             "right-click it for the optional and non-breaking lanes."));
             m_gridHint->setTextFormat(Qt::RichText);
             m_gridHint->setText(hints.join(QStringLiteral("  ·  ")));
@@ -1075,9 +1128,16 @@ void LyricsPanel::focusSlot(const QString &partName, int slot)
     if (index >= 0)
         m_gridPart->setCurrentIndex(index);
     m_tabs->setCurrentIndex(1);
-    if (slot >= 0 && slot < m_grid->columnCount() && m_grid->rowCount() > 2) {
-        m_grid->setCurrentCell(2, slot);  // the first section row
-        m_grid->scrollToItem(m_grid->item(2, slot));
+    const SongDocument &doc = m_session->effectiveDocument();
+    const Part *part = doc.part(partName);
+    const QList<GridColumn> columns
+        = part ? gridColumns(m_session->alignment(partName), *part) : QList<GridColumn> {};
+    const auto found = std::find_if(columns.cbegin(), columns.cend(),
+        [slot](const GridColumn &column) { return column.lyricSlot == slot; });
+    const int column = found == columns.cend() ? -1 : static_cast<int>(found - columns.cbegin());
+    if (column >= 0 && column < m_grid->columnCount() && m_grid->rowCount() > 2) {
+        m_grid->setCurrentCell(2, column);  // the first section row
+        m_grid->scrollToItem(m_grid->item(2, column));
     }
 }
 

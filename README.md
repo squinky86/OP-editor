@@ -185,10 +185,10 @@ value either way:
   break there. The click snaps to the nearest note boundary, and a dotted ghost
   shows where it will land before you commit to it.
 - **Lyrics ▸ Alignment ▸ the `break` row** — click to break the line after that
-  syllable, right-click for the optional and non-breaking lanes. This is the
-  view that answers "which word does this break follow?", and it hatches a break
-  that falls between the displayed voice's notes instead of between two of its
-  syllables.
+  syllable or rest, right-click for the optional and non-breaking lanes. This is
+  the view that answers "which word does this break follow?", and it hatches a
+  break that falls between the displayed voice's notes instead of between two
+  of its syllables.
 
 Anywhere:
 
