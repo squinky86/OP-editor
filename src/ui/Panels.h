@@ -141,6 +141,8 @@ protected:
 private:
     void setPending(bool pending);
     void showParseError(const LoadError &error);
+    /// Highlight and reveal the TOML notation token selected in the score.
+    void highlightSelection();
 
     Session *m_session = nullptr;
     QPlainTextEdit *m_text = nullptr;

@@ -32,6 +32,7 @@
 #include <QNetworkReply>
 #include <QProgressDialog>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSettings>
 #include <QSplitter>
 #include <QStandardPaths>
@@ -295,12 +296,25 @@ void MainWindow::buildLayout()
     m_transport = new TransportBar(&m_session, this);
 
     auto *central = new QWidget(this);
+    // Keep the score usable when the top-level window is snapped narrow. The
+    // side docks yield their preferred widths before consuming this workspace.
+    central->setMinimumWidth(300);
     auto *layout = new QVBoxLayout(central);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
     layout->addWidget(m_languageTabs);
     layout->addWidget(m_workspace, 1);
-    layout->addWidget(m_transport);
+    auto *transportScroll = new QScrollArea(central);
+    transportScroll->setObjectName(QStringLiteral("transportScroll"));
+    transportScroll->setWidgetResizable(true);
+    transportScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    transportScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    transportScroll->setFrameShape(QFrame::NoFrame);
+    transportScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    transportScroll->setFixedHeight(m_transport->sizeHint().height()
+        + style()->pixelMetric(QStyle::PM_ScrollBarExtent));
+    transportScroll->setWidget(m_transport);
+    layout->addWidget(transportScroll);
     setCentralWidget(central);
 
     // The songs folder is the left-hand column of the window, not a dialog: the

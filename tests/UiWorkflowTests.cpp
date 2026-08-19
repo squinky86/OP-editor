@@ -10,6 +10,7 @@
 #include "ui/LyricsPanel.h"
 #include "ui/MainWindow.h"
 #include "ui/Panels.h"
+#include "ui/ScoreView.h"
 #include "ui/SongBrowser.h"
 
 #include <QAction>
@@ -24,6 +25,7 @@
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QSignalSpy>
 #include <QSplitter>
@@ -100,6 +102,129 @@ private Q_SLOTS:
         four->click();
         QVERIFY(!session.document().defaultVerses.present());
         QVERIFY(!session.currentBytes().contains("default_verses"));
+    }
+
+    void scoreSelectionHighlightsAndRevealsTheSourceToken()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        QByteArray source;
+        for (int line = 0; line < 40; ++line)
+            source += "# enough leading source to require scrolling\n";
+        source += baseSong();
+        write(root, QStringLiteral("song.toml"), source);
+        Session session;
+        QVERIFY(session.openSong(root.filePath(QStringLiteral("song.toml"))));
+        SourcePanel panel(&session);
+        panel.resize(420, 160);
+        panel.show();
+        QCoreApplication::processEvents();
+
+        QPlainTextEdit *editor = panel.findChild<QPlainTextEdit *>();
+        QVERIFY(editor);
+        QCOMPARE(editor->verticalScrollBar()->value(), 0);
+
+        session.setSelection(Selection { 0, 1, 0 });
+        QCoreApplication::processEvents();
+
+        const QList<QTextEdit::ExtraSelection> highlights = editor->extraSelections();
+        QCOMPARE(highlights.size(), 1);
+        QCOMPARE(highlights.first().cursor.selectedText(), QStringLiteral("g'1"));
+        QVERIFY(editor->verticalScrollBar()->value() > 0);
+    }
+
+    void narrowLyricsHeaderStaysOneLineTall()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, QStringLiteral("song.toml"), baseSong());
+        Session session;
+        QVERIFY(session.openSong(root.filePath(QStringLiteral("song.toml"))));
+        LyricsPanel panel(&session);
+        panel.resize(300, 420);
+        panel.show();
+        QCoreApplication::processEvents();
+
+        QLabel *legend = panel.findChild<QLabel *>(QStringLiteral("lyricsLegend"));
+        QToolButton *add
+            = panel.findChild<QToolButton *>(QStringLiteral("addLyricsSectionButton"));
+        QTabWidget *tabs = panel.findChild<QTabWidget *>();
+        QVERIFY(legend);
+        QVERIFY(add);
+        QVERIFY(tabs);
+        QVERIFY(legend->height() <= add->height());
+        QVERIFY(tabs->height() > add->height() * 5);
+    }
+
+    void selectedScoreNoteHasAVisibleHighlight()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, QStringLiteral("song.toml"), baseSong());
+        Session session;
+        QVERIFY(session.openSong(root.filePath(QStringLiteral("song.toml"))));
+        ScoreView score(&session);
+        score.resize(600, 400);
+        score.show();
+        QCoreApplication::processEvents();
+
+        const QImage before = score.viewport()->grab().toImage();
+        session.setSelection(Selection { 0, 0, 0 });
+        QCoreApplication::processEvents();
+        const QImage selected = score.viewport()->grab().toImage();
+
+        int changedPixels = 0;
+        for (int y = 0; y < selected.height(); ++y) {
+            for (int x = 0; x < selected.width(); ++x) {
+                if (selected.pixelColor(x, y) != before.pixelColor(x, y))
+                    ++changedPixels;
+            }
+        }
+        // The filled selection halo changes a meaningful area around the
+        // notehead, rather than relying on a few recoloured glyph pixels.
+        QVERIFY(changedPixels > 200);
+    }
+
+    void editingASelectedNoteKeepsANarrowWindowWidth()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        const QString path = root.filePath(QStringLiteral("song.toml"));
+        write(root, QStringLiteral("song.toml"), baseSong());
+        MainWindow window;
+        window.openPath(path);
+        window.resize(760, 760);
+        window.show();
+        QCoreApplication::processEvents();
+
+        ScoreView *score = window.findChild<ScoreView *>();
+        QLabel *noteInfo
+            = window.findChild<QLabel *>(QStringLiteral("selectedNoteInfo"));
+        QScrollArea *transport
+            = window.findChild<QScrollArea *>(QStringLiteral("transportScroll"));
+        SourcePanel *sourcePanel = window.findChild<SourcePanel *>();
+        QVERIFY(score);
+        QVERIFY(noteInfo);
+        QVERIFY(transport);
+        QVERIFY(sourcePanel);
+        QPlainTextEdit *sourceEditor = sourcePanel->findChild<QPlainTextEdit *>();
+        QVERIFY(sourceEditor);
+        QCOMPARE(window.width(), 760);
+        QVERIFY(transport->horizontalScrollBar()->maximum() > 0);
+        QTest::mouseClick(score->viewport(), Qt::LeftButton, Qt::NoModifier,
+            QPoint(68, 49));
+        QVERIFY(noteInfo->text().startsWith(QStringLiteral("token")));
+        QCOMPARE(sourceEditor->extraSelections().size(), 1);
+        QCOMPARE(sourceEditor->extraSelections().constFirst().cursor.selectedText(),
+            QStringLiteral("f'1"));
+        const int widthBeforeEdit = window.width();
+        QTest::keyClick(score, Qt::Key_Up);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(window.width(), widthBeforeEdit);
+        QCOMPARE(sourceEditor->extraSelections().size(), 1);
+        QCOMPARE(sourceEditor->extraSelections().constFirst().cursor.selectedText(),
+            QStringLiteral("g'1"));
     }
 
     void mainWindowUsesThreeCollapsibleWorkspacePanesAndRightDetailsTabs()

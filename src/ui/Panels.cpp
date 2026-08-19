@@ -442,6 +442,9 @@ ProblemsPanel::ProblemsPanel(Session *session, QWidget *parent)
 
     auto *controls = new QHBoxLayout;
     m_summary = new QLabel(this);
+    m_summary->setWordWrap(true);
+    m_summary->setMinimumWidth(1);
+    m_summary->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_showWarnings = new QCheckBox(tr("Warnings"), this);
     m_showWarnings->setChecked(true);
     m_showInfo = new QCheckBox(tr("Info"), this);
@@ -452,6 +455,10 @@ ProblemsPanel::ProblemsPanel(Session *session, QWidget *parent)
     layout->addLayout(controls);
 
     m_tree = new QTreeWidget(this);
+    // Finding text and resized columns must scroll inside the dock, not raise
+    // the dock's minimum width and push a snapped main window off-screen.
+    m_tree->setMinimumWidth(1);
+    m_tree->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
     m_tree->setColumnCount(4);
     m_tree->setHeaderLabels({ tr("Severity"), tr("Rule"), tr("Where"), tr("Problem") });
     m_tree->setRootIsDecorated(false);
@@ -545,7 +552,11 @@ InspectorPanel::InspectorPanel(Session *session, QWidget *parent)
     auto *noteBox = new QGroupBox(tr("Selected note"), this);
     auto *noteLayout = new QVBoxLayout(noteBox);
     m_noteInfo = new QLabel(tr("Nothing selected"), noteBox);
+    m_noteInfo->setObjectName(QStringLiteral("selectedNoteInfo"));
     m_noteInfo->setWordWrap(true);
+    // A changed notation token can be wider than a narrow Details dock.  Let
+    // QLabel wrap it instead of feeding its content width back into QDockWidget.
+    m_noteInfo->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_noteInfo->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_noteInfo->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     noteLayout->addWidget(m_noteInfo);
@@ -781,6 +792,7 @@ SourcePanel::SourcePanel(Session *session, QWidget *parent) : QWidget(parent), m
 
     connect(session, &Session::documentChanged, this, &SourcePanel::refresh);
     connect(session, &Session::languageChanged, this, &SourcePanel::refresh);
+    connect(session, &Session::selectionChanged, this, &SourcePanel::highlightSelection);
     refresh();
 }
 
@@ -816,9 +828,103 @@ void SourcePanel::refresh()
     m_editLanguage = m_session->currentLanguage();
     m_parseError = false;
     Q_EMIT sourceErrorChanged({});
-    m_text->setExtraSelections({});
+    highlightSelection();
     m_status->setText(tr("TOML is valid. Score, lyrics, and details are synchronized."));
     m_status->setStyleSheet(QStringLiteral("color: #1a7f37;"));
+}
+
+void SourcePanel::highlightSelection()
+{
+    // An unparsed source draft owns the editor until it is committed or
+    // reverted. Keep its parse-error highlight and never map model offsets into
+    // text that may no longer represent the model.
+    if (m_pending || m_parseError)
+        return;
+
+    m_text->setExtraSelections({});
+    const Selection selection = m_session->selection();
+    if (!m_session->isOpen() || !selection.hasEvent())
+        return;
+
+    const SongDocument &effective = m_session->effectiveDocument();
+    if (selection.partIndex >= effective.parts.size())
+        return;
+    const QString partName = effective.parts.at(selection.partIndex).name;
+
+    // Parse the exact bytes displayed in the Source pane. A structured edit can
+    // change the length of an earlier field, so spans from the originally read
+    // document are not necessarily positions in this serialized text.
+    const QByteArray bytes = m_session->currentBytes();
+    auto current = io::loadBytes(m_session->currentPath(), bytes);
+    if (!current)
+        return;
+    const Part *part = current->part(partName);
+    const toml::Table *table
+        = current->source.table({ QStringLiteral("parts"), partName });
+    const toml::KeyValue *notes = table ? table->find(QStringLiteral("notes")) : nullptr;
+    if (!part || !notes || notes->value.kind != toml::ValueKind::String
+        || selection.measureIndex >= part->stream.measureCount())
+        return;
+    const Measure &selectedMeasure = part->stream.measures().at(selection.measureIndex);
+    if (selection.eventIndex >= selectedMeasure.events.size())
+        return;
+
+    const bool basic = notes->value.stringStyle == toml::StringStyle::Basic
+        || notes->value.stringStyle == toml::StringStyle::MultilineBasic;
+    const auto editorText = [](QByteArrayView source) {
+        QString text = QString::fromUtf8(source);
+        // QTextDocument represents every source line ending as one paragraph
+        // separator, including files authored with CRLF.
+        text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+        text.replace(u'\r', u'\n');
+        return text;
+    };
+    const QString valueText = editorText(QByteArrayView(bytes).sliced(
+        notes->value.span.begin, notes->value.span.length()));
+    int searchFrom = 0;
+    int tokenBegin = -1;
+    int tokenLength = 0;
+    for (int measureIndex = 0; measureIndex < part->stream.measureCount(); ++measureIndex) {
+        const Measure &measure = part->stream.measures().at(measureIndex);
+        for (int eventIndex = 0; eventIndex < measure.events.size(); ++eventIndex) {
+            QString token = measure.events.at(eventIndex).raw;
+            if (basic) {
+                token.replace(QStringLiteral("\\"), QStringLiteral("\\\\"));
+                token.replace(QStringLiteral("\""), QStringLiteral("\\\""));
+            }
+            const int found = valueText.indexOf(token, searchFrom);
+            if (found < 0)
+                return;
+            if (measureIndex == selection.measureIndex
+                && eventIndex == selection.eventIndex) {
+                tokenBegin = found;
+                tokenLength = token.size();
+                break;
+            }
+            searchFrom = found + token.size();
+        }
+        if (tokenBegin >= 0)
+            break;
+    }
+    if (tokenBegin < 0)
+        return;
+
+    const int valueStart
+        = editorText(QByteArrayView(bytes).first(notes->value.span.begin)).size();
+    QTextCursor highlight(m_text->document());
+    highlight.setPosition(valueStart + tokenBegin);
+    highlight.setPosition(valueStart + tokenBegin + tokenLength, QTextCursor::KeepAnchor);
+
+    QTextEdit::ExtraSelection extra;
+    extra.cursor = highlight;
+    extra.format.setBackground(QColor(0x1f, 0x6f, 0xeb, 70));
+    m_text->setExtraSelections({ extra });
+
+    // Make the notation token the source cursor as well as an extra selection.
+    // This scrolls it into view without taking keyboard focus from the score;
+    // clicking in Source naturally moves the cursor before editing.
+    m_text->setTextCursor(highlight);
+    m_text->ensureCursorVisible();
 }
 
 bool SourcePanel::commitPendingEdits()

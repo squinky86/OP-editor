@@ -154,14 +154,22 @@ LyricsPanel::LyricsPanel(Session *session, QWidget *parent) : QWidget(parent), m
 
     auto *top = new QHBoxLayout;
     m_legend = new QLabel(this);
+    m_legend->setObjectName(QStringLiteral("lyricsLegend"));
     m_legend->setTextFormat(Qt::RichText);
+    // Keep the action row one line tall. At narrow widths the legend clips and
+    // exposes its full wording as a tooltip instead of wrapping into a tall,
+    // mostly blank band above the actual lyric editors.
+    m_legend->setWordWrap(false);
+    m_legend->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     m_legend->setText(tr("<span style='color:%1'>▍</span> sung by every voice &nbsp; "
                          "<span style='color:%2'>▍</span> one voice only")
                           .arg(colorDefault(), colorOverride()));
+    m_legend->setToolTip(tr("Blue: sung by every voice. Gold: one voice only."));
     top->addWidget(m_legend);
     top->addStretch();
 
     m_addSection = new QToolButton(this);
+    m_addSection->setObjectName(QStringLiteral("addLyricsSectionButton"));
     m_addSection->setText(tr("Add section"));
     m_addSection->setPopupMode(QToolButton::InstantPopup);
     m_addSection->setToolTip(tr("Add a chorus, coda, or shared section to this song"));

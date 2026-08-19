@@ -30,6 +30,7 @@ QColor colorText() { return QColor(0x1a, 0x1a, 0x1a); }
 QColor colorStaff() { return QColor(0x44, 0x44, 0x44); }
 QColor colorSpacer() { return QColor(0x99, 0x99, 0x99); }
 QColor colorSelection() { return QColor(0x1f, 0x6f, 0xeb); }
+QColor colorSelectionFill() { return QColor(0x1f, 0x6f, 0xeb, 42); }
 QColor colorPlayback() { return QColor(0x18, 0x94, 0x4e); }
 QColor colorProblem() { return QColor(0xd1, 0x24, 0x2f); }
 QColor colorInherited() { return QColor(0x88, 0x88, 0x88); }
@@ -527,6 +528,14 @@ void ScoreView::paintPart(QPainter &painter, const SystemBox &system, const Staf
             }
 
             if (event.isRest() || event.isSpacer()) {
+                if (selected) {
+                    painter.save();
+                    painter.setPen(QPen(colorSelection(), 1.5));
+                    painter.setBrush(colorSelectionFill());
+                    painter.drawEllipse(QPointF(x, staff.top + 2 * space),
+                        1.35 * space, 1.35 * space);
+                    painter.restore();
+                }
                 painter.save();
                 painter.setPen(Qt::NoPen);
                 painter.setBrush(event.isSpacer() ? colorSpacer() : ink);
@@ -575,6 +584,14 @@ void ScoreView::paintPart(QPainter &painter, const SystemBox &system, const Staf
                 const Pitch &pitch = event.pitches.at(p);
                 const qreal position = staffPositionFor(pitch, staff.clef);
                 const qreal y = staff.top + 4 * space - position * space;
+
+                if (selected) {
+                    painter.save();
+                    painter.setPen(QPen(colorSelection(), 1.5));
+                    painter.setBrush(colorSelectionFill());
+                    painter.drawEllipse(QPointF(x, y), 1.35 * space, 1.35 * space);
+                    painter.restore();
+                }
 
                 // Ledger lines.
                 painter.setPen(QPen(colorStaff(), 1.0));
@@ -694,13 +711,6 @@ void ScoreView::paintPart(QPainter &painter, const SystemBox &system, const Staf
             box.stemUp = stemUp;
             m_boxes.append(box);
 
-            if (selected) {
-                painter.setPen(QPen(colorSelection(), 1.5));
-                painter.setBrush(Qt::NoBrush);
-                painter.drawRoundedRect(
-                    QRectF(x - 1.1 * space, headY - 1.0 * space, 2.2 * space, 2.0 * space),
-                    3, 3);
-            }
         }
     }
 
