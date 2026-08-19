@@ -146,6 +146,7 @@ public:
     Field<int> timeSigDenominator;
     Field<int> tempoBpm;
     Field<int> verseCount;
+    Field<QList<int>> defaultVerses;
     Field<QStringList> copyrights;
     Field<QString> commentary;
     Field<bool> convergeVerses;
@@ -179,6 +180,10 @@ public:
     [[nodiscard]] int measureCount() const;
     [[nodiscard]] QList<PhraseBreak> allPhraseBreaks() const;
     [[nodiscard]] QStringList verseKeys() const;   ///< numbered verses, sorted
+    /// Verse numbers selected when the song page first loads. An absent field,
+    /// or one with no in-range entries, means every declared verse.
+    [[nodiscard]] QList<int> effectiveDefaultVerses() const;
+    [[nodiscard]] bool isDefaultVerse(int verse) const;
     [[nodiscard]] QStringList sharedKeys() const;  ///< "sN" sections, sorted
     [[nodiscard]] bool usesSharedLyrics() const;
     [[nodiscard]] bool effectiveConvergeVerses() const;

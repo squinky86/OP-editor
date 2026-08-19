@@ -25,6 +25,7 @@
 #include <QWidget>
 
 QT_BEGIN_NAMESPACE
+class QCheckBox;
 class QComboBox;
 class QLabel;
 class QPlainTextEdit;
@@ -103,6 +104,7 @@ private:
     void addOverride(const QString &key, const QString &partName);
     void removeOverride(const QString &key, const QString &partName);
     void addSection(const QString &key);
+    void setDefaultVerse(int verse, bool selected);
     void insertUndertie();
     [[nodiscard]] QString gridPartName() const;
     /// Parts that sing `key` from the song-wide text, in display order.
@@ -123,6 +125,7 @@ private:
     QLabel *m_gridHint = nullptr;
 
     QList<EditorRef> m_editors;
+    QHash<int, QCheckBox *> m_defaultVerseChecks;
     /// Typing is debounced into one undo step per pause, not one per keystroke.
     struct PendingCommit {
         QString language;

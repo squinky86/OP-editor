@@ -29,6 +29,7 @@ const QStringList &canonicalHeaderOrder()
         QStringLiteral("time_sig_denominator"),
         QStringLiteral("tempo_bpm"),
         QStringLiteral("verse_count"),
+        QStringLiteral("default_verses"),
         QStringLiteral("phrase_breaks"),
         QStringLiteral("optional_phrase_breaks"),
         QStringLiteral("non_breaking_phrase_breaks"),
@@ -296,6 +297,35 @@ QStringList SongDocument::verseKeys() const
     return keys;
 }
 
+QList<int> SongDocument::effectiveDefaultVerses() const
+{
+    QList<int> all;
+    const int count = std::max(0, verseCount.valueOr(0));
+    all.reserve(count);
+    for (int verse = 1; verse <= count; ++verse)
+        all.append(verse);
+
+    if (!defaultVerses.present())
+        return all;
+
+    QList<int> selected;
+    for (const int verse : *defaultVerses) {
+        if (verse >= 1 && verse <= count && !selected.contains(verse))
+            selected.append(verse);
+    }
+    std::sort(selected.begin(), selected.end());
+    return selected.isEmpty() ? all : selected;
+}
+
+bool SongDocument::isDefaultVerse(int verse) const
+{
+    // Absence means every verse even when verse_count and the lyric tables are
+    // temporarily inconsistent in an in-progress edit.
+    if (!defaultVerses.present())
+        return true;
+    return effectiveDefaultVerses().contains(verse);
+}
+
 QStringList SongDocument::sharedKeys() const
 {
     QStringList keys;
@@ -335,8 +365,9 @@ bool SongDocument::isDirty() const
         return true;
     const auto anyDirty = [](auto &&...fields) { return (fields.dirty() || ...); };
     if (anyDirty(title, subtitle, active, declaredLanguage, keySignature, timeSigNumerator,
-            timeSigDenominator, tempoBpm, verseCount, copyrights, commentary, convergeVerses,
-            phraseBreaks, optionalPhraseBreaks, nonBreakingPhraseBreaks, timeSigChanges))
+            timeSigDenominator, tempoBpm, verseCount, defaultVerses, copyrights, commentary,
+            convergeVerses, phraseBreaks, optionalPhraseBreaks, nonBreakingPhraseBreaks,
+            timeSigChanges))
         return true;
     for (auto it = lyrics.constBegin(); it != lyrics.constEnd(); ++it) {
         if (it->dirty)
@@ -363,8 +394,9 @@ void SongDocument::markClean()
     removedTables.clear();
     const auto clean = [](auto &...fields) { (fields.markClean(), ...); };
     clean(title, subtitle, active, declaredLanguage, keySignature, timeSigNumerator,
-        timeSigDenominator, tempoBpm, verseCount, copyrights, commentary, convergeVerses,
-        phraseBreaks, optionalPhraseBreaks, nonBreakingPhraseBreaks, timeSigChanges);
+        timeSigDenominator, tempoBpm, verseCount, defaultVerses, copyrights, commentary,
+        convergeVerses, phraseBreaks, optionalPhraseBreaks, nonBreakingPhraseBreaks,
+        timeSigChanges);
     for (auto it = lyrics.begin(); it != lyrics.end(); ++it)
         it->dirty = false;
     for (Part &item : parts) {
@@ -532,6 +564,7 @@ std::expected<SongDocument, LoadError> loadBytes(const QString &path, QByteArray
     bindInt(doc.timeSigDenominator, src.rootPair(QStringLiteral("time_sig_denominator")));
     bindInt(doc.tempoBpm, src.rootPair(QStringLiteral("tempo_bpm")));
     bindInt(doc.verseCount, src.rootPair(QStringLiteral("verse_count")));
+    bindIntList(doc.defaultVerses, src.rootPair(QStringLiteral("default_verses")));
     bindStringList(doc.copyrights, src.rootPair(QStringLiteral("copyrights")));
     bindString(doc.commentary, src.rootPair(QStringLiteral("commentary")));
     bindBool(doc.convergeVerses, src.rootPair(QStringLiteral("converge_verses")));
@@ -775,6 +808,12 @@ QByteArray serialize(const SongDocument &doc)
     intField(QStringLiteral("time_sig_denominator"), doc.timeSigDenominator);
     intField(QStringLiteral("tempo_bpm"), doc.tempoBpm);
     intField(QStringLiteral("verse_count"), doc.verseCount);
+    if (doc.defaultVerses.dirty()) {
+        spliceRootField(edit, doc, QStringLiteral("default_verses"),
+            doc.defaultVerses.present(), true, doc.defaultVerses.span(),
+            doc.defaultVerses.present() ? toml::emitIntArray(*doc.defaultVerses)
+                                        : QByteArray());
+    }
     boolField(QStringLiteral("active"), doc.active);
     boolField(QStringLiteral("converge_verses"), doc.convergeVerses);
     breaksField(QStringLiteral("phrase_breaks"), doc.phraseBreaks);
@@ -930,6 +969,8 @@ QByteArray serializeFresh(const SongDocument &doc)
         line("tempo_bpm = " + QByteArray::number(*doc.tempoBpm));
     if (doc.verseCount.present())
         line("verse_count = " + QByteArray::number(*doc.verseCount));
+    if (doc.defaultVerses.present())
+        line("default_verses = " + toml::emitIntArray(*doc.defaultVerses));
     if (doc.phraseBreaks.present())
         line("phrase_breaks = "
             + toml::emitStringArrayInline(breaksToStrings(*doc.phraseBreaks)));
@@ -1050,6 +1091,8 @@ SongDocument mergeOverlay(const SongDocument &base, const SongDocument &overlay)
     inheritInt(merged.timeSigDenominator, base.timeSigDenominator);
     inheritInt(merged.tempoBpm, base.tempoBpm);
     inheritInt(merged.verseCount, base.verseCount);
+    if (!merged.defaultVerses.present() && base.defaultVerses.present())
+        merged.defaultVerses.bind(*base.defaultVerses, {});
     inheritBool(merged.active, base.active);
     inheritBool(merged.convergeVerses, base.convergeVerses);
     if (!merged.copyrights.present() && base.copyrights.present())

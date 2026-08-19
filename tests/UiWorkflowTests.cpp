@@ -13,6 +13,7 @@
 #include "ui/SongBrowser.h"
 
 #include <QAction>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -72,6 +73,35 @@ class UiWorkflowTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void lyricsTabEditsDefaultVerses()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, QStringLiteral("song.toml"), baseSong());
+        Session session;
+        QVERIFY(session.openSong(root.filePath(QStringLiteral("song.toml"))));
+        LyricsPanel panel(&session);
+
+        for (int verse = 1; verse <= 4; ++verse) {
+            QCheckBox *box = panel.findChild<QCheckBox *>(
+                QStringLiteral("defaultVerseCheckBox_%1").arg(verse));
+            QVERIFY(box);
+            QVERIFY(box->isChecked());
+        }
+
+        QCheckBox *four
+            = panel.findChild<QCheckBox *>(QStringLiteral("defaultVerseCheckBox_4"));
+        four->click();
+        QCOMPARE(session.document().defaultVerses.valueOr({}), QList<int>({ 1, 2, 3 }));
+        QVERIFY(session.currentBytes().contains("default_verses = [1, 2, 3]"));
+
+        four = panel.findChild<QCheckBox *>(QStringLiteral("defaultVerseCheckBox_4"));
+        QVERIFY(four);
+        four->click();
+        QVERIFY(!session.document().defaultVerses.present());
+        QVERIFY(!session.currentBytes().contains("default_verses"));
+    }
+
     void mainWindowUsesThreeCollapsibleWorkspacePanesAndRightDetailsTabs()
     {
         QSettings().remove(QStringLiteral("workspace"));

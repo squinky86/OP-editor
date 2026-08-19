@@ -167,6 +167,28 @@ private Q_SLOTS:
         QCOMPARE(merged.keySignature.valueOr(QString()), QStringLiteral("Bb"));
     }
 
+    void defaultVersesLoadNormalizeAndMerge()
+    {
+        QTemporaryDir dir;
+        const SongDocument implicit = loadFrom(dir, QStringLiteral("implicit.toml"), baseSong());
+        QCOMPARE(implicit.effectiveDefaultVerses(), QList<int>({ 1, 2, 3, 4 }));
+
+        QByteArray withDefaults = baseSong();
+        withDefaults.replace("verse_count = 4",
+            "verse_count = 4\ndefault_verses = [3, 1, 3, 99]");
+        const SongDocument base = loadFrom(dir, QStringLiteral("song.toml"), withDefaults);
+        QCOMPARE(base.effectiveDefaultVerses(), QList<int>({ 1, 3 }));
+        QVERIFY(!base.unknownKeys.contains(QStringLiteral("default_verses")));
+
+        const SongDocument inherited = mergeOverlay(base,
+            loadFrom(dir, QStringLiteral("song_es.toml"), "title = \"Heredado\"\n"));
+        QCOMPARE(inherited.effectiveDefaultVerses(), QList<int>({ 1, 3 }));
+
+        const SongDocument replaced = mergeOverlay(base,
+            loadFrom(dir, QStringLiteral("song_fr.toml"), "default_verses = [2, 4]\n"));
+        QCOMPARE(replaced.effectiveDefaultVerses(), QList<int>({ 2, 4 }));
+    }
+
     void emptyOverlayTitleInheritsRatherThanBlanking()
     {
         QTemporaryDir dir;
@@ -314,6 +336,20 @@ private Q_SLOTS:
         QVERIFY(reparsed.has_value());
         QCOMPARE(reparsed->rootPair(QStringLiteral("commentary"))->value.string,
             QStringLiteral("<p>Notes.</p>"));
+    }
+
+    void defaultVersesRoundTripAndInsertBeforeTables()
+    {
+        QTemporaryDir dir;
+        SongDocument doc = loadFrom(dir, QStringLiteral("song.toml"), baseSong());
+        doc.defaultVerses.set({ 1, 3 });
+        const QByteArray written = io::serialize(doc);
+        QVERIFY(written.contains("default_verses = [1, 3]"));
+        QVERIFY(written.indexOf("default_verses") < written.indexOf("[parts.Soprano]"));
+
+        const SongDocument reloaded = loadFrom(dir, QStringLiteral("again.toml"), written);
+        QCOMPARE(reloaded.defaultVerses.valueOr({}), QList<int>({ 1, 3 }));
+        QCOMPARE(io::serialize(reloaded), written);
     }
 
     void editedNotesKeepTheOtherPartsUntouched()

@@ -3,6 +3,7 @@
 
 #include "LyricsPanel.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QFontDatabase>
 #include <QFrame>
@@ -14,6 +15,7 @@
 #include <QRegularExpression>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSignalBlocker>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QToolButton>
@@ -311,6 +313,11 @@ QStringList LyricsPanel::structureSignature() const
 void LyricsPanel::syncEditors()
 {
     const SongDocument &doc = m_session->effectiveDocument();
+    for (auto it = m_defaultVerseChecks.constBegin();
+         it != m_defaultVerseChecks.constEnd(); ++it) {
+        const QSignalBlocker blocker(it.value());
+        it.value()->setChecked(doc.isDefaultVerse(it.key()));
+    }
     for (const EditorRef &row : m_editors) {
         // Never overwrite a box whose keystrokes have not reached the document
         // yet; the debounce timer is about to carry them there.
@@ -359,6 +366,7 @@ void LyricsPanel::rebuildSections()
         delete item;
     }
     m_editors.clear();
+    m_defaultVerseChecks.clear();
     if (!m_session->isOpen())
         return;
 
@@ -411,6 +419,18 @@ void LyricsPanel::buildSectionCard(QVBoxLayout *host, const QString &key)
                        .arg(sectionTitle(key), key));
     header->addWidget(title);
     header->addStretch();
+
+    if (SongDocument::isVerseKey(key)) {
+        const int verse = key.toInt();
+        auto *selected = new QCheckBox(tr("Default"), card);
+        selected->setObjectName(QStringLiteral("defaultVerseCheckBox_%1").arg(verse));
+        selected->setChecked(doc.isDefaultVerse(verse));
+        selected->setToolTip(tr("Select verse %1 when the song page first loads").arg(verse));
+        connect(selected, &QCheckBox::toggled, this,
+            [this, verse](bool checked) { setDefaultVerse(verse, checked); });
+        m_defaultVerseChecks.insert(verse, selected);
+        header->addWidget(selected);
+    }
 
     const QStringList available = partsUsingDefault(key);
     if (!available.isEmpty()) {
@@ -646,6 +666,43 @@ void LyricsPanel::addSection(const QString &key)
         SongDocument::setLyric(document.lyrics, key, QString());
     });
     Q_EMIT statusMessage(tr("lyrics.%1 added").arg(key));
+}
+
+void LyricsPanel::setDefaultVerse(int verse, bool selected)
+{
+    const SongDocument &effective = m_session->effectiveDocument();
+    QList<int> defaults = effective.effectiveDefaultVerses();
+    if (selected) {
+        if (!defaults.contains(verse))
+            defaults.append(verse);
+    } else {
+        defaults.removeAll(verse);
+    }
+    std::sort(defaults.begin(), defaults.end());
+
+    // The format treats an empty list as "all", so do not let the last default
+    // become an authored value that immediately means the opposite.
+    if (defaults.isEmpty()) {
+        if (QCheckBox *box = m_defaultVerseChecks.value(verse)) {
+            const QSignalBlocker blocker(box);
+            box->setChecked(true);
+        }
+        Q_EMIT statusMessage(tr("At least one verse must be selected by default."));
+        return;
+    }
+
+    const int count = std::max(0, effective.verseCount.valueOr(0));
+    const bool everyVerse = defaults.size() == count;
+    m_session->mutate(tr("Change default verses"),
+        [defaults, everyVerse](SongDocument &document) {
+            if (!document.isOverlay && everyVerse)
+                document.defaultVerses.clear();
+            else
+                document.defaultVerses.set(defaults);
+        });
+    Q_EMIT statusMessage(selected
+            ? tr("Verse %1 will be selected by default.").arg(verse)
+            : tr("Verse %1 will not be selected by default.").arg(verse));
 }
 
 // ------------------------------------------------------------- alignment ---
