@@ -85,6 +85,7 @@ bool checkReemitPart(const Part &part, QStringList &problems)
                 || a.dashedSlurStart != b.dashedSlurStart || a.dashedSlurEnd != b.dashedSlurEnd
                 || a.beamStart != b.beamStart || a.beamEnd != b.beamEnd
                 || a.fermata != b.fermata || a.staccato != b.staccato
+                || a.accent != b.accent || a.marcato != b.marcato
                 || a.chorusStart != b.chorusStart || a.codaStart != b.codaStart) {
                 mismatch(QStringLiteral("a flag"));
                 return false;

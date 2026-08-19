@@ -5,9 +5,10 @@
 //
 // The rules are those of OpenPsalm's MIDI export, so what the editor plays is
 // what the site's MP3 sounds like: ties merge into one sustained note, slurs and
-// fermatas have no playback effect, tuplets scale, velocity comes from the
-// dynamic map per part, and a \rit or \accel interpolates the tempo across its
-// span. This is a monitoring aid, not an export — nothing is ever written out.
+// fermatas, accents, and marcatos have no playback effect, tuplets scale,
+// velocity comes from the dynamic map per part, and a \rit or \accel
+// interpolates the tempo across its span. This is a monitoring aid, not an
+// export — nothing is ever written out.
 
 #pragma once
 

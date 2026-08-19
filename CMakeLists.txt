@@ -3,7 +3,7 @@
 
 cmake_minimum_required(VERSION 3.25)
 project(OpenPsalmEditor
-    VERSION 0.0.1
+    VERSION 0.1.0
     DESCRIPTION "Editor for OpenPsalm song.toml files"
     LANGUAGES CXX)
 

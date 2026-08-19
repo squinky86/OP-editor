@@ -165,6 +165,8 @@ private Q_SLOTS:
                             || before.at(e).hairpin != after.at(e).hairpin
                             || before.at(e).fermata != after.at(e).fermata
                             || before.at(e).staccato != after.at(e).staccato
+                            || before.at(e).accent != after.at(e).accent
+                            || before.at(e).marcato != after.at(e).marcato
                             || before.at(e).tie != after.at(e).tie
                             || before.at(e).chorusStart != after.at(e).chorusStart) {
                             failures.append(QStringLiteral("%1 %2 m%3: `%4` became `%5`")

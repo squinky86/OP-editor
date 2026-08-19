@@ -2,7 +2,7 @@
 
 Audit date: 2026-08-10
 Audited revision: `4404a4f` (`main`)
-Current application version: `0.0.1`
+Current application version: `0.1.0`
 
 ## Purpose
 
@@ -408,7 +408,7 @@ Changes:
 - Add the promised `OPE.md` architecture/design document or remove the dead link.
 - Add `CONTRIBUTING.md` with build presets, test/corpus setup, formatting, format
   parity rules, and release checks.
-- Maintain `CHANGELOG.md` and define when project version `0.0.1` advances.
+- Maintain `CHANGELOG.md` and define when the project version advances.
 - Document settings location, backup/conflict behavior, supported platforms,
   audio limitations, and recovery from a malformed translation.
 - Document the synchronization process for the bundled language registry and

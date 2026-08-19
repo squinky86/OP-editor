@@ -185,6 +185,38 @@ private Q_SLOTS:
         QVERIFY(changedPixels > 200);
     }
 
+    void scoreShortcutsToggleExclusiveAccentAndMarcatoFlags()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, QStringLiteral("song.toml"), baseSong());
+        Session session;
+        QVERIFY(session.openSong(root.filePath(QStringLiteral("song.toml"))));
+        ScoreView score(&session);
+        session.setSelection(Selection { 0, 0, 0 });
+
+        QTest::keyClick(&score, Qt::Key_A);
+        QVERIFY(session.selectedEvent()->accent);
+        QVERIFY(!session.selectedEvent()->marcato);
+        QVERIFY(session.currentBytes().contains("f'1^"));
+
+        QTest::keyClick(&score, Qt::Key_M);
+        QVERIFY(!session.selectedEvent()->accent);
+        QVERIFY(session.selectedEvent()->marcato);
+        QVERIFY(session.currentBytes().contains("f'1^^"));
+
+        QTest::keyClick(&score, Qt::Key_Return, Qt::ControlModifier);
+        const Event &alto
+            = session.document().parts.at(1).stream.measures().at(0).events.at(0);
+        QVERIFY(alto.marcato);
+        QVERIFY(!alto.accent);
+        QVERIFY(session.currentBytes().contains("d'1^^"));
+
+        QTest::keyClick(&score, Qt::Key_M);
+        QVERIFY(!session.selectedEvent()->accent);
+        QVERIFY(!session.selectedEvent()->marcato);
+    }
+
     void editingASelectedNoteKeepsANarrowWindowWidth()
     {
         QTemporaryDir dir;

@@ -704,7 +704,9 @@ QList<Finding> validate(
         }
     }
 
-    // Fermatas and staccatos go on every voice sounding at that tick.
+    // Fermatas, staccatos, accents, and marcatos go on every voice sounding at
+    // that tick. Accent and marcato are checked separately because a score can
+    // genuinely contain both on one staff when its voices disagree.
     {
         struct Moment {
             int measure;
@@ -720,6 +722,8 @@ QList<Finding> validate(
         QHash<QString, QSet<qint64>> sounding;
         QHash<QString, QSet<qint64>> fermatas;
         QHash<QString, QSet<qint64>> staccatos;
+        QHash<QString, QSet<qint64>> accents;
+        QHash<QString, QSet<qint64>> marcatos;
         QHash<qint64, Moment> moments;
         for (const Part &part : doc.parts) {
             const QList<Measure> &measures = part.stream.measures();
@@ -735,6 +739,10 @@ QList<Finding> validate(
                         fermatas[part.name].insert(key);
                     if (event.staccato && !event.isSpacer())
                         staccatos[part.name].insert(key);
+                    if (event.accent && !event.isSpacer())
+                        accents[part.name].insert(key);
+                    if (event.marcato && !event.isSpacer())
+                        marcatos[part.name].insert(key);
                     tick += event.playedTicks();
                 }
             }
@@ -769,6 +777,8 @@ QList<Finding> validate(
         };
         checkMarking(fermatas, QStringLiteral("R6.1-fermata"), QStringLiteral("fermata"));
         checkMarking(staccatos, QStringLiteral("R6.1-staccato"), QStringLiteral("staccato"));
+        checkMarking(accents, QStringLiteral("R6.1-accent"), QStringLiteral("accent"));
+        checkMarking(marcatos, QStringLiteral("R6.1-marcato"), QStringLiteral("marcato"));
     }
 
     // ---------------------------------------------------------- phrase breaks

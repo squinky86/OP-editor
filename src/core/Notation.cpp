@@ -58,6 +58,8 @@ struct FlagSet {
     bool beamEnd = false;
     bool fermata = false;
     bool staccato = false;
+    bool accent = false;
+    bool marcato = false;
     bool chorusStart = false;
     bool codaStart = false;
     QString dynamic;
@@ -145,6 +147,15 @@ QString stripFlags(const QString &durationToken, FlagSet &flags)
             flags.staccato = true;
             clean.chop(2);
         }
+        // Marcato must be tested first: otherwise two loop passes would turn
+        // `^^` into a plain accent.
+        if (clean.endsWith(QLatin1String("^^"))) {
+            flags.marcato = true;
+            clean.chop(2);
+        } else if (clean.endsWith(u'^')) {
+            flags.accent = true;
+            clean.chop(1);
+        }
         if (clean.endsWith(QLatin1String("@c"))) {
             flags.chorusStart = true;
             clean.chop(2);
@@ -210,6 +221,8 @@ void applyFlags(Event &event, const FlagSet &flags)
     event.beamEnd = flags.beamEnd;
     event.fermata = flags.fermata;
     event.staccato = flags.staccato;
+    event.accent = flags.accent;
+    event.marcato = flags.marcato;
     event.chorusStart = flags.chorusStart;
     event.codaStart = flags.codaStart;
     event.dynamic = flags.dynamic;
@@ -449,6 +462,10 @@ QString Event::toSource() const
         out.append(u'!');
     if (staccato)
         out.append(QStringLiteral("-."));
+    if (marcato)
+        out.append(QStringLiteral("^^"));
+    else if (accent)
+        out.append(u'^');
     if (chorusStart)
         out.append(QStringLiteral("@c"));
     if (codaStart)

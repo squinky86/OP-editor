@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — 0.1 beta work
+## 0.1.0 — first beta
 
 - Added a managed OP-songs HEAD download that stages the archive, rejects unsafe
   paths and sizes, runs the complete corpus checker, retains the old directory
@@ -30,6 +30,11 @@
 - Made Source an editable, syntax-highlighted, word-wrapped TOML editor with
   two-way structured-view synchronization, session undo, exact-byte saves, and
   safe recovery from invalid drafts.
+- Added structured editing for a song's default verse selection and kept its
+  all-verses shorthand compact in generated TOML.
+- Made phrase breaks align with rests as well as lyric-bearing notes.
+- Added score editing, rendering, validation, and lossless TOML round-tripping
+  for accents (`^`) and marcatos (`^^`).
 - Added the 0.1 contribution, documentation, integrity, and release plan.
 
 ## 0.0.1 — first alpha

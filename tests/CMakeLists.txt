@@ -90,7 +90,8 @@ add_test(NAME UiWorkflowTests COMMAND UiWorkflowTests)
 set_tests_properties(UiWorkflowTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 add_test(NAME GuiVersion COMMAND $<TARGET_FILE:ope> --version)
-set_tests_properties(GuiVersion PROPERTIES PASS_REGULAR_EXPRESSION "OpenPsalm Editor 0.0.1")
+set_tests_properties(GuiVersion PROPERTIES
+    PASS_REGULAR_EXPRESSION "OpenPsalm Editor ${PROJECT_VERSION}")
 
 add_test(NAME GuiScreenshot
     COMMAND $<TARGET_FILE:ope> --screenshot ${CMAKE_CURRENT_BINARY_DIR}/ope-smoke.png)

@@ -671,6 +671,29 @@ void ScoreView::paintPart(QPainter &painter, const SystemBox &system, const Staf
                 painter.drawEllipse(QPointF(x, headY + (stemUp ? 1.1 : -1.1) * space),
                     0.14 * space, 0.14 * space);
             }
+            if (event.accent || event.marcato) {
+                const qreal direction = stemUp ? 1.0 : -1.0;
+                const qreal articulationY
+                    = headY + direction * (event.staccato ? 1.85 : 1.35) * space;
+                QPainterPath articulation;
+                if (event.marcato) {
+                    articulation.moveTo(x - 0.42 * space,
+                        articulationY + direction * 0.28 * space);
+                    articulation.lineTo(x, articulationY - direction * 0.28 * space);
+                    articulation.lineTo(x + 0.42 * space,
+                        articulationY + direction * 0.28 * space);
+                } else {
+                    articulation.moveTo(x - 0.48 * space,
+                        articulationY - direction * 0.25 * space);
+                    articulation.lineTo(x + 0.48 * space, articulationY);
+                    articulation.lineTo(x - 0.48 * space,
+                        articulationY + direction * 0.25 * space);
+                }
+                painter.setBrush(Qt::NoBrush);
+                painter.setPen(QPen(ink, std::max(1.0, space * 0.16), Qt::SolidLine,
+                    Qt::RoundCap, Qt::RoundJoin));
+                painter.drawPath(articulation);
+            }
             if (!event.dynamic.isEmpty()) {
                 QFont font = painter.font();
                 font.setItalic(true);
@@ -1107,6 +1130,20 @@ void ScoreView::toggleFlag(const QString &description, bool Event::*flag)
     });
 }
 
+void ScoreView::toggleExclusiveFlag(
+    const QString &description, bool Event::*flag, bool Event::*otherFlag)
+{
+    m_session->mutate(description, [&](SongDocument &doc) {
+        if (Event *event = mutableSelectedEvent(doc)) {
+            const bool enabled = !(event->*flag);
+            event->*flag = enabled;
+            if (enabled)
+                event->*otherFlag = false;
+            event->dirty = true;
+        }
+    });
+}
+
 void ScoreView::convertSelection(EventKind kind)
 {
     m_session->mutate(tr("Change note type"), [&](SongDocument &doc) {
@@ -1294,7 +1331,7 @@ void ScoreView::applyMarkingToAllVoices()
     for (int e = 0; e < selection.eventIndex; ++e)
         targetTick += measure.events.at(e).playedTicks();
 
-    // Dynamics, fermatas, and staccatos are required on every sounding voice;
+    // Dynamics and articulation markings are required on every sounding voice;
     // this is that rule as a single command.
     m_session->mutate(tr("Apply marking to all voices"), [&](SongDocument &doc) {
         for (Part &part : doc.parts) {
@@ -1308,11 +1345,12 @@ void ScoreView::applyMarkingToAllVoices()
                     event.hairpin = source.hairpin;
                     event.fermata = source.fermata;
                     event.staccato = source.staccato;
+                    event.accent = source.accent;
+                    event.marcato = source.marcato;
                     event.dirty = true;
                 }
                 tick += event.playedTicks();
             }
-            part.notes.set(part.stream.toSource());
         }
     });
 }
@@ -1358,6 +1396,12 @@ void ScoreView::keyPressEvent(QKeyEvent *event)
     case Qt::Key_T: toggleFlag(tr("Toggle tie"), &Event::tie); return;
     case Qt::Key_F: toggleFlag(tr("Toggle fermata"), &Event::fermata); return;
     case Qt::Key_K: toggleFlag(tr("Toggle staccato"), &Event::staccato); return;
+    case Qt::Key_A:
+        toggleExclusiveFlag(tr("Toggle accent"), &Event::accent, &Event::marcato);
+        return;
+    case Qt::Key_M:
+        toggleExclusiveFlag(tr("Toggle marcato"), &Event::marcato, &Event::accent);
+        return;
     case Qt::Key_C: toggleFlag(tr("Toggle chorus marker"), &Event::chorusStart); return;
     case Qt::Key_E: toggleFlag(tr("Toggle coda marker"), &Event::codaStart); return;
     case Qt::Key_S:

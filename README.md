@@ -171,6 +171,7 @@ In the score view:
 | `B` / `Shift+B` | beam start / end |
 | `D` / `Shift+D` | dashed slur start / end |
 | `F` / `K` | fermata / staccato |
+| `A` / `M` | accent / marcato |
 | `C` / `E` | `@c` chorus marker / `@e` coda marker |
 | `Ins` / `Del` | insert / delete a note |
 | `Ctrl+B` | phrase break at the cursor (OPE computes the `"M:T"` value) |

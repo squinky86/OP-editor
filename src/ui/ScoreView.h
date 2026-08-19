@@ -145,6 +145,8 @@ private:
     void setSelectionDuration(int base);
     void toggleSelectionDot();
     void toggleFlag(const QString &description, bool Event::*flag);
+    void toggleExclusiveFlag(
+        const QString &description, bool Event::*flag, bool Event::*otherFlag);
     void convertSelection(EventKind kind);
     void insertAfterSelection();
     void deleteSelection();

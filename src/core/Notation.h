@@ -135,6 +135,8 @@ struct Event {
     bool beamEnd = false;
     bool fermata = false;
     bool staccato = false;
+    bool accent = false;
+    bool marcato = false;
     bool chorusStart = false;
     bool codaStart = false;
     QString dynamic;       ///< without the '%'

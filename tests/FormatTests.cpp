@@ -168,6 +168,29 @@ private Q_SLOTS:
         QVERIFY(end.dashedSlurEnd);
     }
 
+    void accentsAndMarcatosAreDistinctOrderIndependentMarkers()
+    {
+        for (const char *token : { "c''4@c^", "c''4^@c", "c''4-.^", "c''4^-.",
+                 "c''4^])" }) {
+            const Event event = firstEvent(QString::fromLatin1(token));
+            QVERIFY(event.accent);
+            QVERIFY(!event.marcato);
+        }
+        for (const char *token : { "c''4@c^^", "c''4^^@c", "c''4-.^^", "c''4^^-.",
+                 "c''4^^])" }) {
+            const Event event = firstEvent(QString::fromLatin1(token));
+            QVERIFY(event.marcato);
+            QVERIFY(!event.accent);
+        }
+
+        const Event accentedStaccato = firstEvent(QStringLiteral("c''8-.^"));
+        QVERIFY(accentedStaccato.staccato);
+        QVERIFY(accentedStaccato.accent);
+        const Event marcatoChord = firstEvent(QStringLiteral("<g g,>4^^"));
+        QCOMPARE(marcatoChord.pitches.size(), 2);
+        QVERIFY(marcatoChord.marcato);
+    }
+
     void hairpinsAndDynamics()
     {
         QCOMPARE(firstEvent(QStringLiteral("c''4\\<")).hairpin, QStringLiteral("crescendo"));
@@ -276,7 +299,8 @@ private Q_SLOTS:
     void editedTokensReEmitLosslessly()
     {
         const QString source = QStringLiteral(
-            "bes'4( g'8[ g'8]) f'4~ | g'4%mf\\< bes'4! bes'2-. | <c' e'>4@c r4 s2");
+            "bes'4( g'8[ g'8]) f'4~ | g'4%mf\\< bes'4! bes'2-. | "
+            "<c' e'>4@c^ r4 s2^^");
         NoteStream stream = NoteStream::parse(source);
         for (Measure &measure : stream.measures()) {
             for (Event &event : measure.events)
@@ -294,6 +318,8 @@ private Q_SLOTS:
                 QCOMPARE(after.at(e).kind, before.at(e).kind);
                 QCOMPARE(after.at(e).fermata, before.at(e).fermata);
                 QCOMPARE(after.at(e).staccato, before.at(e).staccato);
+                QCOMPARE(after.at(e).accent, before.at(e).accent);
+                QCOMPARE(after.at(e).marcato, before.at(e).marcato);
                 QCOMPARE(after.at(e).tie, before.at(e).tie);
                 QCOMPARE(after.at(e).dynamic, before.at(e).dynamic);
                 QCOMPARE(after.at(e).hairpin, before.at(e).hairpin);

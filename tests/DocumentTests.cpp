@@ -526,6 +526,24 @@ private Q_SLOTS:
         }));
     }
 
+    void accentsAndMarcatosAreRequiredOnEverySoundingVoice()
+    {
+        QTemporaryDir dir;
+        QByteArray source = baseSong();
+        source.replace("f'1 | g'1", "f'1^ | g'1");
+        source.replace("d'1 | ees'1", "d'1^^ | ees'1");
+        const SongDocument doc = loadFrom(dir, QStringLiteral("song.toml"), source);
+        const QList<Finding> findings = validate(doc);
+        QVERIFY(std::any_of(findings.begin(), findings.end(), [](const Finding &finding) {
+            return finding.rule == QLatin1String("R6.1-accent")
+                && finding.message.contains(QStringLiteral("Alto"));
+        }));
+        QVERIFY(std::any_of(findings.begin(), findings.end(), [](const Finding &finding) {
+            return finding.rule == QLatin1String("R6.1-marcato")
+                && finding.message.contains(QStringLiteral("Soprano"));
+        }));
+    }
+
     void nonPositiveTempoAndVerseCountAreErrors()
     {
         QTemporaryDir dir;
