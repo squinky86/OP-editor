@@ -122,6 +122,7 @@ private Q_SLOTS:
 
         QPlainTextEdit *editor = panel.findChild<QPlainTextEdit *>();
         QVERIFY(editor);
+        editor->clearFocus();
         QCOMPARE(editor->verticalScrollBar()->value(), 0);
 
         session.setSelection(Selection { 0, 1, 0 });
@@ -131,6 +132,52 @@ private Q_SLOTS:
         QCOMPARE(highlights.size(), 1);
         QCOMPARE(highlights.first().cursor.selectedText(), QStringLiteral("g'1"));
         QVERIFY(editor->verticalScrollBar()->value() > 0);
+    }
+
+    void sourceValidationDoesNotRestoreTheScoreSelectionWhileTyping()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, QStringLiteral("song.toml"), baseSong());
+        Session session;
+        QVERIFY(session.openSong(root.filePath(QStringLiteral("song.toml"))));
+        SourcePanel panel(&session);
+        panel.resize(420, 240);
+        panel.show();
+        QCoreApplication::processEvents();
+
+        QPlainTextEdit *editor = panel.findChild<QPlainTextEdit *>();
+        QVERIFY(editor);
+
+        editor->clearFocus();
+        session.setSelection(Selection { 0, 1, 0 });
+        QCOMPARE(editor->extraSelections().size(), 1);
+
+        editor->setFocus();
+        QTRY_VERIFY(editor->hasFocus());
+        QVERIFY(editor->extraSelections().isEmpty());
+
+        QTextCursor cursor = editor->document()->find(QStringLiteral("Face to Face"));
+        QVERIFY(!cursor.isNull());
+        cursor.clearSelection();
+        editor->setTextCursor(cursor);
+        QTest::keyClicks(editor, QStringLiteral("!"));
+        const int positionAfterFirstEdit = editor->textCursor().position();
+
+        QVERIFY(panel.hasPendingEdits());
+        QVERIFY(panel.commitPendingEdits());
+        QCOMPARE(editor->textCursor().position(), positionAfterFirstEdit);
+        QCOMPARE(editor->textCursor().anchor(), positionAfterFirstEdit);
+        QVERIFY(editor->extraSelections().isEmpty());
+
+        // Continuing after validation must append at the typing cursor, not
+        // replace the note that remains selected in the score.
+        QTest::keyClicks(editor, QStringLiteral("?"));
+        QVERIFY(panel.commitPendingEdits());
+        QCOMPARE(session.document().title.valueOr(QString()),
+            QStringLiteral("Face to Face!?"));
+        QCOMPARE(session.document().parts.at(0).stream.measures().at(1).events.at(0).raw,
+            QStringLiteral("g'1"));
     }
 
     void narrowLyricsHeaderStaysOneLineTall()

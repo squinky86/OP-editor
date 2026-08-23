@@ -842,6 +842,14 @@ void SourcePanel::highlightSelection()
         return;
 
     m_text->setExtraSelections({});
+    // Score selections are navigation hints, not edits. Once Source owns the
+    // keyboard, keep its cursor and scroll position under the typist's control.
+    // In particular, a successful debounced commit calls refresh(); moving the
+    // cursor back to the score's selection there would make the next keystroke
+    // overwrite that notation token.
+    if (m_text->hasFocus())
+        return;
+
     const Selection selection = m_session->selection();
     if (!m_session->isOpen() || !selection.hasEvent())
         return;
@@ -973,8 +981,14 @@ void SourcePanel::redoPendingEdit()
 
 bool SourcePanel::eventFilter(QObject *watched, QEvent *event)
 {
-    if (watched == m_text && event->type() == QEvent::FocusIn)
+    if (watched == m_text && event->type() == QEvent::FocusIn) {
+        // The score's navigation highlight is useful while inspecting Source,
+        // but should disappear as soon as Source becomes the active editor.
+        // Preserve parse-error highlighting until the user changes the text.
+        if (!m_parseError)
+            m_text->setExtraSelections({});
         Q_EMIT editingActivated();
+    }
     return QWidget::eventFilter(watched, event);
 }
 
