@@ -37,6 +37,7 @@
 #include <QTabWidget>
 #include <QTreeWidget>
 #include <QToolButton>
+#include <QUndoStack>
 
 using namespace ope;
 using namespace ope::fixtures;
@@ -75,6 +76,99 @@ class UiWorkflowTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void lyricsTabAddsVerseAndPreservesTyping()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, QStringLiteral("song.toml"), baseSong());
+        Session session;
+        LyricsPanel panel(&session);
+        auto *add = panel.findChild<QToolButton *>(QStringLiteral("addVerseButton"));
+        QVERIFY(add);
+        QVERIFY(!add->isEnabled());
+        QVERIFY(session.openSong(root.filePath(QStringLiteral("song.toml"))));
+        QVERIFY(add->isEnabled());
+        panel.resize(420, 320);
+        panel.show();
+
+        auto *first = editorWithText(panel, QStringLiteral("one two"));
+        QVERIFY(first);
+        first->setPlainText(QStringLiteral("new words"));
+        QVERIFY(panel.hasPendingEdits());
+        auto *tabs = panel.findChild<QTabWidget *>();
+        tabs->setCurrentIndex(1);
+        QTest::mouseClick(add, Qt::LeftButton);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(session.document().verseCount.valueOr(0), 5);
+        QVERIFY(session.document().lyrics.contains(QStringLiteral("5")));
+        QCOMPARE(session.document().lyrics.value(QStringLiteral("1")).rawText,
+            QStringLiteral("new words"));
+        QVERIFY(!panel.hasPendingEdits());
+        QCOMPARE(tabs->currentIndex(), 0);
+        auto *editor = qobject_cast<QPlainTextEdit *>(panel.focusWidget());
+        QVERIFY(editor);
+        QVERIFY(editor->toPlainText().isEmpty());
+        auto *scroll = panel.findChild<QScrollArea *>();
+        QVERIFY(scroll->viewport()->rect().intersects(
+            QRect(editor->mapTo(scroll->viewport(), QPoint()), editor->size())));
+
+        session.undoStack()->undo();
+        QCOMPARE(session.document().verseCount.valueOr(0), 4);
+        QVERIFY(!session.document().lyrics.contains(QStringLiteral("5")));
+        QCOMPARE(session.document().lyrics.value(QStringLiteral("1")).rawText,
+            QStringLiteral("new words"));
+        session.undoStack()->redo();
+        QVERIFY(session.document().lyrics.contains(QStringLiteral("5")));
+        QVERIFY(session.currentBytes().contains("[lyrics.5]"));
+    }
+
+    void lyricsTabNumbersNewVerses_data()
+    {
+        QTest::addColumn<QByteArray>("source");
+        QTest::addColumn<int>("expected");
+        QTest::newRow("empty") << QByteArray("title = \"Empty\"\n") << 1;
+        QTest::newRow("declared") << baseSong() << 5;
+        QTest::newRow("existing")
+            << baseSong() + "\n[lyrics.7]\ntext = \"existing words\"\n" << 8;
+        QTest::newRow("voice-only")
+            << baseSong() + "\n[parts.Alto.lyrics.8]\ntext = \"alto words\"\n" << 9;
+    }
+
+    void lyricsTabNumbersNewVerses()
+    {
+        QFETCH(QByteArray, source);
+        QFETCH(int, expected);
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, QStringLiteral("song.toml"), source);
+        Session session;
+        QVERIFY(session.openSong(root.filePath(QStringLiteral("song.toml"))));
+        LyricsPanel panel(&session);
+        panel.findChild<QToolButton *>(QStringLiteral("addVerseButton"))->click();
+        QCOMPARE(session.document().verseCount.valueOr(0), expected);
+        QVERIFY(session.document().lyrics.contains(QString::number(expected)));
+    }
+
+    void lyricsTabAddsVerseToTranslation()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, QStringLiteral("song.toml"), baseSong());
+        write(root, QStringLiteral("song_es.toml"), "title = \"Cara a cara\"\n");
+        Session session;
+        QVERIFY(session.openSong(root.filePath(QStringLiteral("song.toml"))));
+        session.setCurrentLanguage(QStringLiteral("es"));
+        LyricsPanel panel(&session);
+        panel.findChild<QToolButton *>(QStringLiteral("addVerseButton"))->click();
+        QCOMPARE(session.effectiveDocument().verseCount.valueOr(0), 5);
+        QCOMPARE(session.effectiveDocument().lyrics.value(QStringLiteral("1")).rawText,
+            QStringLiteral("one two"));
+        QVERIFY(session.document(QStringLiteral("es"))->lyrics.contains(QStringLiteral("5")));
+        QCOMPARE(session.document(QStringLiteral("en"))->verseCount.valueOr(0), 4);
+        QVERIFY(!session.document(QStringLiteral("en"))->lyrics.contains(QStringLiteral("5")));
+    }
+
     void lyricsTabEditsDefaultVerses()
     {
         QTemporaryDir dir;

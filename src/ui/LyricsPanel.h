@@ -29,6 +29,7 @@ class QCheckBox;
 class QComboBox;
 class QLabel;
 class QPlainTextEdit;
+class QScrollArea;
 class QTableWidget;
 class QTabWidget;
 class QToolButton;
@@ -116,6 +117,7 @@ private:
     void addOverride(const QString &key, const QString &partName);
     void removeOverride(const QString &key, const QString &partName);
     void addSection(const QString &key);
+    void addVerse();
     void setDefaultVerse(int verse, bool selected);
     void insertUndertie();
     [[nodiscard]] QString gridPartName() const;
@@ -128,7 +130,9 @@ private:
 
     QTabWidget *m_tabs = nullptr;
     QWidget *m_sectionHost = nullptr;
+    QScrollArea *m_sectionScroll = nullptr;
     QToolButton *m_undertie = nullptr;
+    QToolButton *m_addVerse = nullptr;
     QToolButton *m_addSection = nullptr;
     QLabel *m_legend = nullptr;
 

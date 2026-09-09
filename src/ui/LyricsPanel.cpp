@@ -168,6 +168,12 @@ LyricsPanel::LyricsPanel(Session *session, QWidget *parent) : QWidget(parent), m
     top->addWidget(m_legend);
     top->addStretch();
 
+    m_addVerse = new QToolButton(this);
+    m_addVerse->setObjectName(QStringLiteral("addVerseButton"));
+    m_addVerse->setText(tr("Add verse"));
+    m_addVerse->setToolTip(tr("Add the next numbered verse and edit its lyrics"));
+    top->addWidget(m_addVerse);
+
     m_addSection = new QToolButton(this);
     m_addSection->setObjectName(QStringLiteral("addLyricsSectionButton"));
     m_addSection->setText(tr("Add section"));
@@ -187,6 +193,7 @@ LyricsPanel::LyricsPanel(Session *session, QWidget *parent) : QWidget(parent), m
     auto *textLayout = new QVBoxLayout(textPage);
     textLayout->setContentsMargins(0, 0, 0, 0);
     auto *scroll = new QScrollArea(textPage);
+    m_sectionScroll = scroll;
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     m_sectionHost = new QWidget(scroll);
@@ -222,6 +229,7 @@ LyricsPanel::LyricsPanel(Session *session, QWidget *parent) : QWidget(parent), m
             rebuildGrid();
     });
     connect(m_undertie, &QToolButton::clicked, this, &LyricsPanel::insertUndertie);
+    connect(m_addVerse, &QToolButton::clicked, this, &LyricsPanel::addVerse);
     connect(m_grid, &QTableWidget::cellChanged, this, [this](int row, int column) {
         if (!m_loading)
             commitCell(row, column);
@@ -288,6 +296,7 @@ void LyricsPanel::refresh()
         [this, sharedKey] { addSection(sharedKey); });
     m_addSection->setMenu(menu);
     m_addSection->setEnabled(m_session->isOpen());
+    m_addVerse->setEnabled(m_session->isOpen());
 
     const QStringList signature = structureSignature();
     if (signature == m_signature && !m_editors.isEmpty()) {
@@ -664,6 +673,44 @@ void LyricsPanel::removeOverride(const QString &key, const QString &partName)
             document.removePartLyric(*target, key);
     });
     Q_EMIT statusMessage(tr("%1 is back to the song's text for lyrics.%2").arg(partName, key));
+}
+
+void LyricsPanel::addVerse()
+{
+    if (!m_session->isOpen())
+        return;
+    // Flush typing before the new card rebuilds the editors.
+    commitPendingEdits();
+    const SongDocument &doc = m_session->effectiveDocument();
+    int highest = std::max(0, doc.verseCount.valueOr(0));
+    for (const QString &key : doc.verseKeys())
+        highest = std::max(highest, key.toInt());
+    for (const Part &part : doc.parts) {
+        for (auto it = part.lyrics.constBegin(); it != part.lyrics.constEnd(); ++it) {
+            if (SongDocument::isVerseKey(it.key()))
+                highest = std::max(highest, it.key().toInt());
+        }
+    }
+    const int verse = highest + 1;
+    const QString key = QString::number(verse);
+    m_session->mutate(tr("Add verse %1").arg(verse), [&](SongDocument &document) {
+        materialiseOverlayLyrics(document, doc, QString());
+        document.verseCount.set(verse);
+        SongDocument::setLyric(document.lyrics, key, QString());
+    });
+    m_tabs->setCurrentIndex(0);
+    for (const EditorRef &row : m_editors) {
+        if (row.key == key && row.partName.isEmpty()) {
+            row.editor->setFocus(Qt::OtherFocusReason);
+            // The rebuilt cards need a layout pass before scrolling to the
+            // new editor. Cancel automatically if another edit removes it.
+            QTimer::singleShot(0, row.editor, [this, editor = row.editor] {
+                m_sectionScroll->ensureWidgetVisible(editor);
+            });
+            break;
+        }
+    }
+    Q_EMIT statusMessage(tr("Verse %1 added").arg(verse));
 }
 
 void LyricsPanel::addSection(const QString &key)
