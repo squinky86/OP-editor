@@ -30,6 +30,50 @@ class SessionTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void revertingAdjacentChorusOverrides_data()
+    {
+        QTest::addColumn<QStringList>("order");
+        QTest::newRow("tenor-then-bass") << QStringList { "Tenor", "Bass" };
+        QTest::newRow("bass-then-tenor") << QStringList { "Bass", "Tenor" };
+    }
+
+    void revertingAdjacentChorusOverrides()
+    {
+        QFETCH(QStringList, order);
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        const QByteArray defaults = baseSong()
+            + "\n[parts.Tenor]\nnotes = \"c1\"\n"
+              "\n[parts.Bass]\nnotes = \"c1\"\n"
+              "\n[lyrics.chorus]\ntext = \"song default\"\n";
+        const QByteArray original = defaults
+            + "\n[parts.Tenor.lyrics.chorus]\ntext = \"tenor chorus\"\n"
+              "\n[parts.Bass.lyrics.chorus]\ntext = \"bass chorus\"\n";
+        write(root, QStringLiteral("song.toml"), original);
+        Session session;
+        QVERIFY(session.openSong(root.filePath(QStringLiteral("song.toml"))));
+
+        for (const QString &name : order) {
+            session.mutate(QStringLiteral("Revert lyrics"), [&](SongDocument &doc) {
+                doc.removePartLyric(*doc.part(name), QStringLiteral("chorus"));
+            });
+            QVERIFY(!session.document().part(name)->lyrics.contains(QStringLiteral("chorus")));
+            QVERIFY(!session.currentBytes().contains(
+                "[parts." + name.toUtf8() + ".lyrics.chorus]"));
+        }
+        QCOMPARE(session.currentBytes(), defaults);
+        session.undoStack()->undo();
+        QVERIFY(session.document().part(order.last())->lyrics.contains(QStringLiteral("chorus")));
+        session.undoStack()->undo();
+        QCOMPARE(session.currentBytes(), original);
+        session.undoStack()->redo();
+        session.undoStack()->redo();
+        QCOMPARE(session.currentBytes(), defaults);
+        QVERIFY(session.save());
+        QVERIFY(session.openSong(root.filePath(QStringLiteral("song.toml"))));
+        QCOMPARE(session.currentBytes(), defaults);
+    }
+
     void exactSourceEditsJoinTheSessionUndoAndSaveModel()
     {
         QTemporaryDir dir;

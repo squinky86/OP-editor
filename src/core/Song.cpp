@@ -920,11 +920,31 @@ QByteArray serialize(const SongDocument &doc)
             edit.insert(lyricTableAnchor(doc, path), emitLyricTable(path, *it) + "\n");
     }
 
-    // Deleted tables go last so their spans are not disturbed by the edits above
-    // (Edit sorts by position, so ordering here only decides ties).
+    // Adjacent deleted tables share their separator. Merge them before taking
+    // ownership of blank lines, or the final table's leading blank line can
+    // overlap the preceding deletion and cause Edit::apply to skip it entirely.
+    QList<toml::Span> removed;
     for (const toml::Span &span : doc.removedTables) {
         if (!span.isValid())
             continue;
+        removed.append(span);
+    }
+    std::sort(removed.begin(), removed.end(), [](const toml::Span &a, const toml::Span &b) {
+        return a.begin < b.begin;
+    });
+    QList<toml::Span> blocks;
+    for (const toml::Span &span : removed) {
+        if (!blocks.isEmpty()
+            && (span.begin <= blocks.last().end
+                || doc.source.textOf({ blocks.last().end, span.begin }).trimmed().isEmpty())) {
+            blocks.last().end = std::max(blocks.last().end, span.end);
+        } else {
+            blocks.append(span);
+        }
+    }
+
+    // Deleted tables go last (Edit sorts by position; ordering here decides ties).
+    for (const toml::Span &span : blocks) {
         qsizetype from = doc.source.lineStart(span.begin);
         qsizetype to = doc.source.lineEnd(span.end);
         // A block owns one of the blank lines around it: the one after it, or —
