@@ -30,6 +30,62 @@ class SessionTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void inheritedTtbbLyricsCreateOnlyTheRequiredOverlayMap()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        const QByteArray base = ttbbSong() + "\n[parts.Tenor1.lyrics.1]\ntext = \"one two three\"\n"
+            "[parts.Tenor1.lyrics.2]\ntext = \"four five six\"\n"
+            "[parts.Tenor1.lyrics.3]\ntext = \"sing a song\"\n";
+        write(root, "song.toml", base);
+        const QByteArray overlay = "title = \"Traducción\"\n";
+        write(root, "song_es.toml", overlay);
+        Session session;
+        QVERIFY(session.openSong(root.filePath("song_es.toml")));
+        const SongDocument merged = session.effectiveDocument();
+        session.mutate("Edit inherited lyrics", [&](SongDocument &doc) {
+            materialiseOverlayLyrics(doc, merged, "Tenor1");
+            SongDocument::setLyric(doc.part(u"Tenor1")->lyrics, "1", "uno dos tres");
+        });
+        const QByteArray edited = session.currentBytes();
+        QVERIFY(edited.contains("[parts.Tenor1.lyrics.1]"));
+        QVERIFY(edited.contains("[parts.Tenor1.lyrics.2]"));
+        QVERIFY(edited.contains("[parts.Tenor1.lyrics.3]"));
+        QVERIFY(!edited.contains("notes ="));
+        QVERIFY(!edited.contains("clef ="));
+        QVERIFY(!edited.contains("choral_type"));
+        QCOMPARE(session.effectiveDocument().part(u"Tenor1")->lyrics.size(), 3);
+        session.undoStack()->undo();
+        QCOMPARE(session.currentBytes(), overlay);
+        session.undoStack()->redo();
+        QCOMPARE(session.currentBytes(), edited);
+        QVERIFY(session.save());
+        QVERIFY(session.openSong(root.filePath("song_es.toml")));
+        QCOMPARE(session.currentBytes(), edited);
+        QCOMPARE(io::serialize(*session.baseDocument()), base);
+    }
+
+    void structuredEditsAfterANotesReplacementAreNotReparsedAway()
+    {
+        QTemporaryDir dir;
+        write(QDir(dir.path()), "song.toml", ttbbSong());
+        Session session;
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        session.mutate("Replace notes", [](SongDocument &doc) {
+            doc.part(u"Tenor1")->notes.set("c'2 d'4 | e'2.");
+        });
+        const QByteArray replaced = session.currentBytes();
+        session.mutate("Raise opening note", [](SongDocument &doc) {
+            auto &event = doc.part(u"Tenor1")->stream.measures()[0].events[0];
+            event.pitches[0].octave += 1;
+            event.dirty = true;
+        });
+        QVERIFY(session.currentBytes().contains("c''2"));
+        QCOMPARE(session.effectiveDocument().part(u"Tenor1")->stream.measures()[0].events[0].pitches[0].midiNote(), 72);
+        session.undoStack()->undo();
+        QCOMPARE(session.currentBytes(), replaced);
+    }
+
     void revertingAdjacentChorusOverrides_data()
     {
         QTest::addColumn<QStringList>("order");

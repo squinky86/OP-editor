@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Jon Hood, OpenPsalm.com
 
-set(OPE_TESTS FormatTests DocumentTests CorpusTests CorpusArchiveTests)
+set(OPE_TESTS FormatTests DocumentTests MetadataTests CorpusTests CorpusArchiveTests)
 
 foreach(test IN LISTS OPE_TESTS)
     qt_add_executable(${test} ${test}.cpp Fixtures.cpp)
@@ -32,7 +32,7 @@ endforeach()
 # The synth is deterministic and needs no multimedia device. This catches
 # transport/resume regressions without making the test suite depend on audio
 # hardware or a desktop sound server.
-qt_add_executable(AudioTests AudioTests.cpp ${CMAKE_SOURCE_DIR}/src/audio/Synth.cpp)
+qt_add_executable(AudioTests AudioTests.cpp Fixtures.cpp ${CMAKE_SOURCE_DIR}/src/audio/Synth.cpp)
 target_link_libraries(AudioTests PRIVATE ope_core Qt6::Test ope_flags)
 add_test(NAME AudioTests COMMAND AudioTests)
 set_tests_properties(AudioTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
@@ -45,7 +45,7 @@ target_link_libraries(GlyphTests PRIVATE Qt6::Gui Qt6::Test ope_flags)
 add_test(NAME GlyphTests COMMAND GlyphTests)
 set_tests_properties(GlyphTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-qt_add_executable(CliTests CliTests.cpp)
+qt_add_executable(CliTests CliTests.cpp Fixtures.cpp)
 target_link_libraries(CliTests PRIVATE ope_cli Qt6::Test ope_flags)
 add_test(NAME CliTests COMMAND CliTests)
 set_tests_properties(CliTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

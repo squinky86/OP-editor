@@ -5,6 +5,73 @@
 
 namespace ope::fixtures {
 
+QByteArray ttbbSong()
+{
+    // Deliberately shuffled tables. Absolute sounding anchors, inspired by the
+    // reviewed opening/final pitches of song 369; not a catalog transcription.
+    return R"TOML(# TTBB test: keep this comment and table order
+title = "TTBB fixture"
+time_sig_numerator = 3
+time_sig_denominator = 4
+key_signature = "Bb"
+tempo_bpm = 96
+verse_count = 3
+phrase_breaks = ["1:48"]
+
+[parts.Bass]
+choral_type = "bass"
+clef = "bass"
+staff_number = 2
+notes = "bes,2 ees4 | bes,2."
+
+[parts.Tenor2]
+choral_type = "tenor2"
+clef = "tenor"
+staff_number = 1
+notes = "f2 a4 | bes2."
+
+[parts.Baritone]
+choral_type = "baritone"
+clef = "bass"
+staff_number = 2
+notes = "d2 f4 | f2."
+
+[parts.Tenor1]
+choral_type = "tenor1"
+clef = "tenor"
+staff_number = 1
+notes = "bes2 c'4 | d'2."
+
+[lyrics.1]
+text = "one two three"
+[lyrics.2]
+text = "four five six"
+[lyrics.3]
+text = "sing a song"
+)TOML";
+}
+
+QByteArray ttbbTempo()
+{
+    // Different note onsets on the two voices catch accidental tempo ownership
+    // by the first audible voice. Compared with OpenPsalm's MIDI exporter.
+    return R"TOML(title = "Lead tempo"
+tempo_bpm = 120
+time_sig_numerator = 4
+time_sig_denominator = 4
+verse_count = 1
+key_signature = "C"
+[parts.Second]
+choral_type = "tenor2"
+clef = "tenor"
+notes = "c2 g2 | c2 g2"
+[parts.Lead]
+choral_type = "tenor1"
+clef = "tenor"
+notes = '''c4\rit d4 e4 f4\spanend | g4\atempo a4 b4 c'4'''
+)TOML";
+}
+
 QByteArray baseSong()
 {
     return R"TOML(title = "Face to Face"

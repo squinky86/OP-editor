@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jon Hood, OpenPsalm.com
 
 #include "Playback.h"
+#include "Voicing.h"
 
 #include <QHash>
 #include <QMap>
@@ -12,149 +13,110 @@
 namespace ope {
 namespace {
 
-/// A slowdown targets ~0.6x and a speedup ~1.4x of the active tempo, matching
-/// the interpolation src/export/midi.rs performs across a spanner.
-constexpr double SlowdownFactor = 0.6;
-constexpr double SpeedupFactor = 1.4;
-/// The exporter divides each span into eight equal segments; matching that keeps
-/// the editor's timing identical to the rendered MP3.
-constexpr int SpanSegments = 8;
+// Use the exporter's 480 PPQ grid for tempo boundaries: rounding an eighth of
+// a span on the editor's coarser 48 PPQ grid changes audible timings.
+constexpr int MidiTicksPerQuarter = 480;
+constexpr int MidiTicksPerTick = MidiTicksPerQuarter / ticks::Quarter;
 
-struct Span {
-    int beginTick = 0;
-    int endTick = 0;
-    bool slowdown = true;
-    bool restoreAfter = false;
-};
-
-/// Collect tempo spanners. They are song-level (style guide §5.3 puts them on
-/// the soprano), so the first part that carries any wins.
-QList<Span> collectSpans(const SongDocument &doc)
+int midiDuration(const Event &event)
 {
-    for (const Part *part : doc.partsInDisplayOrder()) {
-        QList<Span> spans;
-        std::optional<Span> open;
-        int tick = 0;
-        const QList<Measure> &measures = part->stream.measures();
-        for (const Measure &measure : measures) {
-            for (const Event &event : measure.events) {
-                const int eventEnd = tick + event.playedTicks();
-                if (!event.tempoSpanner.isEmpty()
-                    && event.tempoSpanner != QLatin1String("atempo")) {
-                    Span span;
-                    span.beginTick = tick;
-                    span.endTick = eventEnd;
-                    span.slowdown = event.tempoSpanner == QLatin1String("rit")
-                        || event.tempoSpanner == QLatin1String("ritard")
-                        || event.tempoSpanner == QLatin1String("rall");
-                    open = span;
-                }
-                if (event.spannerEnd && open) {
-                    open->endTick = eventEnd;
-                    open->restoreAfter = event.tempoSpanner == QLatin1String("atempo");
-                    spans.append(*open);
-                    open.reset();
-                }
-                tick = eventEnd;
-            }
-        }
-        if (open) {
-            open->endTick = tick;
-            spans.append(*open);
-        }
-        if (!spans.isEmpty())
-            return spans;
-    }
-    return {};
+    const int duration = event.duration.notatedTicks() * MidiTicksPerTick;
+    return event.tuplet && event.tuplet->actual > 0
+        ? duration * event.tuplet->normal / event.tuplet->actual : duration;
 }
 
-/// Piecewise-constant tempo over ticks, so seconds(tick) can be integrated once
-/// and then queried per note.
+/// Port of OpenPsalm compute_tempo_changes: ramp to the terminating note's
+/// onset, hold that tempo through the note, then restore the song tempo.
+/// Only the authored lead supplies markers, whether audible or muted.
+QMap<int, int> tempoChanges(const SongDocument &doc)
+{
+    const int songBpm = std::max(20, doc.tempoBpm.valueOr(120));
+    QMap<int, int> microsAt { { 0, 60000000 / songBpm } };
+    const Part *lead = voicing::lead(doc);
+    if (!lead)
+        return microsAt;
+    struct TimedEvent { int tick; const Event *event; };
+    QList<TimedEvent> flat;
+    int tick = 0;
+    for (const Measure &measure : lead->stream.measures()) {
+        for (const Event &event : measure.events) {
+            flat.append({ tick, &event });
+            tick += midiDuration(event);
+        }
+    }
+    for (qsizetype i = 0; i < flat.size(); ++i) {
+        const QString &kind = flat.at(i).event->tempoSpanner;
+        if (kind.isEmpty())
+            continue;
+        if (kind == QLatin1String("atempo")) {
+            microsAt.insert(flat.at(i).tick, 60000000 / songBpm);
+            continue;
+        }
+        qsizetype end = flat.size() - 1;
+        for (qsizetype j = i + 1; j < flat.size(); ++j) {
+            if (flat.at(j).event->spannerEnd) {
+                end = j;
+                break;
+            }
+            if (!flat.at(j).event->tempoSpanner.isEmpty()) {
+                end = j - 1;
+                break;
+            }
+        }
+        double factor = 1.0;
+        if (kind == QLatin1String("rit") || kind == QLatin1String("ritard")
+            || kind == QLatin1String("rall"))
+            factor = 0.6;
+        else if (kind == QLatin1String("accel") || kind == QLatin1String("string"))
+            factor = 1.4;
+        const int target = std::max(20, static_cast<int>(std::round(songBpm * factor)));
+        const int start = flat.at(i).tick;
+        const int length = flat.at(end).tick - start;
+        for (int step = 1; step <= 8; ++step) {
+            const double fraction = step / 8.0;
+            const double bpm = songBpm + (target - songBpm) * fraction;
+            microsAt.insert(start + static_cast<int>(std::round(length * fraction)),
+                static_cast<int>(std::round(60000000.0 / bpm)));
+        }
+        microsAt.insert(flat.at(end).tick + midiDuration(*flat.at(end).event), 60000000 / songBpm);
+        i = end;
+    }
+    return microsAt;
+}
+
+/// Integrate the piecewise-constant MIDI tempo map once, before applying mutes.
 class TempoMap {
 public:
-    TempoMap(const SongDocument &doc, double scale, int totalTicks)
+    TempoMap(const SongDocument &doc, double scale)
     {
-        const double baseBpm = std::max(1, doc.tempoBpm.valueOr(100)) * std::max(0.05, scale);
-        const QList<Span> spans = collectSpans(doc);
-
-        // Segment boundaries: every span start/end plus the interpolation steps.
-        QMap<int, double> bpmAt;
-        bpmAt.insert(0, baseBpm);
-        for (const Span &span : spans) {
-            const double target
-                = baseBpm * (span.slowdown ? SlowdownFactor : SpeedupFactor);
-            const int length = std::max(1, span.endTick - span.beginTick);
-            for (int step = 0; step < SpanSegments; ++step) {
-                const double fraction = static_cast<double>(step) / SpanSegments;
-                const int tick = span.beginTick + static_cast<int>(length * fraction);
-                bpmAt.insert(tick, baseBpm + (target - baseBpm) * fraction);
-            }
-            bpmAt.insert(span.endTick, span.restoreAfter ? baseBpm : target);
-            if (span.restoreAfter)
-                bpmAt.insert(span.endTick, baseBpm);
-        }
-
-        // Integrate: seconds at each boundary.
+        const auto changes = tempoChanges(doc);
         int previousTick = 0;
-        double previousBpm = baseBpm;
         double seconds = 0.0;
-        for (auto it = bpmAt.constBegin(); it != bpmAt.constEnd(); ++it) {
-            const int tick = it.key();
-            if (tick > previousTick)
-                seconds += ticksToSeconds(tick - previousTick, previousBpm);
-            m_boundaries.append({ tick, seconds, it.value() });
-            previousTick = tick;
-            previousBpm = it.value();
+        double secondsPerTick = 0.0;
+        for (auto it = changes.cbegin(); it != changes.cend(); ++it) {
+            seconds += (it.key() - previousTick) * secondsPerTick;
+            secondsPerTick = it.value() / (1000000.0 * MidiTicksPerQuarter * std::max(0.05, scale));
+            m_boundaries.append({ it.key(), seconds, secondsPerTick });
+            previousTick = it.key();
         }
-        m_tailBpm = previousBpm;
-        m_tailTick = previousTick;
-        m_tailSeconds = seconds;
-        Q_UNUSED(totalTicks);
     }
 
     [[nodiscard]] double secondsAt(int tick) const
     {
-        const Boundary *chosen = nullptr;
-        for (const Boundary &boundary : m_boundaries) {
-            if (boundary.tick <= tick)
-                chosen = &boundary;
-            else
-                break;
-        }
-        if (!chosen)
-            return ticksToSeconds(tick, m_tailBpm);
-        return chosen->seconds + ticksToSeconds(tick - chosen->tick, chosen->bpm);
-    }
-
-    [[nodiscard]] int tickAt(double seconds) const
-    {
-        const Boundary *chosen = nullptr;
-        for (const Boundary &boundary : m_boundaries) {
-            if (boundary.seconds <= seconds)
-                chosen = &boundary;
-            else
-                break;
-        }
-        if (!chosen)
-            return 0;
-        const double delta = seconds - chosen->seconds;
-        return chosen->tick + static_cast<int>(delta * chosen->bpm * ticks::Quarter / 60.0);
+        const int midiTick = tick * MidiTicksPerTick;
+        const auto upper = std::upper_bound(m_boundaries.cbegin(), m_boundaries.cend(), midiTick,
+            [](int t, const Boundary &b) { return t < b.tick; });
+        const Boundary &boundary = upper == m_boundaries.cbegin() ? m_boundaries.first() : *std::prev(upper);
+        return boundary.seconds + (midiTick - boundary.tick) * boundary.secondsPerTick;
     }
 
 private:
     struct Boundary {
-        int tick = 0;
-        double seconds = 0.0;
-        double bpm = 100.0;
+        int tick;
+        double seconds;
+        double secondsPerTick;
     };
-    static double ticksToSeconds(int tickCount, double bpm)
-    {
-        return (static_cast<double>(tickCount) / ticks::Quarter) * (60.0 / std::max(1.0, bpm));
-    }
     QList<Boundary> m_boundaries;
-    double m_tailBpm = 100.0;
-    int m_tailTick = 0;
-    double m_tailSeconds = 0.0;
 };
 
 } // namespace
@@ -211,7 +173,7 @@ PlaybackPlan buildPlan(const SongDocument &doc, const PlaybackOptions &options)
     }
     const int totalTicks = tick;
 
-    const TempoMap tempo(doc, options.tempoScale, totalTicks);
+    const TempoMap tempo(doc, options.tempoScale);
     for (const int measureTick : plan.measureStartTicks)
         plan.measureStartSeconds.append(tempo.secondsAt(measureTick));
 

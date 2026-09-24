@@ -29,6 +29,7 @@
 #include <QScrollBar>
 #include <QSignalSpy>
 #include <QSplitter>
+#include <QSpinBox>
 #include <QSettings>
 #include <QSyntaxHighlighter>
 #include <QTableWidget>
@@ -36,8 +37,10 @@
 #include <QTest>
 #include <QTabWidget>
 #include <QTreeWidget>
+#include <QWheelEvent>
 #include <QToolButton>
 #include <QUndoStack>
+#include <QtMath>
 
 using namespace ope;
 using namespace ope::fixtures;
@@ -76,6 +79,529 @@ class UiWorkflowTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void localCatalogAcceptance()
+    {
+        const QString catalog = qEnvironmentVariable("OPE_ACCEPTANCE_SONGS_DIR");
+        if (catalog.isEmpty())
+            QSKIP("Set OPE_ACCEPTANCE_SONGS_DIR for the explicit local song-369 and SATB/translation gate");
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        const QDir source(catalog);
+        const QDir root(temporary.path());
+        QMap<QString, QByteArray> originals;
+        const QStringList files {"369/song.toml", "8/song.toml", "13/song.toml", "101/song.toml", "103/song.toml", "273/song.toml", "162/song.toml", "162/song_es.toml"};
+        for (const auto &name : files) {
+            QFile file(source.filePath(name));
+            QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(name));
+            const QByteArray bytes = file.readAll();
+            originals.insert(name, bytes);
+            QVERIFY(root.mkpath(QFileInfo(name).path()));
+            write(root, name, bytes);
+        }
+        for (const auto &name : files) {
+            Session session;
+            QVERIFY(session.openSong(root.filePath(name)));
+            QCOMPARE(session.currentBytes(), originals[name]);
+            QVERIFY(session.save());
+            const auto before = session.buildPlaybackPlan({});
+            session.mutate("Metadata acceptance", [](SongDocument &doc) {
+                doc.subtitle.set("Local metadata acceptance");
+            });
+            QCOMPARE(session.buildPlaybackPlan({}).notes.size(), before.notes.size());
+            QVERIFY(session.save());
+            QVERIFY(session.openSong(root.filePath(name)));
+            const auto after = session.buildPlaybackPlan({});
+            QCOMPARE(after.notes.size(), before.notes.size());
+            for (int i = 0; i < before.notes.size(); ++i) {
+                QCOMPARE(after.notes[i].midiNote, before.notes[i].midiNote);
+                QCOMPARE(after.notes[i].startSeconds, before.notes[i].startSeconds);
+                QCOMPARE(after.notes[i].endSeconds, before.notes[i].endSeconds);
+            }
+            write(root, name, originals[name]);
+        }
+
+        Session session;
+        const QString path = root.filePath("369/song.toml");
+        QVERIFY(session.openSong(path));
+        const auto &doc = session.effectiveDocument();
+        QCOMPARE(doc.measureCount(), 32);
+        QCOMPARE(doc.timeSigNumerator.valueOr(0), 3);
+        QCOMPARE(doc.timeSigDenominator.valueOr(0), 4);
+        QCOMPARE(doc.tempoBpm.valueOr(0), 96);
+        QCOMPARE(doc.keySignature.valueOr({}), QStringLiteral("Bb"));
+        QCOMPARE(doc.verseCount.valueOr(0), 3);
+        const auto breaks = doc.allPhraseBreaks();
+        QCOMPARE(breaks.size(), 7);
+        for (int i = 0; i < 7; ++i)
+            QCOMPARE(breaks.at(i), (PhraseBreak{(i + 1) * 4, 48}));
+        QCOMPARE(countBySeverity(session.findings(), Severity::Error), 0);
+        QCOMPARE(countBySeverity(session.findings(), Severity::Warning), 0);
+        const QStringList voices {"Tenor1", "Tenor2", "Baritone", "Bass"};
+        const QList<int> openings {58, 53, 50, 46};
+        const QList<int> endings {62, 58, 53, 46};
+        const QList<int> low {58, 53, 50, 41};
+        const QList<int> high {67, 62, 60, 58};
+        const auto ensemble = session.buildPlaybackPlan({});
+        for (int i = 0; i < 4; ++i) {
+            const Part *part = doc.part(voices[i]);
+            QVERIFY(part);
+            QCOMPARE(part->stream.measures().first().events.first().pitches.first().midiNote(), openings[i]);
+            const int ending = part->stream.measures().last().events.last().pitches.first().midiNote();
+            int lowest = 127, highest = 0;
+            for (const auto &measure : part->stream.measures()) {
+                for (const auto &event : measure.events) {
+                    for (const auto &pitch : event.pitches) {
+                        lowest = std::min(lowest, pitch.midiNote());
+                        highest = std::max(highest, pitch.midiNote());
+                    }
+                }
+            }
+            qInfo().noquote() << voices[i] << "opening" << openings[i] << "ending" << ending
+                              << "range" << lowest << highest;
+            if (ending != endings[i] || lowest != low[i] || highest != high[i])
+                qWarning().noquote() << "Catalog differs from the planning snapshot for" << voices[i]
+                    << "— preservation checked against the supplied source; no catalog repair applied.";
+            QCOMPARE(session.alignment(voices[i]).sections.size(), 3);
+        }
+        for (int mask = 0; mask < 16; ++mask) {
+            PlaybackOptions options;
+            for (int i = 0; i < 4; ++i) {
+                if (!(mask & (1 << i)))
+                    options.mutedParts.append(voices[i]);
+            }
+            const auto plan = session.buildPlaybackPlan(options);
+            for (const auto &note : plan.notes) {
+                QVERIFY(!options.mutedParts.contains(doc.parts[note.partIndex].name));
+                const auto original = std::find_if(ensemble.notes.cbegin(), ensemble.notes.cend(), [&](const auto &n) {
+                    return n.partIndex == note.partIndex && n.startTick == note.startTick;
+                });
+                QVERIFY(original != ensemble.notes.cend());
+                QCOMPARE(note.midiNote, original->midiNote);
+                QCOMPARE(note.startSeconds, original->startSeconds);
+            }
+        }
+        ScoreView score(&session);
+        score.setShowAllVerses(true);
+        score.resize(1280, 960);
+        score.show();
+        QCoreApplication::processEvents();
+        score.viewport()->grab();
+        const QString review = qEnvironmentVariable("OPE_REVIEW_DIR");
+        if (!review.isEmpty()) {
+            QVERIFY(QDir().mkpath(review));
+            QVERIFY(score.grab().save(QDir(review).filePath("369-score-all-verses.png")));
+        }
+        QVERIFY(!score.eventBoxes().isEmpty());
+        session.setSelection({0, 0, 0});
+        QTest::keyClick(&score, Qt::Key_Up);
+        session.undoStack()->undo();
+        QCOMPARE(session.currentBytes(), originals["369/song.toml"]);
+        score.viewport()->grab();
+        const auto beforeZoom = score.eventBoxes().first().head;
+        QWheelEvent wheel(QPointF(200, 100), score.mapToGlobal(QPoint(200, 100)),
+            QPoint(), QPoint(0, 120), Qt::NoButton, Qt::ControlModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(score.viewport(), &wheel);
+        score.viewport()->grab();
+        QVERIFY(score.eventBoxes().first().head != beforeZoom);
+        score.verticalScrollBar()->setValue(score.verticalScrollBar()->maximum());
+        score.viewport()->grab();
+        QVERIFY(std::any_of(score.eventBoxes().cbegin(), score.eventBoxes().cend(), [](const EventBox &b) {
+            return b.measureIndex == 31;
+        }));
+        if (!review.isEmpty())
+            QVERIFY(score.grab().save(QDir(review).filePath("369-score-final-zoomed.png")));
+
+        MainWindow window;
+        window.openPath(path);
+        window.show();
+        auto *inspector = window.findChild<InspectorPanel *>();
+        auto *details = window.findChild<QTabWidget *>("detailsTabs");
+        QVERIFY(inspector && details);
+        details->setCurrentWidget(inspector);
+        auto *selector = inspector->findChild<QComboBox *>("inspectorPart");
+        QVERIFY(selector);
+        selector->setCurrentIndex(0);
+        for (const QSize &size : {QSize(760, 760), QSize(1440, 1000)}) {
+            window.resize(size);
+            QCoreApplication::processEvents();
+            QCOMPARE(window.size(), size);
+            if (!review.isEmpty())
+                QVERIFY(window.grab().save(QDir(review).filePath(QStringLiteral("369-window-%1.png").arg(size.width()))));
+        }
+        // The acceptance run reads the live catalog but writes only disposable copies.
+        for (const auto &name : files) {
+            QFile file(source.filePath(name));
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            QCOMPARE(file.readAll(), originals[name]);
+        }
+    }
+
+    void inspectorRetainsUnknownMetadataAndEditsOnlyTheChosenField()
+    {
+        QTemporaryDir dir;
+        QByteArray bytes = ttbbSong();
+        bytes.replace("choral_type = \"tenor1\"", "choral_type = \" CuStOm \"");
+        const int start = bytes.indexOf("[parts.Tenor1]");
+        bytes.replace(bytes.indexOf("clef = \"tenor\"", start), 14, "clef = \"C\"");
+        bytes.insert(bytes.indexOf("notes =", start), "splice_lyrics_into = \" FutureRole \"\n");
+        bytes.replace(bytes.indexOf("staff_number = 1", start), 16, "staff_number = -42");
+        write(QDir(dir.path()), "song.toml", bytes);
+        Session session;
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        InspectorPanel panel(&session);
+        session.setSelection({3, 0, 0});
+        auto *clef = panel.findChild<QComboBox *>("partClef");
+        auto *role = panel.findChild<QComboBox *>("partRole");
+        auto *splice = panel.findChild<QComboBox *>("partSplice");
+        auto *staff = panel.findChild<QLineEdit *>("partStaff");
+        QVERIFY(clef && role && splice && staff);
+        QVERIFY(clef->currentText().contains("C"));
+        QCOMPARE(clef->currentData().toString(), QStringLiteral("c"));
+        QCOMPARE(role->currentData().toString(), QStringLiteral("custom"));
+        QCOMPARE(splice->currentData().toString(), QStringLiteral("futurerole"));
+        QCOMPARE(staff->text(), QStringLiteral("-42"));
+        QCOMPARE(session.currentBytes(), bytes);
+        staff->setText("42");
+        QMetaObject::invokeMethod(staff, "editingFinished");
+        QByteArray expected = bytes;
+        expected.replace("staff_number = -42", "staff_number = 42");
+        QCOMPARE(session.currentBytes(), expected);
+        session.undoStack()->undo();
+        QCOMPARE(session.currentBytes(), bytes);
+        session.undoStack()->redo();
+        QCOMPARE(session.currentBytes(), expected);
+        session.setSelection({0, 0, 0});
+        session.setSelection({3, 0, 0});
+        QCOMPARE(clef->currentData().toString(), QStringLiteral("c"));
+        QVERIFY(clef->currentText().contains("unrecognized"));
+        QCOMPARE(session.currentBytes(), expected);
+    }
+
+    void inspectorChoicesPreserveOmissionNormalizationAndSoundingPitch()
+    {
+        QTemporaryDir dir;
+        QByteArray bytes = ttbbSong();
+        bytes.replace("\"tenor1\"", "\" TeNoR1 \"");
+        bytes.replace("\"tenor\"", "\" TeNoR \"");
+        write(QDir(dir.path()), "song.toml", bytes);
+        Session session;
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        InspectorPanel panel(&session);
+        session.setSelection({3, 0, 0});
+        auto *clef = panel.findChild<QComboBox *>("partClef");
+        auto *role = panel.findChild<QComboBox *>("partRole");
+        QVERIFY(clef && role);
+        QCOMPARE(clef->currentData().toString(), QStringLiteral("tenor"));
+        QCOMPARE(role->currentText(), QStringLiteral("Tenor I"));
+        panel.refresh();
+        QCOMPARE(session.currentBytes(), bytes);
+        QCOMPARE(session.undoStack()->count(), 0);
+        for (const QString &value : validClefs()) {
+            clef->setCurrentIndex(clef->findData(value));
+            QCOMPARE(voicing::normalize(session.effectiveDocument().parts[3].clef.valueOr({})), value);
+            QCOMPARE(session.effectiveDocument().parts[3].stream.measures()[0].events[0].pitches[0].midiNote(), 58);
+            QCOMPARE(session.effectiveDocument().parts[3].choralType.valueOr({}), QStringLiteral(" TeNoR1 "));
+        }
+        for (const QString &value : validChoralTypes()) {
+            role->setCurrentIndex(role->findData(value));
+            QMetaObject::invokeMethod(role, "activated", Q_ARG(int, role->currentIndex()));
+            QCOMPARE(voicing::normalize(session.effectiveDocument().parts[3].choralType.valueOr({})), value);
+        }
+        while (session.undoStack()->canUndo())
+            session.undoStack()->undo();
+        QCOMPARE(session.currentBytes(), bytes);
+        // Source drafts refresh the Inspector even for unsupported values.
+        QByteArray draft = bytes;
+        draft.replace("\" TeNoR \"", "\"unsupported\"");
+        QVERIFY(session.replaceSource(session.currentLanguage(), draft));
+        QVERIFY(clef->currentText().contains("unsupported"));
+        QCOMPARE(session.currentBytes(), draft);
+    }
+
+    void inspectorCanClearAStaffAndKeepsOmittedFieldsAbsent()
+    {
+        QTemporaryDir dir;
+        write(QDir(dir.path()), "song.toml", ttbbSong());
+        Session session;
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        InspectorPanel panel(&session);
+        panel.show();
+        session.setSelection({3, 0, 0});
+        auto *staff = panel.findChild<QLineEdit *>("partStaff");
+        QVERIFY(staff);
+        staff->setFocus();
+        staff->selectAll();
+        QTest::keyClick(staff, Qt::Key_Backspace);
+        QTest::keyClick(staff, Qt::Key_Return);
+        QVERIFY(!session.document().parts[3].staffNumber.present());
+        QCOMPARE(voicing::staves(session.effectiveDocument()).size(), 3);
+        const QByteArray cleared = session.currentBytes();
+        panel.refresh();
+        QCOMPARE(session.currentBytes(), cleared);
+        session.undoStack()->undo();
+        QCOMPARE(session.currentBytes(), ttbbSong());
+    }
+
+    void inspectorEditsAnInheritedClefWithoutCopyingTheTune()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, "song.toml", ttbbSong());
+        const QByteArray overlay = "title = \"Traducción\"\n";
+        write(root, "song_es.toml", overlay);
+        Session session;
+        QVERIFY(session.openSong(root.filePath("song_es.toml")));
+        InspectorPanel panel(&session);
+        session.setSelection({3, 0, 0});
+        auto *clef = panel.findChild<QComboBox *>("partClef");
+        QVERIFY(clef);
+        QCOMPARE(session.currentBytes(), overlay);
+        clef->setCurrentIndex(clef->findData("alto"));
+        const QByteArray changed = session.currentBytes();
+        QVERIFY(changed.contains("[parts.Tenor1]\nclef = \"alto\""));
+        QVERIFY(!changed.contains("notes ="));
+        QVERIFY(!changed.contains("choral_type"));
+        QVERIFY(!changed.contains("staff_number"));
+        QCOMPARE(session.effectiveDocument().parts[3].stream.measures()[0].events[0].pitches[0].midiNote(), 58);
+        QVERIFY(session.effectiveDocument().parts[3].notesInherited);
+        QCOMPARE(countBySeverity(session.findings(), Severity::Error), 1); // partner unchanged
+        session.undoStack()->undo();
+        QCOMPARE(session.currentBytes(), overlay);
+        session.undoStack()->redo();
+        QVERIFY(session.save());
+        QVERIFY(session.openSong(root.filePath("song_es.toml")));
+        QCOMPARE(session.currentBytes(), changed);
+        QCOMPARE(io::serialize(*session.baseDocument()), ttbbSong());
+    }
+
+    void inheritedPitchEditingMaterializesOnlyThatVoiceAndUndoes()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, "song.toml", ttbbSong());
+        const QByteArray overlay = "title = \"Traducción\"\n";
+        write(root, "song_es.toml", overlay);
+        Session session;
+        QVERIFY(session.openSong(root.filePath("song_es.toml")));
+        ScoreView score(&session);
+        session.setSelection({3, 0, 0});
+        QTest::keyClick(&score, Qt::Key_Up, Qt::ControlModifier);
+        QCOMPARE(session.selectedEvent()->pitches[0].midiNote(), 70);
+        const QByteArray changed = session.currentBytes();
+        QVERIFY(changed.contains("[parts.Tenor1]"));
+        QVERIFY(changed.contains("notes ="));
+        QVERIFY(!changed.contains("clef ="));
+        QVERIFY(!changed.contains("choral_type"));
+        QVERIFY(!changed.contains("[parts.Tenor2]"));
+        QCOMPARE(session.effectiveDocument().parts[1].stream.measures()[0].events[0].pitches[0].midiNote(), 53);
+        session.undoStack()->undo();
+        QCOMPARE(session.currentBytes(), overlay);
+        QCOMPARE(session.selectedEvent()->pitches[0].midiNote(), 58);
+        session.undoStack()->redo();
+        QCOMPARE(session.currentBytes(), changed);
+    }
+
+    void ttbbCreationAndTransportKeepAllVoiceIdentities()
+    {
+        QTemporaryDir dir;
+        Library library;
+        library.setRoot(dir.path());
+        NewSongDialog dialog(&library);
+        auto *preset = dialog.findChild<QComboBox *>("newSongArrangement");
+        QVERIFY(preset);
+        QCOMPARE(preset->currentData().toString(), QStringLiteral("satb"));
+        QCOMPARE(dialog.buildDocument().parts[2].choralType.valueOr({}), QStringLiteral("tenor"));
+        preset->setCurrentIndex(preset->findData("ttbb"));
+        auto *numerator = dialog.findChild<QSpinBox *>("newSongNumerator");
+        QVERIFY(numerator);
+        numerator->setValue(3);
+        const auto doc = dialog.buildDocument();
+        const QStringList names {"Tenor1", "Tenor2", "Baritone", "Bass"};
+        for (int i = 0; i < 4; ++i) {
+            QCOMPARE(doc.parts[i].name, names.at(i));
+            QCOMPARE(doc.parts[i].staffNumber.valueOr(0), i < 2 ? 1 : 2);
+            QCOMPARE(doc.parts[i].clef.valueOr({}), i < 2 ? QStringLiteral("tenor") : QStringLiteral("bass"));
+            for (const auto &measure : doc.parts[i].stream.measures())
+                QCOMPARE(measure.playedTicks(), 144);
+        }
+        const QByteArray bytes = io::serialize(doc);
+        QVERIFY(!bytes.contains("arrangement ="));
+        write(QDir(dir.path()), "song.toml", ttbbSong());
+        Session session;
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        TransportBar transport(&session);
+        const auto checks = transport.findChildren<QCheckBox *>();
+        QCOMPARE(checks.size(), 4);
+        const QStringList labels {"T1", "T2", "Bar", "Bass"};
+        for (int i = 0; i < 4; ++i) {
+            QCOMPARE(checks.at(i)->text(), labels.at(i));
+            QCOMPARE(checks.at(i)->property("partName").toString(), names.at(i));
+            QVERIFY(checks.at(i)->accessibleName().contains(names.at(i)));
+        }
+        for (int mask = 0; mask < 16; ++mask) {
+            int count = 0;
+            for (int i = 0; i < 4; ++i) {
+                const bool audible = mask & (1 << i);
+                checks.at(i)->setChecked(audible);
+                count += audible;
+            }
+            QCOMPARE(session.buildPlaybackPlan(transport.options()).notes.size(), 3 * count);
+        }
+        for (int i = 0; i < 4; ++i)
+            checks[i]->setChecked(i == 0);
+        transport.refresh();
+        QCOMPARE(transport.options().mutedParts.size(), 3);
+        QVERIFY(!transport.options().mutedParts.contains("Tenor1"));
+        preset->setCurrentIndex(preset->findData("single"));
+        QCOMPARE(dialog.buildDocument().parts.size(), 1);
+        QCOMPARE(dialog.buildDocument().parts.first().name, QStringLiteral("Soprano"));
+    }
+
+    void scoreUsesSoundingClefGeometry_data()
+    {
+        QTest::addColumn<QString>("clef");
+        QTest::addColumn<double>("spacesBelowTop");
+        QTest::newRow("treble C4 below staff") << QStringLiteral("treble") << 5.0;
+        QTest::newRow("bass C4 above staff") << QStringLiteral("bass") << -1.0;
+        QTest::newRow("octave treble C4") << QStringLiteral("treble_8") << 1.5;
+        QTest::newRow("alto middle C") << QStringLiteral("alto") << 2.0;
+        QTest::newRow("tenor fourth line C") << QStringLiteral("tenor") << 1.0;
+    }
+
+    void scoreUsesSoundingClefGeometry()
+    {
+        QFETCH(QString, clef);
+        QFETCH(double, spacesBelowTop);
+        QTemporaryDir dir;
+        const QByteArray bytes = "title = \"Geometry\"\n[parts.Solo]\nclef = \"" + clef.toUtf8() + "\"\nnotes = \"c'4 d'4 e'4 f'4\"\n";
+        write(QDir(dir.path()), "song.toml", bytes);
+        Session session;
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        ScoreView score(&session);
+        score.resize(700, 400);
+        score.show();
+        QCoreApplication::processEvents();
+        const QImage image = score.viewport()->grab().toImage();
+        QVERIFY(!score.eventBoxes().isEmpty());
+        const auto box = score.eventBoxes().first();
+        const auto staff = score.systems().first().staves.first();
+        QCOMPARE(box.head.y(), staff.top + spacesBelowTop * 7.5);
+        QCOMPARE(box.stemUp, spacesBelowTop > 2.0); // free stems about the middle line
+        QVERIFY(!box.stem.isNull());
+        QCOMPARE(qAbs(box.stem.dy()), 24.75);
+        QVERIFY(box.stem.p2().y() >= 0); // the staff reserves room for high notes
+        if (clef == "treble" || clef == "bass") {
+            // A half-pixel staff offset can put the antialiased stroke in the
+            // neighboring row. Sample its width, beyond the notehead itself.
+            const qreal ratio = image.devicePixelRatio();
+            const int x = qRound((box.head.x() + 6.5) * ratio);
+            int darkest = 255;
+            for (int y = qFloor((box.head.y() - 0.5) * ratio);
+                 y <= qCeil((box.head.y() + 0.5) * ratio); ++y)
+                darkest = std::min(darkest, image.pixelColor(x, y).red());
+            QVERIFY(darkest < 200); // the C4 ledger line is visible
+        }
+        QTest::mouseClick(score.viewport(), Qt::LeftButton, Qt::NoModifier, box.head.toPoint());
+        QCOMPARE(session.selection().partIndex, 0);
+        QCOMPARE(session.selectedEvent()->pitches[0].midiNote(), 60);
+        QCOMPARE(session.currentBytes(), bytes);
+    }
+
+    void sharedUnisonsCrossingsAndVisibleNavigationEditTheIntendedVoice()
+    {
+        QTemporaryDir dir;
+        QByteArray bytes = ttbbSong();
+        bytes.replace("bes2 c'4 | d'2.", "c'4 bes4 a4 | d'2.");
+        bytes.replace("f2 a4 | bes2.", "c'4 d'4 e'4 | bes2.");
+        write(QDir(dir.path()), "song.toml", bytes);
+        Session session;
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        ScoreView score(&session);
+        score.resize(1000, 800);
+        score.show();
+        QCoreApplication::processEvents();
+        score.viewport()->grab();
+        const auto findBox = [&](int part, int event) {
+            for (const auto &box : score.eventBoxes()) {
+                if (box.partIndex == part && box.measureIndex == 0 && box.eventIndex == event)
+                    return box;
+            }
+            return EventBox{};
+        };
+        const auto up = findBox(3, 0);
+        const auto down = findBox(1, 0);
+        QCOMPARE(up.head, down.head);
+        QVERIFY(up.stemUp);
+        QVERIFY(!down.stemUp);
+        // Each stem remains a separate editing target at a shared unison.
+        QTest::mouseClick(score.viewport(), Qt::LeftButton, Qt::NoModifier, up.stem.pointAt(0.8).toPoint());
+        QCOMPARE(session.selection().partIndex, 3);
+        QTest::mouseClick(score.viewport(), Qt::LeftButton, Qt::NoModifier, down.stem.pointAt(0.8).toPoint());
+        QCOMPARE(session.selection().partIndex, 1);
+        QTest::mouseClick(score.viewport(), Qt::LeftButton, Qt::NoModifier, up.head.toPoint());
+        QCOMPARE(session.selection().partIndex, 3); // repeated heads cycle voices
+        QTest::keyClick(&score, Qt::Key_Up);
+        QCOMPARE(session.selectedEvent()->pitches[0].midiNote(), 62);
+        QCOMPARE(session.effectiveDocument().parts[1].stream.measures()[0].events[0].pitches[0].midiNote(), 60);
+        session.undoStack()->undo();
+        QCOMPARE(session.currentBytes(), bytes);
+        for (int index : {1, 2, 0}) {
+            QTest::keyClick(&score, Qt::Key_Down, Qt::AltModifier);
+            QCOMPARE(session.selection().partIndex, index);
+        }
+        score.viewport()->grab();
+        QVERIFY(findBox(3, 2).stemUp); // lower pitch still the upper voice
+        QVERIFY(!findBox(1, 2).stemUp);
+        QVERIFY(findBox(3, 2).head.y() > findBox(1, 2).head.y());
+        score.setShowAllVerses(true);
+        score.viewport()->grab();
+        QVERIFY(score.systems().first().rulerTop > score.systems().first().staves.last().lyricTop);
+    }
+
+    void unsupportedAndConflictingClefsNeverRenderAsTreble()
+    {
+        QTemporaryDir dir;
+        QByteArray bytes = ttbbSong();
+        bytes.replace("clef = \"tenor\"", "clef = \"C\"");
+        write(QDir(dir.path()), "song.toml", bytes);
+        Session session;
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        ScoreView score(&session);
+        InspectorPanel inspector(&session);
+        score.resize(700, 500);
+        score.show();
+        QCoreApplication::processEvents();
+        score.viewport()->grab();
+        QVERIFY(!score.systems().first().staves.first().clef);
+        QVERIFY(score.systems().first().staves.first().problem.contains("unsupported"));
+        for (const auto &box : score.eventBoxes())
+            QVERIFY(box.partIndex != 1 && box.partIndex != 3);
+        auto *parts = inspector.findChild<QComboBox *>("inspectorPart");
+        QVERIFY(parts);
+        parts->setCurrentIndex(parts->findData(3));
+        QCOMPARE(session.selection().partIndex, 3);
+        QCOMPARE(session.currentBytes(), bytes);
+    }
+
+    void pendingLyricsSurviveRoleReorderingAndLabelRefresh()
+    {
+        QTemporaryDir dir;
+        write(QDir(dir.path()), "song.toml", ttbbSong());
+        Session session;
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        LyricsPanel lyrics(&session);
+        auto *editor = editorWithText(lyrics, "one two three");
+        QVERIFY(editor);
+        editor->setPlainText("new words here");
+        session.mutate("Change role", [](SongDocument &doc) {
+            doc.part(u"Tenor1")->choralType.set("bass");
+        });
+        QVERIFY(editorWithText(lyrics, "new words here"));
+        lyrics.commitPendingEdits();
+        QCOMPARE(session.effectiveDocument().lyrics["1"].rawText, QStringLiteral("new words here"));
+        QCOMPARE(session.effectiveDocument().parts[3].name, QStringLiteral("Tenor1"));
+    }
+
     void lyricsTabAddsVerseAndPreservesTyping()
     {
         QTemporaryDir dir;
@@ -385,7 +911,7 @@ private Q_SLOTS:
         QCOMPARE(window.width(), 760);
         QVERIFY(transport->horizontalScrollBar()->maximum() > 0);
         QTest::mouseClick(score->viewport(), Qt::LeftButton, Qt::NoModifier,
-            QPoint(68, 49));
+            score->eventBoxes().first().head.toPoint());
         QVERIFY(noteInfo->text().startsWith(QStringLiteral("token")));
         QCOMPARE(sourceEditor->extraSelections().size(), 1);
         QCOMPARE(sourceEditor->extraSelections().constFirst().cursor.selectedText(),

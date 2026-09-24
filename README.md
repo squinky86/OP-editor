@@ -28,9 +28,13 @@ For task-oriented instructions, start with
   own text on top, and under it a box per voice that overrides it, each labelled
   with the voice and the TOML table it writes, each counted against *that*
   voice's slots, and each revertible in one click.
-- **Plays the hymn.** All voices, any verse, with per-part mute and a tempo
-  override — using the same tempo, velocity, and tie rules as the site's MIDI
-  export, so what you hear is what the site renders.
+- **Supports SATB, TTBB and solo voices.** Treble, bass, octave treble, alto
+  and tenor C clefs place absolute sounding pitches without transposing them.
+  New Song offers SATB, TTBB and single-voice presets; song 369 is the TTBB example.
+- **Plays the hymn.** Per-part mute, distinct T1/T2/Bar/Bass controls, and a tempo
+  override help check each voice. Tempo spans follow the authored arrangement
+  lead even when muted. See the [monitoring limits](docs/getting-started.md#playback-monitoring)
+  for differences from the site's MIDI export.
 - **Keeps diffs honest.** Saving a song rewrites only the bytes you changed.
   Opening and saving any of the 200-plus songs in OP-songs without editing
   produces a byte-identical file; this is enforced by a test.
@@ -49,6 +53,19 @@ Source remain visible as independently resizable and collapsible vertical panes.
 Source edits the exact bytes directly with TOML highlighting and word wrapping;
 valid edits immediately update every structured pane, while invalid TOML pauses
 Save and structured editing until it is fixed or reverted.
+
+The documented roles are `soprano`, `alto`, `tenor`, `bass`, `tenor1`, `tenor2`
+and `baritone`. Part table names remain stable identifiers. Clefs are `treble`,
+`bass`, `treble_8` (8vb), `alto` (C4 on line 3) and `tenor` (C4 on line 4).
+Notes always mean sounding pitches: `c` = C3/MIDI 48 and `c'` = C4/MIDI 60.
+Opening song 369 or changing its clef does not repeat its earlier octave repair.
+
+Tempo markers belong to the first part in ordinary role order:
+Soprano, Tenor I, Alto, Tenor II, Tenor, Baritone, Bass, then custom roles.
+Numbered siblings sort numerically. Shared numbered staves must agree on clef;
+omitting a staff keeps that part separate. Unsupported clefs and staff conflicts
+appear as errors in the score and in contribution/download checks. Inspector
+preserves current unknown values and edits only the field you change.
 
 ## Building
 
@@ -213,6 +230,20 @@ cmake -S . -B build-sanitize -DCMAKE_BUILD_TYPE=Debug -DOPE_ENABLE_SANITIZERS=ON
 cmake --build build-sanitize -j
 ASAN_OPTIONS=detect_leaks=0 ctest --test-dir build-sanitize --output-on-failure
 ```
+
+The optional local acceptance check copies song 369, representative SATB songs,
+and 162/es into temporary storage before editing them. It requires those catalog
+files explicitly and leaves the originals untouched:
+
+```sh
+OPE_ACCEPTANCE_SONGS_DIR=/path/to/OP-songs QT_QPA_PLATFORM=offscreen \
+  XDG_CONFIG_HOME="$(mktemp -d)" XDG_DATA_HOME="$(mktemp -d)" \
+  build/tests/UiWorkflowTests localCatalogAcceptance
+```
+
+Set `OPE_REVIEW_DIR` to a scratch directory to capture the compact/large windows
+and score screenshots. [The clef validation record](docs/clef-support-validation.md)
+records the implementation checks and known baseline differences.
 
 `FormatTests` and `DocumentTests` are ports of the unit tests in OpenPsalm's
 `src/seed/` — where they disagree with the Rust seeder, the seeder is right and

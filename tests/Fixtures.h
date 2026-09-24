@@ -27,5 +27,7 @@ QByteArray timing();
 QByteArray tied();
 QByteArray dynamics();
 QByteArray sopranoNotesOverride();
+QByteArray ttbbSong();
+QByteArray ttbbTempo();
 
 } // namespace ope::fixtures

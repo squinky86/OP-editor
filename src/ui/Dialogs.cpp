@@ -100,9 +100,11 @@ NewSongDialog::NewSongDialog(Library *library, QWidget *parent)
     m_key->addItems(validKeySignatures());
     m_key->setCurrentText(QStringLiteral("C"));
     m_numerator = new QSpinBox(this);
+    m_numerator->setObjectName(QStringLiteral("newSongNumerator"));
     m_numerator->setRange(1, 32);
     m_numerator->setValue(4);
     m_denominator = makeDenominatorBox(this, 4);
+    m_denominator->setObjectName(QStringLiteral("newSongDenominator"));
     m_tempo = new QSpinBox(this);
     m_tempo->setRange(20, 300);
     m_tempo->setValue(100);
@@ -112,8 +114,12 @@ NewSongDialog::NewSongDialog(Library *library, QWidget *parent)
     m_measures = new QSpinBox(this);
     m_measures->setRange(1, 400);
     m_measures->setValue(8);
-    m_satb = new QCheckBox(tr("Soprano, Alto, Tenor, Bass"), this);
-    m_satb->setChecked(true);
+    m_arrangement = new QComboBox(this);
+    m_arrangement->setObjectName(QStringLiteral("newSongArrangement"));
+    m_arrangement->addItem(tr("SATB — Soprano, Alto, Tenor, Bass"), QStringLiteral("satb"));
+    m_arrangement->addItem(tr("TTBB — Tenor I, Tenor II, Baritone, Bass"), QStringLiteral("ttbb"));
+    m_arrangement->addItem(tr("Single voice — Soprano"), QStringLiteral("single"));
+    m_arrangement->setToolTip(tr("Creates ordinary part metadata. TTBB uses tenor C clef above bass clef; pitches are always sounding pitches."));
     m_wordsBy = new QLineEdit(this);
     m_wordsBy->setPlaceholderText(tr("Anna B. Warner, 1860"));
     m_musicBy = new QLineEdit(this);
@@ -134,7 +140,7 @@ NewSongDialog::NewSongDialog(Library *library, QWidget *parent)
     layout->addRow(tr("Tempo"), m_tempo);
     layout->addRow(tr("Verses"), m_verses);
     layout->addRow(tr("Empty measures"), m_measures);
-    layout->addRow(tr("Parts"), m_satb);
+    layout->addRow(tr("Parts"), m_arrangement);
     layout->addRow(tr("Words by"), m_wordsBy);
     layout->addRow(tr("Music by"), m_musicBy);
 
@@ -214,11 +220,16 @@ SongDocument NewSongDialog::buildDocument() const
         int staff;
     };
     QList<PartSpec> specs;
-    if (m_satb->isChecked()) {
+    if (m_arrangement->currentData() == QStringLiteral("satb")) {
         specs = { { QStringLiteral("Soprano"), QStringLiteral("soprano"),
                       QStringLiteral("treble"), 1 },
             { QStringLiteral("Alto"), QStringLiteral("alto"), QStringLiteral("treble"), 1 },
             { QStringLiteral("Tenor"), QStringLiteral("tenor"), QStringLiteral("bass"), 2 },
+            { QStringLiteral("Bass"), QStringLiteral("bass"), QStringLiteral("bass"), 2 } };
+    } else if (m_arrangement->currentData() == QStringLiteral("ttbb")) {
+        specs = { { QStringLiteral("Tenor1"), QStringLiteral("tenor1"), QStringLiteral("tenor"), 1 },
+            { QStringLiteral("Tenor2"), QStringLiteral("tenor2"), QStringLiteral("tenor"), 1 },
+            { QStringLiteral("Baritone"), QStringLiteral("baritone"), QStringLiteral("bass"), 2 },
             { QStringLiteral("Bass"), QStringLiteral("bass"), QStringLiteral("bass"), 2 } };
     } else {
         specs = { { QStringLiteral("Soprano"), QStringLiteral("soprano"),

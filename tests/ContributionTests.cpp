@@ -45,6 +45,25 @@ class ContributionTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void ttbbProposalsPassAndClefConflictsBlockPreflight()
+    {
+        QTemporaryDir output;
+        Request request = correction(output.path());
+        request.baselineToml = ttbbSong();
+        request.proposedToml = request.baselineToml;
+        request.proposedToml.replace("TTBB fixture", "Reviewed TTBB");
+        const auto valid = prepare(request);
+        QVERIFY2(valid, qPrintable(valid ? QString() : valid.error()));
+        QCOMPARE(valid->checks.warnings, 0);
+        QCOMPARE(readAll(valid->proposedFile), request.proposedToml);
+        request.proposedToml.replace("clef = \"tenor\"", "clef = \"C\"");
+        QVERIFY(!prepare(request));
+        request.proposedToml = ttbbSong();
+        const int value = request.proposedToml.indexOf("clef = \"tenor\"");
+        request.proposedToml.replace(value, 14, "clef = \"alto\"");
+        QVERIFY(!prepare(request));
+    }
+
     void correctionCreatesCheckedReviewBundleAndZip()
     {
         QTemporaryDir output;

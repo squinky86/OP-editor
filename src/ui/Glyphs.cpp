@@ -231,6 +231,27 @@ QPainterPath flat()
     return outline.simplified();
 }
 
+QPainterPath cClef()
+{
+    // Two vertical bars and mirrored lobes meeting at the C reference line.
+    // Origin is the central inward point, not the glyph's bounding-box centre.
+    QPainterPath path;
+    path.addRect(QRectF(-0.65, -2.0, 0.28, 4.0));
+    path.addRect(QRectF(-0.22, -2.0, 0.10, 4.0));
+    QPainterPath upper;
+    upper.moveTo(0.0, 0.0);
+    upper.cubicTo(0.45, -0.3, 0.28, -0.8, 0.38, -1.0);
+    upper.cubicTo(0.45, -0.55, 1.05, -0.55, 1.2, -1.1);
+    upper.cubicTo(1.45, -2.0, 0.25, -2.4, 0.15, -1.65);
+    upper.cubicTo(0.30, -1.95, 0.80, -1.85, 0.77, -1.3);
+    upper.cubicTo(0.72, -0.88, 0.43, -0.94, 0.34, -1.30);
+    upper.cubicTo(0.07, -1.02, 0.35, -0.35, 0.0, 0.0);
+    upper.closeSubpath();
+    path.addPath(upper);
+    path.addPath(QTransform::fromScale(1, -1).map(upper));
+    return path.simplified();
+}
+
 QPainterPath natural()
 {
     QPainterPath path;

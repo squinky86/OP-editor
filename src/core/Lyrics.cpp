@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jon Hood, OpenPsalm.com
 
 #include "Lyrics.h"
+#include "Voicing.h"
 
 #include <QRegularExpression>
 #include <QSet>
@@ -224,14 +225,14 @@ SpliceReport analyseSplice(const SongDocument &doc, const Part &part)
         return report;
 
     report.configured = true;
-    report.targetChoralType = part.spliceLyricsInto->toLower();
+    report.targetChoralType = voicing::normalize(*part.spliceLyricsInto);
 
     const Part *target = nullptr;
-    for (const Part &candidate : doc.parts) {
-        if (candidate.name == part.name)
+    for (const Part *candidate : doc.partsInDisplayOrder()) {
+        if (candidate->name == part.name)
             continue;
-        if (candidate.choralType.valueOr(QString()).toLower() == report.targetChoralType) {
-            target = &candidate;
+        if (voicing::normalize(candidate->choralType.valueOr({})) == report.targetChoralType) {
+            target = candidate;
             break;
         }
     }

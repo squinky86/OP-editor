@@ -37,6 +37,8 @@ enum class AikenShape { Do, Re, Mi, Fa, Sol, La, Ti };
 [[nodiscard]] QPainterPath trebleClef();
 /// Bass clef, drawn with the F line at the origin.
 [[nodiscard]] QPainterPath bassClef();
+/// Standard C clef, centred vertically on C4 (line 3 for alto, 4 for tenor).
+[[nodiscard]] QPainterPath cClef();
 /// Accidentals, centred vertically on the origin.
 [[nodiscard]] QPainterPath sharp();
 [[nodiscard]] QPainterPath flat();

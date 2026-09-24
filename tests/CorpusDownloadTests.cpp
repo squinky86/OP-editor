@@ -404,11 +404,19 @@ private Q_SLOTS:
             0);
     }
 
+    void validatedDownloadReplacesCorpusAndRetainsBackup_data()
+    {
+        QTest::addColumn<QByteArray>("song");
+        QTest::newRow("SATB") << baseSong();
+        QTest::newRow("TTBB") << ttbbSong();
+    }
+
     void validatedDownloadReplacesCorpusAndRetainsBackup()
     {
+        QFETCH(QByteArray, song);
         QTemporaryDir temporary;
         QVERIFY(temporary.isValid());
-        const QByteArray zip = archiveBytes(temporary, baseSong());
+        const QByteArray zip = archiveBytes(temporary, song);
         QVERIFY(!zip.isEmpty());
         const QString target = temporary.filePath(QStringLiteral("installed"));
         const QString sentinel = QDir(target).filePath(QStringLiteral("sentinel.txt"));
@@ -423,7 +431,7 @@ private Q_SLOTS:
         dialog.show();
 
         QTRY_VERIFY_WITH_TIMEOUT(hasLabel(dialog, QStringLiteral("corpus is ready")), 5000);
-        QCOMPARE(readFile(QDir(target).filePath(QStringLiteral("42/song.toml"))), baseSong());
+        QCOMPARE(readFile(QDir(target).filePath(QStringLiteral("42/song.toml"))), song);
         QVERIFY(QFileInfo::exists(
             QDir(target).filePath(QStringLiteral(".openpsalm-snapshot.json"))));
         const auto snapshot = corpus::readSnapshot(target);

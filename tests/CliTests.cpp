@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jon Hood, OpenPsalm.com
 
 #include "cli/Cli.h"
+#include "Fixtures.h"
 
 #include <QDir>
 #include <QFile>
@@ -14,6 +15,34 @@ class CliTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void ttbbCorpusAndOverlayUseTheSharedValidator()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        QVERIFY(root.mkpath("369"));
+        const auto write = [&](const QString &name, const QByteArray &bytes) {
+            QFile file(root.filePath(name));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            QCOMPARE(file.write(bytes), bytes.size());
+        };
+        write("369/song.toml", ope::fixtures::ttbbSong());
+        Options options;
+        options.root = dir.path();
+        options.quiet = true;
+        const auto valid = check(options);
+        QVERIFY(valid.passed());
+        QCOMPARE(valid.files, 1);
+        QCOMPARE(valid.warnings, 0);
+        write("369/song_es.toml", "title = \"Translated\"\n[parts.Tenor1]\nclef = \"alto\"\n");
+        options.root = root.filePath("369/song_es.toml");
+        const auto conflict = check(options);
+        QCOMPARE(conflict.errors, 1);
+        QVERIFY(!conflict.passed());
+        QCOMPARE(run(options), 1);
+        write("369/song_es.toml", "title = \"Translated\"\n[parts.Tenor1]\nclef = \" TENOR \"\n");
+        QVERIFY(check(options).passed());
+    }
+
     void parsesQuietAndPositiveLimit()
     {
         Options options;

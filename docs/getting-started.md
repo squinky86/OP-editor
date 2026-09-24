@@ -113,6 +113,73 @@ A contribution-ready corpus has zero parse failures, round-trip changes,
 re-emission mismatches, and errors. Warnings should be reviewed, not blindly
 suppressed.
 
+### Clefs, voice roles and new songs
+
+**File ▸ New Song** offers SATB (the default), TTBB and Single voice. TTBB
+creates Tenor1/Tenor2 on staff 1 with tenor clef and Baritone/Bass on staff 2
+with bass clef. The preset writes ordinary part fields; there is no arrangement
+flag and it does not convert existing songs. Song 369, “Hide Me, Lord, in Thy
+Pavilion!”, is an existing TTBB example.
+
+Select a note or choose its part directly in **Inspector**. The part selector
+also works when invalid clef metadata prevents score placement. Clef choices are:
+
+| Clef | Reference | Sounding bottom line |
+|---|---|---|
+| Treble (`treble`) | G on line 2 | E4 |
+| Bass (`bass`) | F on line 4 | G2 |
+| Treble 8vb (`treble_8`) | G on line 2, octave 8 below | E3 |
+| Alto (`alto`) | C4 on line 3 | F3 |
+| Tenor (`tenor`) | C4 on line 4 | D3 |
+
+Lines are counted from the bottom. Notes encode **absolute sounding pitch**:
+`c` = C3/MIDI 48, `c'` = C4/MIDI 60. A clef edit moves notes on the screen;
+their stored and played pitches stay the same. Song 369 has already had its
+octave repair. Baritone is a role using bass clef, not a supported clef name;
+bare `C` is also unsupported.
+
+Roles are `soprano`, `alto`, `tenor`, `bass`, `tenor1`, `tenor2`, `baritone`.
+Roles identify voices independently of table names, clefs and pitch crossings.
+Tenor I and II are distinct; `tenor` still names the SATB tenor. Suppression and
+splice targets use those exact normalized role names. Missing targets produce
+findings and retain the authored lyrics. Custom roles remain editable with a
+warning. Recognized role/clef values are interpreted without regard to case or
+surrounding spaces, while unchanged source bytes are retained.
+
+Parts explicitly sharing a positive staff number must have the same effective
+clef. An omitted clef means treble; an omitted staff means a separate staff.
+An invalid or conflicting staff shows a diagnostic instead of guessed notation.
+Clef changes affect only the chosen part, including in a translation. Change its
+partner deliberately if they should continue sharing a staff.
+
+**Alt+Up/Down** follows visible staff/voice order and keeps the musical beat
+when rhythms differ. At a shared unison, click either stem or click the common
+notehead again to select the other voice. Lyrics with different words or timing
+have separate score rows; identical rows on the same staff share space. Lyrics
+editors keep their exact TOML table identities and pending text during role edits.
+
+### Playback monitoring
+
+The transport labels TTBB voices **T1**, **T2**, **Bar**, **Bass**. Uncheck a voice
+to mute it; repeated roles retain their individual part names and mute state.
+Unchecking every part produces silence. Clefs never transpose audio.
+
+Tempo spanners belong to one authored lead: the first part in the order
+Soprano, Tenor I, Alto, Tenor II, Tenor, Baritone, Bass, then custom roles.
+Within a role, numeric suffixes sort numerically (Bass, Bass2, Bass10). This is
+normally Soprano for SATB and Tenor I for TTBB. Muting the lead preserves its
+tempo map. Markers on another part are reported and do not take over playback.
+Ramps use the website's eight MIDI tempo steps, reach the target on the final
+note's onset, and restore the song tempo after that note.
+
+OPE plays the authored stream once for monitoring; verse selection chooses the
+displayed lyrics. Existing differences from website playback remain: hairpins
+use a simple per-event velocity ramp, staccato retains the full note duration,
+and fine tuplets round to the editor's 48 ticks per quarter. The playback cursor
+interpolates within each measure. MIDI/MP3 export and its full performance
+rendering remain website features. Tempo tests compare a synthetic TTBB span
+with the current website exporter, including a muted lead and differing rhythms.
+
 ## 4. Save without losing external work
 
 Choose **Save Current** for the selected language or **Save All** for every dirty

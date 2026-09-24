@@ -7,6 +7,8 @@ add_library(ope_core STATIC
     core/Toml.cpp
     core/Notation.cpp
     core/Song.cpp
+    core/Clefs.cpp
+    core/Voicing.cpp
     core/Lyrics.cpp
     core/Validator.cpp
     core/Library.cpp

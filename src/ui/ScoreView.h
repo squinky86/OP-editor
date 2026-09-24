@@ -11,6 +11,8 @@
 #pragma once
 
 #include "app/Session.h"
+#include "core/Voicing.h"
+#include <QLineF>
 
 #include <QAbstractScrollArea>
 #include <QHash>
@@ -26,6 +28,7 @@ struct EventBox {
     QRectF rect;      ///< hit-test area
     QPointF head;     ///< notehead centre
     bool stemUp = true;
+    QLineF stem;      ///< also selectable when independent voices share a head
 };
 
 /// How wide each rhythmic position in a measure has to be.
@@ -56,11 +59,11 @@ struct MeasureBox {
 };
 
 /// A staff group: every part sharing one staff_number.
-struct StaffBox {
-    int staffNumber = 1;
-    QList<int> partIndices;
-    QString clef;
+struct StaffBox : voicing::Staff {
     qreal top = 0;  ///< y of the top staff line
+    qreal lyricTop = 0;
+    QMap<int, int> lyricRowOffsets;  ///< one row group per distinct lyric stream
+
 };
 
 /// One horizontal band of music.
@@ -69,9 +72,7 @@ struct SystemBox {
     int lastMeasure = 0;
     qreal top = 0;
     qreal height = 0;
-    qreal lyricTop = 0;   ///< first lyric row baseline
     qreal rulerTop = 0;   ///< first phrase-ruler lane
-    int lyricRows = 0;
     QList<MeasureBox> measures;
     QList<StaffBox> staves;
 };
@@ -91,6 +92,9 @@ public:
     void setPlaybackTick(int tick);
     void clearPlaybackTick();
     void relayout();
+    /// Content coordinates from the current layout/paint, also used for hit testing.
+    [[nodiscard]] const QList<EventBox> &eventBoxes() const { return m_boxes; }
+    [[nodiscard]] const QList<SystemBox> &systems() const { return m_systems; }
 
 Q_SIGNALS:
     void statusMessage(const QString &message);
@@ -115,7 +119,7 @@ private:
     void paintPhraseRuler(QPainter &painter, const SystemBox &system);
     void paintMeasureProblems(QPainter &painter, const SystemBox &system);
 
-    [[nodiscard]] qreal staffPositionFor(const Pitch &pitch, const QString &clef) const;
+    [[nodiscard]] qreal staffPositionFor(const Pitch &pitch, const clefs::Clef &clef) const;
     /// True when this verse row is drawn under the staff at the moment.
     [[nodiscard]] bool showsSection(const AttachedSection &section) const;
     /// The font syllables are set in; layout needs its metrics as much as
@@ -125,7 +129,7 @@ private:
     [[nodiscard]] MeasureGrid buildGrid(int measureIndex) const;
     /// Where a note starting at `tick` inside `box` is drawn.
     [[nodiscard]] qreal xForTick(const MeasureBox &box, int tick) const;
-    [[nodiscard]] const EventBox *hitTest(QPointF point) const;
+    [[nodiscard]] const EventBox *hitTest(QPointF point, bool cycle = false) const;
     [[nodiscard]] int measureAtX(const SystemBox &system, qreal x) const;
     /// Which phrase-ruler lane `y` falls in (0 required, 1 optional, 2
     /// non-breaking), or -1 for none.
@@ -160,6 +164,8 @@ private:
     QList<EventBox> m_boxes;
     QHash<int, int> m_measureToSystem;
     qreal m_staffSpace = 7.5;   ///< pixels per staff space; the zoom control
+    qreal m_leftMargin = 0;
+    QList<int> m_visibleParts;
     qreal m_contentHeight = 0;
     qreal m_contentWidth = 0;
     bool m_phrased = true;

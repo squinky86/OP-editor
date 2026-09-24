@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jon Hood, OpenPsalm.com
 
 #include "Song.h"
+#include "Voicing.h"
 
 #include <QDir>
 #include <QFile>
@@ -182,30 +183,6 @@ QStringList LyricSection::syllableTypes() const
     return types;
 }
 
-int Part::sortRank() const
-{
-    const QString lower = name.toLower();
-    qsizetype digitAt = lower.size();
-    for (qsizetype i = 0; i < lower.size(); ++i) {
-        if (lower.at(i).isDigit()) {
-            digitAt = i;
-            break;
-        }
-    }
-    const QString base = lower.first(digitAt).trimmed();
-    int rank = 99;
-    if (base == QLatin1String("soprano"))
-        rank = 1;
-    else if (base == QLatin1String("alto"))
-        rank = 2;
-    else if (base == QLatin1String("tenor"))
-        rank = 3;
-    else if (base == QLatin1String("bass"))
-        rank = 4;
-    const int suffix = lower.sliced(digitAt).trimmed().toInt();
-    return rank * 100 + suffix;
-}
-
 void Part::reparse()
 {
     tokenIssues.clear();
@@ -233,6 +210,18 @@ Part *SongDocument::part(QStringView name)
     return nullptr;
 }
 
+Part &SongDocument::ensurePart(const QString &name)
+{
+    if (Part *existing = part(name))
+        return *existing;
+    Part added;
+    added.name = name;
+    added.tablePath = { QStringLiteral("parts"), name };
+    added.isNew = true;
+    parts.append(added);
+    return parts.last();
+}
+
 QList<const Part *> SongDocument::partsInDisplayOrder() const
 {
     QList<const Part *> out;
@@ -240,9 +229,7 @@ QList<const Part *> SongDocument::partsInDisplayOrder() const
     for (const Part &item : parts)
         out.append(&item);
     std::stable_sort(out.begin(), out.end(), [](const Part *a, const Part *b) {
-        if (a->sortRank() != b->sortRank())
-            return a->sortRank() < b->sortRank();
-        return a->name.toLower() < b->name.toLower();
+        return voicing::less(*a, *b);
     });
     return out;
 }
@@ -713,7 +700,8 @@ QByteArray emitPartTable(const Part &part)
     if (part.suppressVersesWhen.present())
         out += "suppress_verses_when = " + toml::emitStringArrayInline(*part.suppressVersesWhen)
             + "\n";
-    out += "notes = " + toml::emitMultilineString(part.stream.toSource()) + "\n";
+    if (part.notes.present() || !part.stream.measures().isEmpty())
+        out += "notes = " + toml::emitMultilineString(part.stream.toSource()) + "\n";
     return out;
 }
 
@@ -856,7 +844,12 @@ QByteArray serialize(const SongDocument &doc)
     // Parts.
     for (const Part &part : doc.parts) {
         if (part.isNew) {
-            edit.insert(doc.originalBytes.size(), "\n" + emitPartTable(part));
+            QByteArray block = "\n" + emitPartTable(part);
+            for (const QString &key : SongDocument::orderedLyricKeys(part.lyrics.keys()))
+                block += "\n" + emitLyricTable(
+                    { QStringLiteral("parts"), part.name, QStringLiteral("lyrics"), key },
+                    part.lyrics.value(key));
+            edit.insert(doc.originalBytes.size(), block);
             continue;
         }
         splicePartField(edit, doc, part, QStringLiteral("choral_type"), part.choralType.present(),
@@ -1070,9 +1063,9 @@ void materialiseOverlayLyrics(
         target = &overlay.lyrics;
     } else {
         const Part *from = merged.part(partName);
-        Part *to = overlay.part(partName);
-        if (!from || !to)
+        if (!from)
             return;
+        Part *to = &overlay.ensurePart(partName);
         inherited = &from->lyrics;
         target = &to->lyrics;
     }
@@ -1080,6 +1073,21 @@ void materialiseOverlayLyrics(
         return;
     for (auto it = inherited->constBegin(); it != inherited->constEnd(); ++it)
         SongDocument::setLyric(*target, it.key(), it->rawText);
+}
+
+void materialiseOverlayNotes(
+    SongDocument &overlay, const SongDocument &merged, const QString &partName)
+{
+    const Part *from = merged.part(partName);
+    if (!overlay.isOverlay || !from)
+        return;
+    Part &to = overlay.ensurePart(partName);
+    if (to.notes.present() && !to.notes->trimmed().isEmpty())
+        return;
+    // The following structured edit dirties the stream. Bind, rather than set,
+    // so Session doesn't reparse the old text over that edited stream.
+    to.notes.bind(from->stream.toSource(), to.notes.span());
+    to.stream = from->stream;
 }
 
 SongDocument mergeOverlay(const SongDocument &base, const SongDocument &overlay)

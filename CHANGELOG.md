@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.0 — TTBB and C clefs
+
+- Added alto and tenor C clefs, corrected the sounding-pitch anchor for treble
+  8vb, and supported Tenor I, Tenor II and Baritone roles throughout the editor.
+  All clef edits preserve absolute sounding pitch; song 369 needs no further
+  octave adjustment.
+- Shared role ordering, labels, staff grouping, stem directions and tempo-lead
+  policies across core and UI. Invalid clefs, nonpositive staves and conflicting
+  shared clefs now block contribution/download validation.
+- Added TTBB and single-voice New Song presets alongside the existing SATB default.
+- Made Inspector preserve unknown, normalized and omitted values, edit only
+  changed fields, and select parts even when their clefs cannot be displayed.
+  Translation edits materialize only the needed metadata, notes or lyric map.
+- Added distinct voice controls, visible-order keyboard navigation, selectable
+  stems/cycling at unisons, separate lyric rows for differing streams, and
+  preservation of pending lyric edits during role changes.
+- Matched tempo ramp boundaries, MIDI-step rounding and restoration to the
+  website; a muted authored lead retains global tempo ownership.
+- Added standalone TTBB core, widget, playback, audio, CLI, contribution and
+  download tests, plus an explicitly enabled local catalog acceptance check.
+
 ## 0.1.0 — first beta
 
 - Added a managed OP-songs HEAD download that stages the archive, rejects unsafe

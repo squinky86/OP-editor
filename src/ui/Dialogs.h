@@ -44,7 +44,7 @@ private:
     QSpinBox *m_tempo = nullptr;
     QSpinBox *m_verses = nullptr;
     QSpinBox *m_measures = nullptr;
-    QCheckBox *m_satb = nullptr;
+    QComboBox *m_arrangement = nullptr;
     QLineEdit *m_wordsBy = nullptr;
     QLineEdit *m_musicBy = nullptr;
 };

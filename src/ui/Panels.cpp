@@ -4,6 +4,10 @@
 #include "Panels.h"
 
 #include "Dialogs.h"
+#include "core/Clefs.h"
+#include "core/Voicing.h"
+#include <QIntValidator>
+#include <limits>
 
 #include <QCheckBox>
 #include <QEvent>
@@ -32,6 +36,18 @@
 
 namespace ope::ui {
 namespace {
+
+// A blank optional staff field must be committable on focus loss as well as
+// with Enter. QIntValidator alone treats blank text as an unfinished number.
+class OptionalIntValidator : public QIntValidator {
+public:
+    explicit OptionalIntValidator(QObject *parent)
+        : QIntValidator(std::numeric_limits<int>::min(), std::numeric_limits<int>::max(), parent) {}
+    State validate(QString &text, int &position) const override
+    {
+        return text.trimmed().isEmpty() ? Acceptable : QIntValidator::validate(text, position);
+    }
+};
 
 QString formatSeconds(double seconds)
 {
@@ -549,6 +565,17 @@ InspectorPanel::InspectorPanel(Session *session, QWidget *parent)
 {
     auto *layout = new QVBoxLayout(this);
 
+    m_partSelector = new QComboBox(this);
+    m_partSelector->setObjectName(QStringLiteral("inspectorPart"));
+    m_partSelector->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_partSelector->setMinimumContentsLength(12);
+    m_partSelector->setToolTip(tr("Choose a part to edit, including parts with invalid clef metadata"));
+    layout->addWidget(m_partSelector);
+    connect(m_partSelector, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (!m_loading && index >= 0)
+            m_session->setSelection({ m_partSelector->itemData(index).toInt(), 0, 0 });
+    });
+
     auto *noteBox = new QGroupBox(tr("Selected note"), this);
     auto *noteLayout = new QVBoxLayout(noteBox);
     m_noteInfo = new QLabel(tr("Nothing selected"), noteBox);
@@ -564,20 +591,32 @@ InspectorPanel::InspectorPanel(Session *session, QWidget *parent)
 
     auto *partBox = new QGroupBox(tr("Part"), this);
     auto *partLayout = new QFormLayout(partBox);
+    partLayout->setRowWrapPolicy(QFormLayout::WrapLongRows);
     m_choralType = new QComboBox(partBox);
-    m_choralType->addItems(validChoralTypes());
+    m_choralType->setObjectName(QStringLiteral("partRole"));
     m_choralType->setEditable(true);
+    m_choralType->setInsertPolicy(QComboBox::NoInsert);
+    m_choralType->setToolTip(tr("choral_type — voice identity, independent of name, clef and pitch"));
     m_clef = new QComboBox(partBox);
-    m_clef->addItems(validClefs());
-    m_staffNumber = new QSpinBox(partBox);
-    m_staffNumber->setRange(1, 12);
+    m_clef->setObjectName(QStringLiteral("partClef"));
+    m_clef->setToolTip(tr("clef — display placement only; sounding notes never change"));
+    m_staffNumber = new QLineEdit(partBox);
+    m_staffNumber->setObjectName(QStringLiteral("partStaff"));
+    m_staffNumber->setValidator(new OptionalIntValidator(m_staffNumber));
+    m_staffNumber->setPlaceholderText(tr("Separate staff (omitted)"));
+    m_staffNumber->setToolTip(tr("staff_number — a positive number shares a staff; all parts on it must agree on clef. Blank inherits in a translation."));
     m_splice = new QComboBox(partBox);
-    m_splice->addItem(tr("(none)"), QString());
-    for (const QString &type : validChoralTypes())
-        m_splice->addItem(type, type);
+    m_splice->setObjectName(QStringLiteral("partSplice"));
+    for (QComboBox *combo : { m_choralType, m_clef, m_splice }) {
+        combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        combo->setMinimumContentsLength(12);
+    }
     m_suppressVerses = new QLineEdit(partBox);
+    m_suppressVerses->setObjectName(QStringLiteral("partSuppressVerses"));
     m_suppressVerses->setPlaceholderText(QStringLiteral("2, 3, 4"));
     m_suppressWhen = new QLineEdit(partBox);
+    m_suppressWhen->setObjectName(QStringLiteral("partSuppressWhen"));
+    m_suppressWhen->setToolTip(tr("Exact role names: %1").arg(validChoralTypes().join(QStringLiteral(", "))));
     m_suppressWhen->setPlaceholderText(QStringLiteral("soprano, alto"));
     m_spliceReport = new QLabel(partBox);
     m_spliceReport->setWordWrap(true);
@@ -593,13 +632,13 @@ InspectorPanel::InspectorPanel(Session *session, QWidget *parent)
     layout->addWidget(partBox);
     layout->addStretch();
 
-    const auto onEdit = [this] { commitPart(); };
-    connect(m_choralType, &QComboBox::currentTextChanged, this, onEdit);
-    connect(m_clef, &QComboBox::currentTextChanged, this, onEdit);
-    connect(m_staffNumber, &QSpinBox::editingFinished, this, onEdit);
-    connect(m_splice, &QComboBox::currentIndexChanged, this, onEdit);
-    connect(m_suppressVerses, &QLineEdit::editingFinished, this, onEdit);
-    connect(m_suppressWhen, &QLineEdit::editingFinished, this, onEdit);
+    connect(m_choralType, &QComboBox::activated, this, [this] { commitPart(m_choralType); });
+    connect(m_choralType->lineEdit(), &QLineEdit::editingFinished, this,
+        [this] { commitPart(m_choralType); });
+    connect(m_clef, &QComboBox::currentIndexChanged, this, [this] { commitPart(m_clef); });
+    connect(m_splice, &QComboBox::currentIndexChanged, this, [this] { commitPart(m_splice); });
+    for (QLineEdit *edit : { m_staffNumber, m_suppressVerses, m_suppressWhen })
+        connect(edit, &QLineEdit::editingFinished, this, [this, edit] { commitPart(edit); });
 
     connect(session, &Session::selectionChanged, this, &InspectorPanel::refresh);
     connect(session, &Session::documentChanged, this, &InspectorPanel::refresh);
@@ -611,6 +650,15 @@ void InspectorPanel::refresh()
     m_loading = true;
     const Selection selection = m_session->selection();
     const SongDocument &doc = m_session->effectiveDocument();
+
+    m_partSelector->clear();
+    for (int index : voicing::orderedIndices(doc))
+        m_partSelector->addItem(voicing::label(doc.parts.at(index)), index);
+    m_partSelector->setCurrentIndex(m_partSelector->findData(selection.partIndex));
+    const bool hasPart = selection.isValid() && selection.partIndex < doc.parts.size();
+    for (QWidget *control : QList<QWidget *> { m_choralType, m_clef, m_staffNumber,
+             m_splice, m_suppressVerses, m_suppressWhen })
+        control->setEnabled(hasPart);
 
     if (!selection.isValid() || selection.partIndex >= doc.parts.size()) {
         m_noteInfo->setText(tr("Nothing selected"));
@@ -648,11 +696,31 @@ void InspectorPanel::refresh()
         m_noteInfo->setText(tr("Part selected; no note under the cursor"));
     }
 
-    m_choralType->setCurrentText(part.choralType.valueOr(QString()));
-    m_clef->setCurrentText(part.clef.valueOr(QStringLiteral("treble")));
-    m_staffNumber->setValue(part.staffNumber.valueOr(1));
-    const int spliceIndex = m_splice->findData(part.spliceLyricsInto.valueOr(QString()));
-    m_splice->setCurrentIndex(std::max(0, spliceIndex));
+    m_partSelector->setToolTip(QStringLiteral("[parts.%1]").arg(part.name));
+    m_choralType->clear();
+    m_choralType->addItem(tr("(unspecified)"), QString());
+    m_splice->clear();
+    m_splice->addItem(tr("(none)"), QString());
+    for (const auto &role : voicing::roles()) {
+        m_choralType->addItem(role.label, role.name);
+        m_splice->addItem(role.label, role.name);
+    }
+    m_clef->clear();
+    for (const auto &clef : clefs::all())
+        m_clef->addItem(clef.label, clef.name);
+    const auto showValue = [](QComboBox *combo, const QString &raw) {
+        const QString normalized = voicing::normalize(raw);
+        int index = combo->findData(normalized);
+        if (index < 0) {
+            combo->addItem(QObject::tr("Current: “%1” (unrecognized)").arg(raw), normalized);
+            index = combo->count() - 1;
+        }
+        combo->setCurrentIndex(index);
+    };
+    showValue(m_choralType, part.choralType.valueOr({}));
+    showValue(m_clef, part.clef.valueOr(QStringLiteral("treble")));
+    showValue(m_splice, part.spliceLyricsInto.valueOr({}));
+    m_staffNumber->setText(part.staffNumber.present() ? QString::number(*part.staffNumber) : QString());
     QStringList verses;
     for (const int verse : part.suppressVerses.valueOr({}))
         verses.append(QString::number(verse));
@@ -674,15 +742,26 @@ void InspectorPanel::refresh()
     m_loading = false;
 }
 
-void InspectorPanel::commitPart()
+void InspectorPanel::commitPart(QObject *control)
 {
     if (m_loading || m_partName.isEmpty() || !m_session->isOpen())
         return;
 
-    const QString choralType = m_choralType->currentText();
-    const QString clef = m_clef->currentText();
-    const int staff = m_staffNumber->value();
-    const QString splice = m_splice->currentData().toString();
+    const auto comboValue = [](const QComboBox *combo) {
+        return voicing::normalize(combo->currentIndex() >= 0
+                && combo->currentText() == combo->itemText(combo->currentIndex())
+            ? combo->currentData().toString() : combo->currentText());
+    };
+    const QString choralType = comboValue(m_choralType);
+    const QString clef = comboValue(m_clef);
+    std::optional<int> staff;
+    if (!m_staffNumber->text().trimmed().isEmpty()) {
+        bool ok = false;
+        staff = m_staffNumber->text().toInt(&ok);
+        if (control == m_staffNumber && !ok)
+            return;
+    }
+    const QString splice = comboValue(m_splice);
     QList<int> suppress;
     for (const QString &piece : m_suppressVerses->text().split(u',', Qt::SkipEmptyParts)) {
         bool ok = false;
@@ -701,40 +780,48 @@ void InspectorPanel::commitPart()
 
     // Only what moved, for the same reason as the song header: on a translation
     // every field written here is a field that stops tracking song.toml.
-    const bool choralChanged = effective->choralType.valueOr(QString()) != choralType;
-    const bool clefChanged = effective->clef.valueOr(QStringLiteral("treble")) != clef;
-    const bool staffChanged = effective->staffNumber.valueOr(1) != staff;
-    const bool spliceChanged = effective->spliceLyricsInto.valueOr(QString()) != splice;
-    const bool suppressChanged = effective->suppressVerses.valueOr({}) != suppress;
-    const bool whenChanged = effective->suppressVersesWhen.valueOr({}) != when;
+    const bool choralChanged = control == m_choralType
+        && voicing::normalize(effective->choralType.valueOr({})) != choralType;
+    const bool clefChanged = control == m_clef
+        && voicing::normalize(effective->clef.valueOr(QStringLiteral("treble"))) != clef;
+    const bool staffChanged = control == m_staffNumber && effective->staffNumber.opt() != staff;
+    const bool spliceChanged = control == m_splice
+        && voicing::normalize(effective->spliceLyricsInto.valueOr({})) != splice;
+    const bool suppressChanged = control == m_suppressVerses && effective->suppressVerses.valueOr({}) != suppress;
+    QStringList normalizedWhen;
+    for (const QString &role : effective->suppressVersesWhen.valueOr({}))
+        normalizedWhen.append(voicing::normalize(role));
+    const bool whenChanged = control == m_suppressWhen && normalizedWhen != when;
     if (!choralChanged && !clefChanged && !staffChanged && !spliceChanged && !suppressChanged
         && !whenChanged)
         return;
 
     m_session->mutate(tr("Edit part"), [&](SongDocument &doc) {
-        Part *part = doc.part(name);
-        if (!part)
-            return;
+        Part *part = &doc.ensurePart(name);
         if (choralChanged)
             part->choralType.set(choralType);
         if (clefChanged)
             part->clef.set(clef);
-        if (staffChanged)
-            part->staffNumber.set(staff);
+        if (staffChanged) {
+            if (staff)
+                part->staffNumber.set(*staff);
+            else
+                part->staffNumber.clear();
+        }
         if (spliceChanged) {
-            if (splice.isEmpty())
+            if (splice.isEmpty() && !doc.isOverlay)
                 part->spliceLyricsInto.clear();
             else
                 part->spliceLyricsInto.set(splice);
         }
         if (suppressChanged) {
-            if (suppress.isEmpty())
+            if (suppress.isEmpty() && !doc.isOverlay)
                 part->suppressVerses.clear();
             else
                 part->suppressVerses.set(suppress);
         }
         if (whenChanged) {
-            if (when.isEmpty())
+            if (when.isEmpty() && !doc.isOverlay)
                 part->suppressVersesWhen.clear();
             else
                 part->suppressVersesWhen.set(when);
@@ -1097,8 +1184,10 @@ void TransportBar::refresh()
     m_partChecks.clear();
     auto *layout = qobject_cast<QHBoxLayout *>(m_partBox->layout());
     for (const Part *part : doc.partsInDisplayOrder()) {
-        auto *check = new QCheckBox(part->name.left(3), m_partBox);
-        check->setToolTip(tr("Mute %1").arg(part->name));
+        auto *check = new QCheckBox(voicing::shortLabel(doc, *part), m_partBox);
+        check->setToolTip(tr("Play %1 — [parts.%2]; uncheck to mute")
+            .arg(voicing::label(*part), part->name));
+        check->setAccessibleName(tr("Play %1, part %2").arg(voicing::label(*part), part->name));
         check->setChecked(!m_mutedParts.contains(part->name));
         check->setProperty("partName", part->name);
         connect(check, &QCheckBox::toggled, this, [this, check](bool audible) {

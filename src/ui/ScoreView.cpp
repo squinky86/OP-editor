@@ -22,7 +22,6 @@ constexpr qreal StaffGapSpaces = 8.0;      ///< vertical gap between staves
 constexpr qreal SystemGapSpaces = 5.0;
 constexpr qreal LyricRowSpaces = 2.2;
 constexpr qreal RulerSpaces = 4.2;
-constexpr qreal LeftMarginSpaces = 8.0;
 constexpr qreal RightMarginSpaces = 2.0;
 constexpr qreal TopMarginSpaces = 3.0;
 
@@ -34,14 +33,6 @@ QColor colorSelectionFill() { return QColor(0x1f, 0x6f, 0xeb, 42); }
 QColor colorPlayback() { return QColor(0x18, 0x94, 0x4e); }
 QColor colorProblem() { return QColor(0xd1, 0x24, 0x2f); }
 QColor colorInherited() { return QColor(0x88, 0x88, 0x88); }
-
-/// Diatonic index of the bottom staff line for each clef.
-int bottomLineDiatonic(const QString &clef)
-{
-    if (clef == QLatin1String("bass"))
-        return 2 * 7 + 4;  // G2
-    return 4 * 7 + 2;      // E4, for treble and treble_8
-}
 
 int flagCountFor(int base)
 {
@@ -228,28 +219,22 @@ void ScoreView::relayout()
 
     const SongDocument &doc = m_session->effectiveDocument();
     const qreal space = m_staffSpace;
-    const qreal available
-        = std::max<qreal>(240.0, viewport()->width() - (LeftMarginSpaces + RightMarginSpaces) * space);
+    QFont labelFont = font();
+    labelFont.setPointSizeF(space * 1.05);
+    const QFontMetricsF labels(labelFont);
+    qreal labelWidth = 0;
+    for (const Part &part : doc.parts)
+        labelWidth = std::max(labelWidth, labels.horizontalAdvance(voicing::label(part)));
+    m_leftMargin = std::clamp(labelWidth + 7 * space, 12 * space, 26 * space);
+    const qreal available = std::max<qreal>(180.0,
+        viewport()->width() - m_leftMargin - RightMarginSpaces * space);
 
-    // Staff groups, ordered by staff_number, with the parts that share each.
     QList<StaffBox> staffTemplate;
-    QList<int> staffNumbers;
-    for (int i = 0; i < doc.parts.size(); ++i) {
-        const int number = doc.parts.at(i).staffNumber.valueOr(i + 1);
-        if (!staffNumbers.contains(number))
-            staffNumbers.append(number);
-    }
-    std::sort(staffNumbers.begin(), staffNumbers.end());
-    for (const int number : staffNumbers) {
+    m_visibleParts.clear();
+    for (const auto &group : voicing::staves(doc)) {
         StaffBox staff;
-        staff.staffNumber = number;
-        for (int i = 0; i < doc.parts.size(); ++i) {
-            if (doc.parts.at(i).staffNumber.valueOr(i + 1) == number) {
-                staff.partIndices.append(i);
-                if (staff.clef.isEmpty())
-                    staff.clef = doc.parts.at(i).clef.valueOr(QStringLiteral("treble"));
-            }
-        }
+        static_cast<voicing::Staff &>(staff) = group;
+        m_visibleParts.append(group.partIndices);
         staffTemplate.append(staff);
     }
 
@@ -308,7 +293,7 @@ void ScoreView::relayout()
         // Stretch the system to the full width unless it is the last one.
         const bool stretch = last + 1 < measureCount;
         const qreal scale = (stretch && used > 0) ? available / used : 1.0;
-        qreal x = LeftMarginSpaces * space;
+        qreal x = m_leftMargin;
         for (int m = first; m <= last; ++m) {
             MeasureBox box;
             box.index = m;
@@ -331,31 +316,68 @@ void ScoreView::relayout()
             m_measureToSystem.insert(m, static_cast<int>(m_systems.size()));
         }
 
-        // Staves, then a lyric row per verse of the parts on the last staff.
+        // Each staff owns its lyric rows. Identical words at identical ticks
+        // share a row; independent echoes and rhythms remain readable.
         qreal staffY = y;
         for (StaffBox staff : staffTemplate) {
-            staff.top = staffY;
-            system.staves.append(staff);
-            staffY += StaffGapSpaces * space;
-        }
-
-        int lyricRows = 0;
-        for (const Part &part : doc.parts) {
-            const PartAlignment &alignment = m_session->alignment(part.name);
-            int rows = 0;
-            for (const AttachedSection &section : alignment.sections) {
-                if (showsSection(section))
-                    ++rows;
+            qreal bottom = 4 * space;
+            qreal above = 0;
+            if (staff.clef) {
+                const auto directions = voicing::stems(doc, staff.partIndices);
+                for (int voice = 0; voice < staff.partIndices.size(); ++voice) {
+                    const int index = staff.partIndices.at(voice);
+                    const Part &part = doc.parts.at(index);
+                    for (int m = first; m <= last && m < part.stream.measureCount(); ++m) {
+                        for (const Event &event : part.stream.measures().at(m).events) {
+                            for (const Pitch &pitch : event.pitches) {
+                                const qreal position = staffPositionFor(pitch, *staff.clef);
+                                const bool up = directions.at(voice) == voicing::Stem::Up
+                                    || (directions.at(voice) == voicing::Stem::Free && position < 2);
+                                above = std::max(above,
+                                    (position - 4 + (up && event.duration.base != 1 ? 3.8 : 0.7)) * space);
+                                bottom = std::max(bottom,
+                                    (4 - position + 3.5) * space);
+                            }
+                        }
+                    }
+                }
             }
-            lyricRows = std::max(lyricRows, rows);
+            // The usual top/system margins cover three spaces above a staff.
+            // Reserve more for high notes so their stems and hit targets stay visible.
+            staff.top = staffY + std::max<qreal>(0, above - TopMarginSpaces * space);
+            staff.lyricTop = staff.top + bottom + 2 * space;
+            QList<QStringList> seen;
+            int rows = 0;
+            for (int index : staff.partIndices) {
+                const PartAlignment &alignment = m_session->alignment(doc.parts.at(index).name);
+                QStringList signature;
+                int count = 0;
+                for (const AttachedSection &section : alignment.sections) {
+                    if (!showsSection(section))
+                        continue;
+                    ++count;
+                    signature.append(section.key);
+                    for (int slot = section.slotOffset;
+                         slot < section.slotOffset + section.syllables.size()
+                         && slot < alignment.lyricSlots.size(); ++slot) {
+                        const Slot &position = alignment.lyricSlots.at(slot);
+                        if (position.measureIndex >= first && position.measureIndex <= last)
+                            signature.append(QStringLiteral("%1:%2").arg(position.tick)
+                                .arg(alignment.syllableAt(section, slot)));
+                    }
+                }
+                if (count > 0 && !seen.contains(signature)) {
+                    seen.append(signature);
+                    staff.lyricRowOffsets.insert(index, rows);
+                    rows += count;
+                }
+            }
+            system.staves.append(staff);
+            staffY = rows > 0 ? staff.lyricTop + rows * LyricRowSpaces * space + 3 * space
+                             : staff.top + std::max(StaffGapSpaces * space, bottom + 3 * space);
         }
-        system.lyricRows = lyricRows;
-        // The last staff occupies four spaces below its top; lyrics start under
-        // that, and the ruler sits clear of the deepest verse row.
-        system.lyricTop = staffY - StaffGapSpaces * space + 5.4 * space;
-        staffY = system.lyricTop + lyricRows * LyricRowSpaces * space;
-        system.rulerTop = staffY + 1.0 * space;
-        staffY = system.rulerTop + RulerSpaces * space;
+        system.rulerTop = staffY;
+        staffY += RulerSpaces * space;
 
         system.height = staffY - y;
         y = staffY + SystemGapSpaces * space;
@@ -372,10 +394,10 @@ void ScoreView::relayout()
     viewport()->update();
 }
 
-qreal ScoreView::staffPositionFor(const Pitch &pitch, const QString &clef) const
+qreal ScoreView::staffPositionFor(const Pitch &pitch, const clefs::Clef &clef) const
 {
     // Half a staff space per diatonic step, measured up from the bottom line.
-    return (pitch.diatonic() - bottomLineDiatonic(clef)) * 0.5;
+    return (pitch.diatonic() - clef.bottomLineDiatonic) * 0.5;
 }
 
 void ScoreView::paintEvent(QPaintEvent *)
@@ -433,52 +455,53 @@ void ScoreView::paintStaff(QPainter &painter, const SystemBox &system, const Sta
     }
     painter.drawLine(QPointF(right, staff.top), QPointF(right, staff.top + 4 * space));
 
-    // Clef, drawn so its reference line lands where it belongs.
-    painter.save();
-    painter.setBrush(colorText());
-    painter.setPen(Qt::NoPen);
-    if (staff.clef == QLatin1String("bass")) {
-        // F line is the second from the top.
-        painter.translate(left - 5.2 * space, staff.top + 1 * space);
-        painter.scale(space, space);
-        painter.drawPath(glyphs::bassClef());
+    // Unsupported/conflicting metadata has no plausible treble fallback.
+    if (!staff.clef) {
+        painter.setPen(colorProblem());
+        painter.fillRect(QRectF(left, staff.top, right - left, 4 * space), QColor(255, 240, 240));
+        painter.drawText(QRectF(left + space, staff.top, right - left - 2 * space, 4 * space),
+            Qt::AlignVCenter | Qt::TextWordWrap, tr("Cannot place notes: %1. Edit the part in Inspector or Source.").arg(staff.problem));
     } else {
-        // G line is the second from the bottom.
-        painter.translate(left - 5.2 * space, staff.top + 3 * space);
+        painter.save();
+        painter.setBrush(colorText());
+        painter.setPen(Qt::NoPen);
+        painter.translate(left - 4 * space, staff.top + (5 - staff.clef->line) * space);
         painter.scale(space, space);
-        painter.drawPath(glyphs::trebleClef());
-    }
-    painter.restore();
-    if (staff.clef == QLatin1String("treble_8")) {
-        QFont font = painter.font();
-        font.setPointSizeF(space * 1.2);
-        painter.setFont(font);
-        painter.setPen(colorText());
-        painter.drawText(QPointF(left - 5.0 * space, staff.top + 5.6 * space),
-            QStringLiteral("8"));
+        switch (staff.clef->sign) {
+        case clefs::Sign::G: painter.drawPath(glyphs::trebleClef()); break;
+        case clefs::Sign::F: painter.drawPath(glyphs::bassClef()); break;
+        case clefs::Sign::C: painter.drawPath(glyphs::cClef()); break;
+        }
+        painter.restore();
+        if (staff.clef->octaveChange == -1) {
+            QFont octaveFont = painter.font();
+            octaveFont.setPointSizeF(space * 1.2);
+            painter.setFont(octaveFont);
+            painter.setPen(colorText());
+            painter.drawText(QPointF(left - 3.8 * space, staff.top + 6.2 * space), QStringLiteral("8"));
+        }
     }
 
-    // Part names, so a staff carrying two voices is readable.
-    QFont label = painter.font();
-    label.setPointSizeF(space * 1.05);
-    painter.setFont(label);
-    QStringList names;
-    for (const int partIndex : staff.partIndices)
-        names.append(doc.parts.at(partIndex).name);
+    QFont labelFont = painter.font();
+    labelFont.setPointSizeF(space * 1.05);
+    painter.setFont(labelFont);
+    const QFontMetricsF metrics(labelFont);
     painter.setPen(QColor(0x77, 0x77, 0x77));
-    painter.drawText(QPointF(2, staff.top - 0.4 * space), names.join(u'/'));
-
-    // Voices sharing a staff take opposing stems, as the LilyPond export does.
-    const bool shared = staff.partIndices.size() > 1;
     for (int i = 0; i < staff.partIndices.size(); ++i) {
-        const int partIndex = staff.partIndices.at(i);
-        paintPart(painter, system, staff, partIndex, shared && i == 0, shared && i > 0);
+        const QString label = voicing::label(doc.parts.at(staff.partIndices.at(i)));
+        painter.drawText(QPointF(2, staff.top + (1.2 + i * 1.5) * space),
+            metrics.elidedText(label, Qt::ElideRight, left - 6 * space));
     }
 
-    // Lyrics under the bottom staff of the system.
-    if (&staff == &system.staves.last()) {
-        for (const int partIndex : staff.partIndices)
-            paintLyrics(painter, system, staff, partIndex);
+    if (staff.clef) {
+        const auto directions = voicing::stems(doc, staff.partIndices);
+        for (int i = 0; i < staff.partIndices.size(); ++i)
+            paintPart(painter, system, staff, staff.partIndices.at(i),
+                directions.at(i) == voicing::Stem::Up, directions.at(i) == voicing::Stem::Down);
+    }
+    for (int index : staff.partIndices) {
+        if (staff.lyricRowOffsets.contains(index))
+            paintLyrics(painter, system, staff, index);
     }
 }
 
@@ -575,14 +598,14 @@ void ScoreView::paintPart(QPainter &painter, const SystemBox &system, const Staf
             // remain safe to display while the author fixes the source.
             const qreal primaryPosition = event.pitches.isEmpty()
                 ? 0.0
-                : staffPositionFor(event.pitches.first(), staff.clef);
+                : staffPositionFor(event.pitches.first(), *staff.clef);
             const bool stemUp = forceStemUp ? true
                 : forceStemDown              ? false
-                                             : primaryPosition < 4.0;
+                                             : primaryPosition < 2.0;
             const QString keySignature = doc.keySignature.valueOr(QStringLiteral("C"));
             for (int p = 0; p < event.pitches.size(); ++p) {
                 const Pitch &pitch = event.pitches.at(p);
-                const qreal position = staffPositionFor(pitch, staff.clef);
+                const qreal position = staffPositionFor(pitch, *staff.clef);
                 const qreal y = staff.top + 4 * space - position * space;
 
                 if (selected) {
@@ -732,6 +755,12 @@ void ScoreView::paintPart(QPainter &painter, const SystemBox &system, const Staf
             box.rect = QRectF(x - space, headY - space, 2 * space, 2 * space);
             box.head = QPointF(x, headY);
             box.stemUp = stemUp;
+            if (event.duration.base != 1) {
+                box.stem = QLineF(QPointF(x + (stemUp ? 0.62 : -0.62) * space, headY),
+                    QPointF(x + (stemUp ? 0.62 : -0.62) * space,
+                        headY + (stemUp ? -3.3 : 3.3) * space));
+                box.rect = box.rect.united(QRectF(box.stem.p1(), box.stem.p2()).normalized());
+            }
             m_boxes.append(box);
 
         }
@@ -821,7 +850,7 @@ void ScoreView::paintLyrics(
         const bool active = section.isChorus || section.isCoda
             || section.verseNumber == m_verse;
         painter.setPen(active ? colorText() : QColor(0x8a, 0x8a, 0x8a));
-        const qreal y = system.lyricTop + row * LyricRowSpaces * space;
+        const qreal y = staff.lyricTop + (staff.lyricRowOffsets.value(partIndex) + row) * LyricRowSpaces * space;
 
         for (int slot = section.slotOffset;
             slot < section.slotOffset + section.syllables.size(); ++slot) {
@@ -849,9 +878,9 @@ void ScoreView::paintLyrics(
         // Row label at the left margin.
         painter.setPen(QColor(0x99, 0x99, 0x99));
         painter.drawText(QPointF(2, y),
-            section.isChorus ? QStringLiteral("ch.")
+            voicing::shortLabel(doc, part) + u' ' + (section.isChorus ? QStringLiteral("ch.")
                 : section.isCoda ? QStringLiteral("coda")
-                                 : QString::number(section.verseNumber) + u'.');
+                                 : QString::number(section.verseNumber) + u'.'));
     }
 }
 
@@ -948,20 +977,37 @@ void ScoreView::paintMeasureProblems(QPainter &painter, const SystemBox &system)
     }
 }
 
-const EventBox *ScoreView::hitTest(QPointF point) const
+const EventBox *ScoreView::hitTest(QPointF point, bool cycle) const
 {
-    const EventBox *best = nullptr;
+    QList<const EventBox *> nearest;
     qreal bestDistance = std::numeric_limits<qreal>::max();
     for (const EventBox &box : m_boxes) {
-        if (!box.rect.adjusted(-2, -6, 2, 6).contains(point))
+        if (!box.rect.adjusted(-3, -3, 3, 3).contains(point))
             continue;
-        const qreal distance = QLineF(point, box.head).length();
-        if (distance < bestDistance) {
+        qreal distance = QLineF(point, box.head).length();
+        if (!box.stem.isNull()
+            && point.y() >= std::min(box.stem.y1(), box.stem.y2())
+            && point.y() <= std::max(box.stem.y1(), box.stem.y2()))
+            distance = std::min(distance, std::abs(point.x() - box.stem.x1()));
+        if (distance < bestDistance - 0.25) {
+            nearest.clear();
             bestDistance = distance;
-            best = &box;
+        }
+        if (distance <= bestDistance + 0.25)
+            nearest.append(&box);
+    }
+    if (nearest.isEmpty())
+        return nullptr;
+    if (cycle && nearest.size() > 1) {
+        const Selection selected = m_session->selection();
+        for (int i = 0; i < nearest.size(); ++i) {
+            const EventBox &box = *nearest.at(i);
+            if (box.partIndex == selected.partIndex && box.measureIndex == selected.measureIndex
+                && box.eventIndex == selected.eventIndex)
+                return nearest.at((i + 1) % nearest.size());
         }
     }
-    return best;
+    return nearest.first();
 }
 
 int ScoreView::measureAtX(const SystemBox &system, qreal x) const
@@ -979,7 +1025,7 @@ void ScoreView::mousePressEvent(QMouseEvent *event)
     const QPointF point = event->position() + QPointF(0, verticalScrollBar()->value());
     if (clickRuler(point))
         return;
-    if (const EventBox *box = hitTest(point)) {
+    if (const EventBox *box = hitTest(point, true)) {
         m_session->setSelection(Selection { box->partIndex, box->measureIndex, box->eventIndex });
         viewport()->update();
     }
@@ -1030,6 +1076,7 @@ Event *ScoreView::mutableSelectedEvent(SongDocument &doc) const
     if (selection.partIndex >= effective.parts.size())
         return nullptr;
     const QString partName = effective.parts.at(selection.partIndex).name;
+    materialiseOverlayNotes(doc, effective, partName);
     Part *part = doc.part(partName);
     if (!part || selection.measureIndex >= part->stream.measureCount())
         return nullptr;
@@ -1071,14 +1118,23 @@ void ScoreView::moveSelectionToPart(int deltaParts)
     Selection selection = m_session->selection();
     if (!selection.isValid())
         return;
-    const int target = std::clamp<int>(selection.partIndex + deltaParts, 0,
-        static_cast<int>(doc.parts.size()) - 1);
+    const int position = static_cast<int>(m_visibleParts.indexOf(selection.partIndex));
+    if (position < 0 || m_visibleParts.isEmpty())
+        return;
+    const int target = m_visibleParts.at(std::clamp(position + deltaParts, 0,
+        static_cast<int>(m_visibleParts.size()) - 1));
     const Part &part = doc.parts.at(target);
     if (selection.measureIndex >= part.stream.measureCount())
         return;
-    const int events = static_cast<int>(part.stream.measures().at(selection.measureIndex).events.size());
-    m_session->setSelection(Selection { target, selection.measureIndex,
-        std::min(selection.eventIndex, events - 1) });
+    const auto &events = part.stream.measures().at(selection.measureIndex).events;
+    if (events.isEmpty())
+        return;
+    const Event *selected = m_session->selectedEvent();
+    const int tick = selected ? selected->tickInMeasure : 0;
+    int eventIndex = 0;
+    for (int i = 0; i < events.size() && events.at(i).tickInMeasure <= tick; ++i)
+        eventIndex = i;
+    m_session->setSelection(Selection { target, selection.measureIndex, eventIndex });
 }
 
 void ScoreView::transposeSelection(int diatonicSteps, int alterDelta, int octaves)
@@ -1171,6 +1227,7 @@ void ScoreView::insertAfterSelection()
     m_session->mutate(tr("Insert note"), [&](SongDocument &doc) {
         const SongDocument &effective = m_session->effectiveDocument();
         const QString partName = effective.parts.at(selection.partIndex).name;
+        materialiseOverlayNotes(doc, effective, partName);
         Part *part = doc.part(partName);
         if (!part || selection.measureIndex >= part->stream.measureCount())
             return;
@@ -1198,6 +1255,7 @@ void ScoreView::deleteSelection()
     m_session->mutate(tr("Delete note"), [&](SongDocument &doc) {
         const SongDocument &effective = m_session->effectiveDocument();
         const QString partName = effective.parts.at(selection.partIndex).name;
+        materialiseOverlayNotes(doc, effective, partName);
         Part *part = doc.part(partName);
         if (!part || selection.measureIndex >= part->stream.measureCount())
             return;
@@ -1303,6 +1361,24 @@ bool ScoreView::clickRuler(QPointF point)
 void ScoreView::mouseMoveEvent(QMouseEvent *event)
 {
     const QPointF point = event->position() + QPointF(0, verticalScrollBar()->value());
+    QString tooltip;
+    if (point.x() < m_leftMargin) {
+        for (const SystemBox &system : m_systems) {
+            for (const StaffBox &staff : system.staves) {
+                if (point.y() < staff.top || point.y() > staff.top + 5 * m_staffSpace)
+                    continue;
+                QStringList names;
+                for (int index : staff.partIndices) {
+                    const Part &part = m_session->effectiveDocument().parts.at(index);
+                    names.append(QStringLiteral("%1 — [parts.%2]").arg(voicing::label(part), part.name));
+                }
+                tooltip = names.join(u'\n');
+                if (!staff.problem.isEmpty())
+                    tooltip += u'\n' + staff.problem;
+            }
+        }
+    }
+    viewport()->setToolTip(tooltip);
     int lane = -1;
     int measureIndex = -1;
     int tick = 0;

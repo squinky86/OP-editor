@@ -394,9 +394,10 @@ void Session::mutate(const QString &language, const QString &description,
     SongDocument before = *found;
     mutation(*found);
     for (Part &part : found->parts) {
-        // Any edit may have changed the notation; keeping the parsed stream and
-        // the text in step here means no caller has to remember to.
-        if (part.notes.dirty())
+        // Reparse a text replacement made by this mutation. An earlier unsaved
+        // text edit must not erase a later structured edit to the stream.
+        const Part *previous = before.part(part.name);
+        if (part.notes.dirty() && (!previous || part.notes.opt() != previous->notes.opt()))
             part.reparse();
         part.stream.reindex();
     }

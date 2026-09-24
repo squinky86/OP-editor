@@ -122,8 +122,6 @@ struct Part {
     QStringList tablePath;
 
     [[nodiscard]] QString displayChoralType() const { return choralType.valueOr(QString()); }
-    /// SATB rank used for display order, matching the seeder's part sort.
-    [[nodiscard]] int sortRank() const;
     void reparse();
 };
 
@@ -173,6 +171,8 @@ public:
     // -- accessors
     [[nodiscard]] const Part *part(QStringView name) const;
     [[nodiscard]] Part *part(QStringView name);
+    /// An authored part shell, for editing one inherited field without copying others.
+    Part &ensurePart(const QString &name);
     [[nodiscard]] QList<const Part *> partsInDisplayOrder() const;
     /// Effective time signature for a 1-based measure, honouring time_sig_changes.
     [[nodiscard]] std::pair<int, int> timeSigForMeasure(int measureNumber) const;
@@ -253,6 +253,10 @@ namespace io {
 /// user is looking at; `partName` empty means the song-wide map. Does nothing to
 /// a base document, or to a map the overlay already defines.
 void materialiseOverlayLyrics(
+    SongDocument &overlay, const SongDocument &merged, const QString &partName);
+
+/// Prepare only an inherited note stream for a structured edit.
+void materialiseOverlayNotes(
     SongDocument &overlay, const SongDocument &merged, const QString &partName);
 
 /// Merge an overlay onto a base, reproducing `SongData::merge_overlay`:

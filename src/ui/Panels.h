@@ -96,14 +96,15 @@ public:
     void refresh();
 
 private:
-    void commitPart();
+    void commitPart(QObject *control);
 
     Session *m_session = nullptr;
     bool m_loading = false;
     QLabel *m_noteInfo = nullptr;
+    QComboBox *m_partSelector = nullptr;
     QComboBox *m_choralType = nullptr;
     QComboBox *m_clef = nullptr;
-    QSpinBox *m_staffNumber = nullptr;
+    QLineEdit *m_staffNumber = nullptr;
     QComboBox *m_splice = nullptr;
     QLineEdit *m_suppressVerses = nullptr;
     QLineEdit *m_suppressWhen = nullptr;

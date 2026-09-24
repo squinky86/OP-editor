@@ -3,12 +3,12 @@
 //
 // Turns a song into a list of sounding notes on a timeline.
 //
-// The rules are those of OpenPsalm's MIDI export, so what the editor plays is
-// what the site's MP3 sounds like: ties merge into one sustained note, slurs and
-// fermatas, accents, and marcatos have no playback effect, tuplets scale,
-// velocity comes from the dynamic map per part, and a \rit or \accel
-// interpolates the tempo across its span. This is a monitoring aid, not an
-// export — nothing is ever written out.
+// Notes are absolute sounding pitches: clefs never transpose playback. Ties
+// sustain, tuplets scale, and dynamics act per part. The authored arrangement
+// lead supplies the global tempo map before muting, with the website's eight
+// MIDI tempo steps and restoration after the terminating note. Other monitoring
+// approximations (hairpins, staccato, fine tuplets and cursor interpolation) are
+// described in docs/getting-started.md. This is a monitoring aid, not an export.
 
 #pragma once
 

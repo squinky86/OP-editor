@@ -12,6 +12,7 @@
 #include "core/Playback.h"
 #include "core/Song.h"
 #include "core/Validator.h"
+#include "core/Voicing.h"
 
 #include <QTemporaryDir>
 #include <QTest>
@@ -43,6 +44,255 @@ class DocumentTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void ttbbRoundTripsAndClefEditsNeverTranspose()
+    {
+        const auto loaded = io::loadBytes("song.toml", ttbbSong());
+        QVERIFY(loaded);
+        SongDocument doc = *loaded;
+        QCOMPARE(io::serialize(doc), ttbbSong());
+        const auto findings = validate(doc);
+        QCOMPARE(countBySeverity(findings, Severity::Error), 0);
+        for (const auto &finding : findings) {
+            QVERIFY(finding.rule != "W-CLEF");
+            QVERIFY(finding.rule != "W-CT");
+        }
+        const auto plan = buildPlan(doc);
+        const QList<int> opening {46, 53, 50, 58};
+        const QList<int> lastBeat {51, 57, 53, 60};
+        const QList<int> final {46, 58, 53, 62};
+        for (int i = 0; i < 4; ++i) {
+            QList<int> pitches;
+            for (const auto &note : plan.notes) {
+                if (note.partIndex == i)
+                    pitches.append(note.midiNote);
+            }
+            QCOMPARE(pitches, QList<int>({opening.at(i), lastBeat.at(i), final.at(i)}));
+        }
+        for (const QString &clef : validClefs()) {
+            doc.parts[3].clef.set(clef);
+            const auto changed = buildPlan(doc);
+            QCOMPARE(changed.notes.size(), plan.notes.size());
+            for (int i = 0; i < plan.notes.size(); ++i) {
+                QCOMPARE(changed.notes.at(i).midiNote, plan.notes.at(i).midiNote);
+                QCOMPARE(changed.notes.at(i).startSeconds, plan.notes.at(i).startSeconds);
+            }
+            QByteArray expected = ttbbSong();
+            const int start = expected.indexOf("[parts.Tenor1]");
+            const int value = expected.indexOf("clef = \"tenor\"", start);
+            expected.replace(value, QByteArray("clef = \"tenor\"").size(), "clef = \"" + clef.toUtf8() + "\"");
+            QCOMPARE(io::serialize(doc), expected);
+        }
+    }
+
+    void normalizedMetadataIsInterpretedWithoutChangingBytes()
+    {
+        QByteArray bytes = ttbbSong();
+        bytes.replace("\"tenor1\"", "\" TeNoR1 \"");
+        bytes.replace("\"tenor\"", "\" TeNoR \"");
+        const auto doc = io::loadBytes("song.toml", bytes);
+        QVERIFY(doc);
+        QCOMPARE(io::serialize(*doc), bytes);
+        QCOMPARE(countBySeverity(validate(*doc), Severity::Error), 0);
+        QCOMPARE(voicing::lead(*doc)->name, QStringLiteral("Tenor1"));
+        QVERIFY(!doc->isDirty());
+    }
+
+    void invalidClefsAndStavesAreErrors_data()
+    {
+        QTest::addColumn<QString>("clef");
+        QTest::addColumn<int>("staff");
+        QTest::addColumn<QString>("rule");
+        QTest::newRow("bare C") << QStringLiteral("C") << 1 << QStringLiteral("E-CLEF");
+        QTest::newRow("role used as clef") << QStringLiteral("baritone") << 1 << QStringLiteral("E-CLEF");
+        QTest::newRow("empty clef") << QString() << 1 << QStringLiteral("E-CLEF");
+        QTest::newRow("zero staff") << QStringLiteral("tenor") << 0 << QStringLiteral("E-STAFF");
+        QTest::newRow("negative staff") << QStringLiteral("tenor") << -42 << QStringLiteral("E-STAFF");
+        QTest::newRow("conflict") << QStringLiteral("alto") << 1 << QStringLiteral("E-STAFF-CLEF");
+    }
+
+    void invalidClefsAndStavesAreErrors()
+    {
+        QFETCH(QString, clef);
+        QFETCH(int, staff);
+        QFETCH(QString, rule);
+        auto doc = io::loadBytes("song.toml", ttbbSong());
+        QVERIFY(doc);
+        doc->parts[3].clef.set(clef);
+        doc->parts[3].staffNumber.set(staff);
+        const auto findings = validate(*doc);
+        const auto found = std::find_if(findings.cbegin(), findings.cend(), [&](const Finding &f) {
+            return f.rule == rule && f.severity == Severity::Error;
+        });
+        QVERIFY(found != findings.cend());
+        QVERIFY(found->message.contains("TTBB fixture"));
+        QVERIFY(found->message.contains("Tenor1"));
+        const QByteArray bytes = io::serialize(*doc);
+        const auto reparsed = io::loadBytes("song.toml", bytes);
+        QVERIFY(reparsed);
+        QCOMPARE(io::serialize(*reparsed), bytes); // invalid drafts are still editable
+    }
+
+    void omittedClefHasAnEffectiveTrebleDefaultOnSharedStaves()
+    {
+        auto doc = io::loadBytes("song.toml", ttbbSong());
+        QVERIFY(doc);
+        doc->parts[0].clef.clear(); // Bass now conflicts with Baritone
+        const auto findings = validate(*doc);
+        QVERIFY(std::any_of(findings.cbegin(), findings.cend(), [](const Finding &f) {
+            return f.rule == "E-STAFF-CLEF" && f.message.contains("treble");
+        }));
+    }
+
+    void tempoOwnershipIsByLeadIdentityIncludingRepeatedRoles()
+    {
+        auto doc = io::loadBytes("song.toml", ttbbTempo());
+        QVERIFY(doc);
+        const auto count = [](const SongDocument &d) {
+            int result = 0;
+            for (const auto &f : validate(d))
+                result += f.rule == "R5.3";
+            return result;
+        };
+        QCOMPARE(count(*doc), 0);
+        Part extra = *doc->part(u"Lead");
+        extra.name = "Lead2";
+        doc->parts.prepend(extra);
+        QCOMPARE(count(*doc), 3); // start, end, and a tempo all belong to Lead
+        doc->parts.removeFirst();
+        doc->part(u"Lead")->choralType.set("bass"); // Second becomes lead
+        QCOMPARE(count(*doc), 3);
+        doc->parts.removeFirst(); // lone bass is a valid lead
+        QCOMPARE(count(*doc), 0);
+    }
+
+    void mutedLeadKeepsTheExactTempoMapWithDifferentRhythms()
+    {
+        auto doc = io::loadBytes("song.toml", ttbbTempo());
+        QVERIFY(doc);
+        PlaybackOptions solo;
+        solo.mutedParts = {"Lead"};
+        const auto plan = buildPlan(*doc, solo);
+        QCOMPARE(plan.notes.size(), 4);
+        // Independently decoded current OpenPsalm MIDI: 480 PPQ, eight ramp
+        // steps at 180..1440, then tempo 120 restored at tick 1920.
+        const QList<double> onsets {0.0, 1.1314985, 2.687817125, 3.687817125};
+        for (int i = 0; i < 4; ++i) {
+            QCOMPARE(plan.notes.at(i).partIndex, 0);
+            QVERIFY(qAbs(plan.notes.at(i).startSeconds - onsets.at(i)) < 0.0000001);
+        }
+        QVERIFY(qAbs(plan.totalSeconds - 4.687817125) < 0.0000001);
+        const auto ensemble = buildPlan(*doc);
+        for (const auto &note : ensemble.notes) {
+            if (note.partIndex == 0) {
+                const auto found = std::find_if(plan.notes.cbegin(), plan.notes.cend(), [&](const auto &n) {
+                    return n.startTick == note.startTick;
+                });
+                QVERIFY(found != plan.notes.cend());
+                QCOMPARE(found->startSeconds, note.startSeconds);
+                QCOMPARE(found->endSeconds, note.endSeconds);
+            }
+        }
+        solo.mutedParts.append("Second");
+        QVERIFY(buildPlan(*doc, solo).notes.isEmpty());
+        // Invalid markers on a non-lead must not acquire ownership.
+        doc->part(u"Lead")->notes.set("c1 | c1");
+        doc->part(u"Lead")->reparse();
+        doc->part(u"Second")->notes.set(QStringLiteral("c2\\rit g2\\spanend | c2 g2"));
+        doc->part(u"Second")->reparse();
+        QCOMPARE(buildPlan(*doc).totalSeconds, 4.0);
+        doc->parts.removeLast(); // missing T1: deterministic T2 lead fallback
+        QVERIFY(buildPlan(*doc).totalSeconds > 4.0);
+    }
+
+    void tiesAndTupletsKeepTheirPitchesUnderEveryClef()
+    {
+        for (const QString &clef : validClefs()) {
+            auto doc = io::loadBytes("song.toml", QByteArray("title = \"T\"\ntempo_bpm = 120\n[parts.Solo]\nnotes = \"c'2~ c'2 | {3 c'8 d'8 e'8} r2.\"\n"));
+            QVERIFY(doc);
+            doc->parts[0].clef.set(clef);
+            const auto plan = buildPlan(*doc);
+            QCOMPARE(plan.notes.size(), 4);
+            QCOMPARE(plan.notes[0].midiNote, 60);
+            QCOMPARE(plan.notes[0].endSeconds, 2.0);
+            QCOMPARE(plan.notes[1].midiNote, 60);
+            QCOMPARE(plan.notes[2].midiNote, 62);
+            QCOMPARE(plan.notes[3].midiNote, 64);
+            QVERIFY(qAbs(plan.notes[1].endSeconds - 2.1666666667) < 0.000001);
+        }
+    }
+
+    void allTtbbVoiceSubsetsKeepIndependentIdentities()
+    {
+        const auto doc = io::loadBytes("song.toml", ttbbSong());
+        QVERIFY(doc);
+        for (int mask = 0; mask < 16; ++mask) {
+            PlaybackOptions options;
+            int audible = 0;
+            for (int i = 0; i < 4; ++i) {
+                if (!(mask & (1 << i)))
+                    options.mutedParts.append(doc->parts.at(i).name);
+                else
+                    ++audible;
+            }
+            const auto plan = buildPlan(*doc, options);
+            QCOMPARE(plan.notes.size(), audible * 3);
+            for (const auto &note : plan.notes)
+                QVERIFY(mask & (1 << note.partIndex));
+        }
+    }
+
+    void ttbbOverlaysInheritFieldsWithoutMaterializingNotes()
+    {
+        const auto base = io::loadBytes("song.toml", ttbbSong());
+        QVERIFY(base);
+        const QList<QByteArray> changes {
+            "[parts.Tenor1]\nclef = \"alto\"\n",
+            "[parts.Tenor1]\nchoral_type = \"tenor2\"\n",
+            "[parts.Tenor1]\nnotes = \"c'2 d'4 | e'2.\"\n",
+            "[parts.Tenor1.lyrics.1]\ntext = \"uno dos tres\"\n"
+        };
+        for (int i = 0; i < changes.size(); ++i) {
+            const QByteArray bytes = "title = \"Traducción\"\n" + changes.at(i);
+            auto overlay = io::loadBytes("song_es.toml", bytes);
+            QVERIFY(overlay);
+            const auto merged = mergeOverlay(*base, *overlay);
+            QCOMPARE(merged.parts.size(), 4);
+            QCOMPARE(merged.part(u"Tenor1")->staffNumber.valueOr(0), 1);
+            QCOMPARE(merged.part(u"Tenor1")->notesInherited, i != 2);
+            QCOMPARE(countBySeverity(validate(merged), Severity::Error), i == 0 ? 1 : 0);
+            QCOMPARE(io::serialize(*overlay), bytes);
+            overlay->title.set("Editada");
+            QByteArray expected = bytes;
+            expected.replace("Traducción", "Editada");
+            QCOMPARE(io::serialize(*overlay), expected);
+        }
+        QCOMPARE(io::serialize(*base), ttbbSong());
+    }
+
+    void spliceTargetsMatchNormalizedExactRolesInDeterministicOrder()
+    {
+        auto doc = io::loadBytes("song.toml", ttbbSong());
+        QVERIFY(doc);
+        Part &echo = *doc->part(u"Baritone");
+        echo.spliceLyricsInto.set(" TeNoR1 ");
+        QCOMPARE(analyseSplice(*doc, echo).targetPartName, QStringLiteral("Tenor1"));
+        echo.spliceLyricsInto.set("tenor");
+        QVERIFY(analyseSplice(*doc, echo).targetPartName.isEmpty());
+        echo.suppressVerses.set({2, 3});
+        echo.suppressVersesWhen.set({" tenor1 ", "TENOR2"});
+        for (const auto &f : validate(*doc))
+            QVERIFY(f.rule != "W-SUPPRESS-TARGET");
+        echo.spliceLyricsInto.set("tenor1");
+        Part repeated = *doc->part(u"Tenor1");
+        repeated.name = "Upper10";
+        doc->parts.prepend(repeated);
+        repeated.name = "Upper2";
+        doc->parts.prepend(repeated);
+        // Canonical Tenor1 has suffix 1, ahead of 2 and 10, regardless of tables.
+        QCOMPARE(analyseSplice(*doc, *doc->part(u"Baritone")).targetPartName, QStringLiteral("Tenor1"));
+        QCOMPARE(doc->part(u"Baritone")->lyrics.size(), 0);
+    }
+
     // -- slot counting --------------------------------------------------------
 
     void slurAndBeamContinuationsTakeNoSlot()

@@ -13,6 +13,22 @@ class GlyphTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void cClefHasMirroredLobesAndATallReferenceBar()
+    {
+        const auto glyph = cClef();
+        QVERIFY(!glyph.isEmpty());
+        const auto bounds = glyph.boundingRect();
+        QVERIFY(bounds.width() > 1.7 && bounds.width() < 2.5);
+        QVERIFY(bounds.height() >= 4.0 && bounds.height() < 5.0);
+        QVERIFY(qAbs(bounds.center().y()) < 0.001);
+        QVERIFY(glyph.contains(QPointF(-0.5, 0)));
+        QVERIFY(glyph.contains(QPointF(-0.5, -1.8)));
+        QVERIFY(glyph.contains(QPointF(-0.5, 1.8)));
+        QVERIFY(!glyph.contains(QPointF(1.5, 0)));
+        QVERIFY(glyph != trebleClef());
+        QVERIFY(glyph != bassClef());
+    }
+
     void mapsMajorScaleDegreesToAikenShapes()
     {
         static constexpr std::array steps { u'C', u'D', u'E', u'F', u'G', u'A', u'B' };

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jon Hood, OpenPsalm.com
 
 #include "LyricsPanel.h"
+#include "core/Voicing.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -273,7 +274,7 @@ void LyricsPanel::refresh()
     const QString previous = gridPartName();
     m_gridPart->clear();
     for (const Part *part : doc.partsInDisplayOrder())
-        m_gridPart->addItem(part->name, part->name);
+        m_gridPart->addItem(voicing::label(*part), part->name);
     const int index = m_gridPart->findData(previous);
     m_gridPart->setCurrentIndex(index >= 0 ? index : 0);
 
@@ -317,7 +318,7 @@ QStringList LyricsPanel::structureSignature() const
     const SongDocument &doc = m_session->effectiveDocument();
     signature.append(QStringLiteral("v%1").arg(doc.verseCount.valueOr(0)));
     for (const Part *part : doc.partsInDisplayOrder())
-        signature.append(QStringLiteral("p%1").arg(part->name));
+        signature.append(QStringLiteral("p%1:%2").arg(part->name, voicing::label(*part)));
     for (auto it = doc.lyrics.constBegin(); it != doc.lyrics.constEnd(); ++it)
         signature.append(QStringLiteral("g%1").arg(it.key()));
     for (const Part *part : doc.partsInDisplayOrder()) {
@@ -510,8 +511,9 @@ QWidget *LyricsPanel::buildTextRow(const QString &key, const QString &partName,
     if (isOverride) {
         badge->setText(QStringLiteral("<b style='color:%1'>%2 only</b> "
                                       "<span style='color:palette(mid)'>"
-                                      "— parts.%2.lyrics.%3</span>")
-                           .arg(accent, partName, key));
+                                      "— parts.%3.lyrics.%4</span>")
+                           .arg(accent, voicing::label(*m_session->effectiveDocument().part(partName)).toHtmlEscaped(),
+                               partName.toHtmlEscaped(), key.toHtmlEscaped()));
     } else if (appliesTo.isEmpty()) {
         badge->setText(QStringLiteral("<b style='color:%1'>%2</b> "
                                       "<span style='color:palette(mid)'>%3</span>")
@@ -537,7 +539,8 @@ QWidget *LyricsPanel::buildTextRow(const QString &key, const QString &partName,
     rowLayout->addLayout(badgeRow);
 
     auto *editor = new QPlainTextEdit(row);
-    editor->setPlainText(text);
+    const auto pending = m_pendingCommits.constFind(commitKey(m_session->currentLanguage(), partName, key));
+    editor->setPlainText(pending == m_pendingCommits.cend() ? text : pending->text);
     editor->setMaximumHeight(78);
     editor->setPlaceholderText(tr("Je -- sus loves me! This I know,"));
     editor->setTabChangesFocus(true);

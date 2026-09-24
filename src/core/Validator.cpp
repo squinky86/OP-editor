@@ -2,6 +2,8 @@
 // Copyright (C) 2026 Jon Hood, OpenPsalm.com
 
 #include "Validator.h"
+#include "Clefs.h"
+#include "Voicing.h"
 
 #include <QHash>
 #include <QRegularExpression>
@@ -141,16 +143,12 @@ QStringList validKeySignatures()
 
 QStringList validClefs()
 {
-    static const QStringList clefs { QStringLiteral("treble"), QStringLiteral("bass"),
-        QStringLiteral("treble_8") };
-    return clefs;
+    return clefs::names();
 }
 
 QStringList validChoralTypes()
 {
-    static const QStringList types { QStringLiteral("soprano"), QStringLiteral("alto"),
-        QStringLiteral("tenor"), QStringLiteral("bass") };
-    return types;
+    return voicing::names();
 }
 
 int countBySeverity(const QList<Finding> &findings, Severity severity)
@@ -518,8 +516,8 @@ QList<Finding> validate(
 
     // --------------------------------------------------------- notation style
 
+    const Part *lead = voicing::lead(doc);
     for (const Part &part : doc.parts) {
-        const QString choral = part.choralType.valueOr(QString()).toLower();
 
         // Marker balance. Unbalanced markers cascade into bogus melisma state, so
         // the slot-based checks below are unreliable for that part.
@@ -649,21 +647,22 @@ QList<Finding> validate(
                 part.name, openHairpin->first, -1, {}, -1,
                 QStringLiteral("terminate the hairpin"));
 
-        // Tempo spanners belong to the soprano line only.
-        if (choral != QLatin1String("soprano")) {
+        // One authored part owns the global tempo, even among repeated roles.
+        if (&part != lead) {
             for (int m = 0; m < measures.size(); ++m) {
                 for (const Event &event : measures.at(m).events) {
                     // The terminator is as out of place as the start marker:
                     // the whole spanner apparatus is song-level and belongs on
-                    // the soprano line.
+                    // the arrangement lead.
                     if (!event.tempoSpanner.isEmpty())
                         add(Severity::Warning, QStringLiteral("R5.3"),
-                            QStringLiteral("tempo spanner \\%1 on a non-soprano part")
-                                .arg(event.tempoSpanner),
+                            QStringLiteral("tempo spanner \\%1 belongs on arrangement lead %2")
+                                .arg(event.tempoSpanner, lead ? lead->name : QString()),
                             part.name, m + 1, event.indexInMeasure);
                     if (event.spannerEnd)
                         add(Severity::Warning, QStringLiteral("R5.3"),
-                            QStringLiteral("tempo spanner \\spanend on a non-soprano part"),
+                            QStringLiteral("tempo spanner \\spanend belongs on arrangement lead %1")
+                                .arg(lead ? lead->name : QString()),
                             part.name, m + 1, event.indexInMeasure);
                 }
             }
@@ -961,15 +960,30 @@ QList<Finding> validate(
                     .arg(*doc.keySignature));
     }
     for (const Part &part : doc.parts) {
-        if (part.clef.present() && !validClefs().contains(*part.clef))
-            add(Severity::Warning, QStringLiteral("W-CLEF"),
-                QStringLiteral("clef \"%1\" is not treble, bass, or treble_8").arg(*part.clef),
-                part.name);
-        if (part.choralType.present() && !validChoralTypes().contains(part.choralType->toLower()))
+        if (!clefs::effective(part.clef.opt()))
+            add(Severity::Error, QStringLiteral("E-CLEF"),
+                QStringLiteral("Song “%1”, part “%2”: unsupported clef “%3”; use %4")
+                    .arg(doc.title.valueOr({}), part.name, part.clef.valueOr({}),
+                        validClefs().join(QStringLiteral(", "))), part.name);
+        if (part.staffNumber.present() && *part.staffNumber <= 0)
+            add(Severity::Error, QStringLiteral("E-STAFF"),
+                QStringLiteral("Song “%1”, part “%2”: staff_number must be positive; found %3")
+                    .arg(doc.title.valueOr({}), part.name).arg(*part.staffNumber), part.name);
+        if (part.choralType.present() && !voicing::role(*part.choralType))
             add(Severity::Warning, QStringLiteral("W-CT"),
-                QStringLiteral("choral_type \"%1\" is not soprano, alto, tenor, or bass")
-                    .arg(*part.choralType),
-                part.name);
+                QStringLiteral("choral_type “%1” is not a documented role (%2); preserved as a custom role")
+                    .arg(*part.choralType, validChoralTypes().join(QStringLiteral(", "))), part.name);
+        for (const QString &target : part.suppressVersesWhen.valueOr({})) {
+            const QString normalized = voicing::normalize(target);
+            const bool available = std::any_of(doc.parts.cbegin(), doc.parts.cend(),
+                [&](const Part &candidate) {
+                    return voicing::normalize(candidate.choralType.valueOr({})) == normalized;
+                });
+            if (!available)
+                add(Severity::Warning, QStringLiteral("W-SUPPRESS-TARGET"),
+                    QStringLiteral("suppress_verses_when target “%1” is absent; it cannot trigger suppression")
+                        .arg(target), part.name);
+        }
         const bool hasSuppress = part.suppressVerses.present()
             && !part.suppressVerses->isEmpty();
         const bool hasWhen = part.suppressVersesWhen.present()
@@ -979,6 +993,24 @@ QList<Finding> validate(
                 QStringLiteral("suppress_verses and suppress_verses_when must both be present; "
                                "with only one, no suppression happens"),
                 part.name);
+    }
+
+    // Compare effective clefs only on explicitly shared staves. Missing staff
+    // metadata gives each part its own staff, never an i+1 numeric alias.
+    QMap<int, const Part *> staffOwners;
+    for (const Part &part : doc.parts) {
+        const auto clef = clefs::effective(part.clef.opt());
+        if (!part.staffNumber.present() || *part.staffNumber <= 0 || !clef)
+            continue;
+        const Part *other = staffOwners.value(*part.staffNumber, nullptr);
+        if (other && clefs::effective(other->clef.opt()) != clef)
+            add(Severity::Error, QStringLiteral("E-STAFF-CLEF"),
+                QStringLiteral("Song “%1”: parts “%2” (%3) and “%4” (%5) have conflicting clefs on staff %6")
+                    .arg(doc.title.valueOr({}), other->name,
+                        clefs::effective(other->clef.opt())->name, part.name, clef->name)
+                    .arg(*part.staffNumber), part.name);
+        else if (!other)
+            staffOwners.insert(*part.staffNumber, &part);
     }
 
     if (doc.verseCount.present()) {
