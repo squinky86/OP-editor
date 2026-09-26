@@ -164,13 +164,42 @@ The transport labels TTBB voices **T1**, **T2**, **Bar**, **Bass**. Uncheck a vo
 to mute it; repeated roles retain their individual part names and mute state.
 Unchecking every part produces silence. Clefs never transpose audio.
 
-Tempo spanners belong to one authored lead: the first part in the order
+Tempo marks belong to one authored lead: the first part in the order
 Soprano, Tenor I, Alto, Tenor II, Tenor, Baritone, Bass, then custom roles.
 Within a role, numeric suffixes sort numerically (Bass, Bass2, Bass10). This is
 normally Soprano for SATB and Tenor I for TTBB. Muting the lead preserves its
 tempo map. Markers on another part are reported and do not take over playback.
 Ramps use the website's eight MIDI tempo steps, reach the target on the final
 note's onset, and restore the song tempo after that note.
+
+Select a note, rest, or spacer and use **Inspector → Tempo mark** to add a
+gradual change, **a tempo**, or one of the new step marks. Step marks appear
+as bold words above the staff and immediately hold a percentage of the song's
+base tempo:
+
+| Mark | Base tempo |
+|---|---|
+| Largo | 60% |
+| Lento | 70% |
+| Adagio | 75% |
+| Andante | 85% |
+| Moderato | 100% |
+| Allegretto | 115% |
+| Allegro | 130% |
+| Vivace | 145% |
+| Presto | 160% |
+
+**End tempo mark** writes `\spanend` and restores the base tempo after that
+note. A new mark on the same terminating note takes over at its onset; the
+existing combined `\spanend\atempo` restores after the note. Without an end,
+a step mark continues to the next mark or the end of the song. A following
+`\rit` slows down from that held tempo. The transport's tempo override scales
+the whole performance. Changes support Undo and are written to disk on Save.
+
+In Source, write a dynamic after ordinary note flags, followed by any starting
+tempo mark and then a hairpin: `c'4@c%f\allegro\<`. Double each backslash inside
+TOML basic strings (`"…"` or `"""…"""`); literal strings (`'''…'''`) use single
+backslashes. Inspector and Score edits handle this escaping automatically.
 
 OPE plays the authored stream once for monitoring; verse selection chooses the
 displayed lyrics. Existing differences from website playback remain: hairpins

@@ -34,6 +34,25 @@ QColor colorPlayback() { return QColor(0x18, 0x94, 0x4e); }
 QColor colorProblem() { return QColor(0xd1, 0x24, 0x2f); }
 QColor colorInherited() { return QColor(0x88, 0x88, 0x88); }
 
+QFont tempoFont(QFont font, qreal space, const TempoMark *mark)
+{
+    const bool step = mark && mark->kind == TempoMark::Kind::Step;
+    font.setItalic(!step);
+    font.setBold(step);
+    font.setPointSizeF(space * 1.3);
+    return font;
+}
+
+qreal tempoHeight(const Event &event)
+{
+    return event.fermata ? 3.6 : 1.6;
+}
+
+qreal sectionHeight(const Event &event)
+{
+    return event.tempoSpanner.isEmpty() ? 2.6 : tempoHeight(event) + 2.2;
+}
+
 int flagCountFor(int base)
 {
     switch (base) {
@@ -109,6 +128,7 @@ MeasureGrid ScoreView::buildGrid(int measureIndex) const
 
     // 1. Every tick at which any voice starts a note, plus the barline.
     QSet<int> tickSet { 0 };
+    QHash<int, qreal> tempoWidth;
     int measureTicks = 0;
     for (const Part &part : doc.parts) {
         if (measureIndex >= part.stream.measureCount())
@@ -117,6 +137,12 @@ MeasureGrid ScoreView::buildGrid(int measureIndex) const
         int tick = 0;
         for (const Event &event : measure.events) {
             tickSet.insert(tick);
+            if (!event.tempoSpanner.isEmpty()) {
+                const TempoMark *mark = tempoMark(event.tempoSpanner);
+                const QFontMetricsF tempoMetrics(tempoFont(font(), space, mark));
+                const qreal width = tempoMetrics.horizontalAdvance(mark ? mark->label : event.tempoSpanner);
+                tempoWidth[tick] = std::max(tempoWidth.value(tick), width);
+            }
             tick += event.playedTicks();
         }
         measureTicks = std::max(measureTicks, tick);
@@ -165,7 +191,8 @@ MeasureGrid ScoreView::buildGrid(int measureIndex) const
         const qreal quarters = duration / static_cast<qreal>(ticks::Quarter);
         const qreal natural = space * (2.0 + 2.6 * std::pow(quarters, 0.55));
         const qreal words = syllableWidth.value(grid.ticks.at(i), 0.0) + syllableGap;
-        offset += std::max(natural, words);
+        const qreal tempo = tempoWidth.value(grid.ticks.at(i), 0.0) + syllableGap;
+        offset += std::max({natural, words, tempo});
     }
     grid.total = std::max<qreal>(offset, space);
     return grid;
@@ -329,6 +356,11 @@ void ScoreView::relayout()
                     const Part &part = doc.parts.at(index);
                     for (int m = first; m <= last && m < part.stream.measureCount(); ++m) {
                         for (const Event &event : part.stream.measures().at(m).events) {
+                            if (!event.tempoSpanner.isEmpty()) {
+                                const qreal height = event.chorusStart || event.codaStart
+                                    ? sectionHeight(event) : tempoHeight(event);
+                                above = std::max(above, (height + 2.0) * space);
+                            }
                             for (const Pitch &pitch : event.pitches) {
                                 const qreal position = staffPositionFor(pitch, *staff.clef);
                                 const bool up = directions.at(voice) == voicing::Stem::Up
@@ -343,7 +375,7 @@ void ScoreView::relayout()
                 }
             }
             // The usual top/system margins cover three spaces above a staff.
-            // Reserve more for high notes so their stems and hit targets stay visible.
+            // Reserve more for high notes and stacked tempo/section markings.
             staff.top = staffY + std::max<qreal>(0, above - TopMarginSpaces * space);
             staff.lyricTop = staff.top + bottom + 2 * space;
             QList<QStringList> seen;
@@ -550,6 +582,16 @@ void ScoreView::paintPart(QPainter &painter, const SystemBox &system, const Staf
                 Q_UNUSED(absolute);
             }
 
+            if (!event.tempoSpanner.isEmpty()) {
+                const TempoMark *mark = tempoMark(event.tempoSpanner);
+                painter.save();
+                painter.setFont(tempoFont(font(), space, mark));
+                painter.setPen(ink);
+                painter.drawText(QPointF(x - 0.5 * space, staff.top - tempoHeight(event) * space),
+                    mark ? mark->label : event.tempoSpanner);
+                painter.restore();
+            }
+
             if (event.isRest() || event.isSpacer()) {
                 if (selected) {
                     painter.save();
@@ -727,22 +769,13 @@ void ScoreView::paintPart(QPainter &painter, const SystemBox &system, const Staf
                 painter.drawText(QPointF(x - 0.5 * space, staff.top + 6.6 * space),
                     event.dynamic);
             }
-            if (!event.tempoSpanner.isEmpty()) {
-                QFont font = painter.font();
-                font.setItalic(true);
-                font.setPointSizeF(space * 1.3);
-                painter.setFont(font);
-                painter.setPen(ink);
-                painter.drawText(QPointF(x - 0.5 * space, staff.top - 1.6 * space),
-                    event.tempoSpanner + u'.');
-            }
             if (event.chorusStart || event.codaStart) {
                 QFont font = painter.font();
                 font.setBold(true);
                 font.setPointSizeF(space * 1.1);
                 painter.setFont(font);
                 painter.setPen(colorPlayback());
-                painter.drawText(QPointF(x - 0.4 * space, staff.top - 2.6 * space),
+                painter.drawText(QPointF(x - 0.4 * space, staff.top - sectionHeight(event) * space),
                     event.chorusStart ? QStringLiteral("@c") : QStringLiteral("@e"));
             }
 

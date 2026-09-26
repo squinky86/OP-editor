@@ -97,10 +97,13 @@ public:
 
 private:
     void commitPart(QObject *control);
+    void commitTempo();
 
     Session *m_session = nullptr;
     bool m_loading = false;
     QLabel *m_noteInfo = nullptr;
+    QComboBox *m_tempoMark = nullptr;
+    QCheckBox *m_tempoEnd = nullptr;
     QComboBox *m_partSelector = nullptr;
     QComboBox *m_choralType = nullptr;
     QComboBox *m_clef = nullptr;

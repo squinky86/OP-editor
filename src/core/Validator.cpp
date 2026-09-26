@@ -309,7 +309,7 @@ QList<Finding> validate(
             case TokenIssue::Code::UnknownSpanner:
                 add(Severity::Error, QStringLiteral("E-SPAN-UNKNOWN"),
                     QStringLiteral("`%1` contains an unrecognised marker (\"%2\" is left in the "
-                                   "duration, so the note becomes a quarter)")
+                                   "duration); the seeder rejects this token")
                         .arg(issue.token, issue.detail),
                     part.name, measure, issue.eventIndex);
                 break;
@@ -656,12 +656,12 @@ QList<Finding> validate(
                     // the arrangement lead.
                     if (!event.tempoSpanner.isEmpty())
                         add(Severity::Warning, QStringLiteral("R5.3"),
-                            QStringLiteral("tempo spanner \\%1 belongs on arrangement lead %2")
+                            QStringLiteral("tempo mark \\%1 belongs on arrangement lead %2")
                                 .arg(event.tempoSpanner, lead ? lead->name : QString()),
                             part.name, m + 1, event.indexInMeasure);
                     if (event.spannerEnd)
                         add(Severity::Warning, QStringLiteral("R5.3"),
-                            QStringLiteral("tempo spanner \\spanend belongs on arrangement lead %1")
+                            QStringLiteral("tempo mark \\spanend belongs on arrangement lead %1")
                                 .arg(lead ? lead->name : QString()),
                             part.name, m + 1, event.indexInMeasure);
                 }

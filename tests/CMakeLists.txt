@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Jon Hood, OpenPsalm.com
 
-set(OPE_TESTS FormatTests DocumentTests MetadataTests CorpusTests CorpusArchiveTests)
+set(OPE_TESTS FormatTests TempoTests DocumentTests MetadataTests CorpusTests CorpusArchiveTests)
 
 foreach(test IN LISTS OPE_TESTS)
     qt_add_executable(${test} ${test}.cpp Fixtures.cpp)

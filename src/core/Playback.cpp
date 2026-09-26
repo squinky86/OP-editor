@@ -25,8 +25,8 @@ int midiDuration(const Event &event)
         ? duration * event.tuplet->normal / event.tuplet->actual : duration;
 }
 
-/// Port of OpenPsalm compute_tempo_changes: ramp to the terminating note's
-/// onset, hold that tempo through the note, then restore the song tempo.
+/// Port of OpenPsalm compute_tempo_changes: step marks jump and hold; gradual
+/// marks ramp from the active tempo to the terminating note's onset.
 /// Only the authored lead supplies markers, whether audible or muted.
 QMap<int, int> tempoChanges(const SongDocument &doc)
 {
@@ -44,18 +44,23 @@ QMap<int, int> tempoChanges(const SongDocument &doc)
             tick += midiDuration(event);
         }
     }
+    int activeBpm = songBpm;
     for (qsizetype i = 0; i < flat.size(); ++i) {
         const QString &kind = flat.at(i).event->tempoSpanner;
-        if (kind.isEmpty())
+        const TempoMark *mark = tempoMark(kind);
+        if (!mark)
             continue;
-        if (kind == QLatin1String("atempo")) {
+        if (mark->kind == TempoMark::Kind::Restore) {
             microsAt.insert(flat.at(i).tick, 60000000 / songBpm);
+            activeBpm = songBpm;
             continue;
         }
         qsizetype end = flat.size() - 1;
+        bool closedBySpanEnd = false;
         for (qsizetype j = i + 1; j < flat.size(); ++j) {
             if (flat.at(j).event->spannerEnd) {
                 end = j;
+                closedBySpanEnd = true;
                 break;
             }
             if (!flat.at(j).event->tempoSpanner.isEmpty()) {
@@ -63,23 +68,33 @@ QMap<int, int> tempoChanges(const SongDocument &doc)
                 break;
             }
         }
-        double factor = 1.0;
-        if (kind == QLatin1String("rit") || kind == QLatin1String("ritard")
-            || kind == QLatin1String("rall"))
-            factor = 0.6;
-        else if (kind == QLatin1String("accel") || kind == QLatin1String("string"))
-            factor = 1.4;
-        const int target = std::max(20, static_cast<int>(std::round(songBpm * factor)));
         const int start = flat.at(i).tick;
-        const int length = flat.at(end).tick - start;
-        for (int step = 1; step <= 8; ++step) {
-            const double fraction = step / 8.0;
-            const double bpm = songBpm + (target - songBpm) * fraction;
-            microsAt.insert(start + static_cast<int>(std::round(length * fraction)),
-                static_cast<int>(std::round(60000000.0 / bpm)));
+        const Event &endEvent = *flat.at(end).event;
+        // A start on the terminating note takes over at its onset. Preserve
+        // the exporter's historical \spanend\atempo restore after that note.
+        const bool handsOff = closedBySpanEnd && !endEvent.tempoSpanner.isEmpty()
+            && endEvent.tempoSpanner != QLatin1String("atempo");
+        if (mark->kind == TempoMark::Kind::Step) {
+            activeBpm = std::max(20, static_cast<int>(std::round(songBpm * mark->ratio)));
+            microsAt.insert(start, 60000000 / activeBpm);
+            if (!closedBySpanEnd) {
+                i = end;
+                continue;
+            }
+        } else {
+            const int target = std::max(20, static_cast<int>(std::round(activeBpm * mark->ratio)));
+            const int length = flat.at(end).tick - start;
+            for (int step = 1; step <= 8; ++step) {
+                const double fraction = step / 8.0;
+                const double bpm = activeBpm + (target - activeBpm) * fraction;
+                microsAt.insert(start + static_cast<int>(std::round(length * fraction)),
+                    static_cast<int>(std::round(60000000.0 / bpm)));
+            }
         }
-        microsAt.insert(flat.at(end).tick + midiDuration(*flat.at(end).event), 60000000 / songBpm);
-        i = end;
+        activeBpm = songBpm;
+        const int restoreTick = flat.at(end).tick + (handsOff ? 0 : midiDuration(endEvent));
+        microsAt.insert(restoreTick, 60000000 / songBpm);
+        i = handsOff ? end - 1 : end;
     }
     return microsAt;
 }

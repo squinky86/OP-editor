@@ -587,6 +587,27 @@ InspectorPanel::InspectorPanel(Session *session, QWidget *parent)
     m_noteInfo->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_noteInfo->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     noteLayout->addWidget(m_noteInfo);
+    auto *tempoLayout = new QFormLayout;
+    tempoLayout->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    m_tempoMark = new QComboBox(noteBox);
+    m_tempoMark->setObjectName(QStringLiteral("noteTempoMark"));
+    m_tempoMark->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_tempoMark->setMinimumContentsLength(12);
+    m_tempoMark->addItem(tr("(none)"), QString());
+    for (const TempoMark &mark : tempoMarks()) {
+        const QString label = mark.kind == TempoMark::Kind::Step
+            ? tr("%1 (%2%)").arg(mark.label).arg(qRound(mark.ratio * 100)) : mark.label;
+        m_tempoMark->addItem(label, mark.name);
+        m_tempoMark->setItemData(m_tempoMark->count() - 1, u'\\' + mark.name, Qt::ToolTipRole);
+    }
+    m_tempoEnd = new QCheckBox(tr("End tempo mark"), noteBox);
+    m_tempoEnd->setObjectName(QStringLiteral("noteTempoEnd"));
+    m_tempoEnd->setToolTip(tr("\\spanend — return to the song tempo after this note, or start a new mark on this note."));
+    tempoLayout->addRow(tr("Tempo mark"), m_tempoMark);
+    tempoLayout->addRow(QString(), m_tempoEnd);
+    noteLayout->addLayout(tempoLayout);
+    connect(m_tempoMark, &QComboBox::currentIndexChanged, this, &InspectorPanel::commitTempo);
+    connect(m_tempoEnd, &QCheckBox::toggled, this, &InspectorPanel::commitTempo);
     layout->addWidget(noteBox);
 
     auto *partBox = new QGroupBox(tr("Part"), this);
@@ -656,6 +677,15 @@ void InspectorPanel::refresh()
         m_partSelector->addItem(voicing::label(doc.parts.at(index)), index);
     m_partSelector->setCurrentIndex(m_partSelector->findData(selection.partIndex));
     const bool hasPart = selection.isValid() && selection.partIndex < doc.parts.size();
+    const Event *selectedEvent = m_session->selectedEvent();
+    m_tempoMark->setEnabled(selectedEvent != nullptr);
+    m_tempoEnd->setEnabled(selectedEvent != nullptr);
+    m_tempoMark->setCurrentIndex(selectedEvent
+        ? m_tempoMark->findData(selectedEvent->tempoSpanner) : 0);
+    m_tempoEnd->setChecked(selectedEvent && selectedEvent->spannerEnd);
+    const Part *lead = voicing::lead(doc);
+    m_tempoMark->setToolTip(tr("Tempo marks belong on %1 and affect every voice, even when that part is muted. Percentages are relative to the song tempo.")
+        .arg(lead ? voicing::label(*lead) : tr("the arrangement lead")));
     for (QWidget *control : QList<QWidget *> { m_choralType, m_clef, m_staffNumber,
              m_splice, m_suppressVerses, m_suppressWhen })
         control->setEnabled(hasPart);
@@ -740,6 +770,33 @@ void InspectorPanel::refresh()
         m_spliceReport->setText(lines.join(u'\n'));
     }
     m_loading = false;
+}
+
+void InspectorPanel::commitTempo()
+{
+    if (m_loading || !m_session->selectedEvent())
+        return;
+    const Selection selection = m_session->selection();
+    const QString mark = m_tempoMark->currentData().toString();
+    const bool end = m_tempoEnd->isChecked();
+    const Event &selected = *m_session->selectedEvent();
+    if (selected.tempoSpanner == mark && selected.spannerEnd == end)
+        return;
+    const SongDocument &effective = m_session->effectiveDocument();
+    const QString name = effective.parts.at(selection.partIndex).name;
+    m_session->mutate(tr("Edit tempo mark"), [&](SongDocument &doc) {
+        materialiseOverlayNotes(doc, effective, name);
+        Part *part = doc.part(name);
+        if (!part || selection.measureIndex >= part->stream.measureCount())
+            return;
+        auto &events = part->stream.measures()[selection.measureIndex].events;
+        if (selection.eventIndex >= events.size())
+            return;
+        Event &event = events[selection.eventIndex];
+        event.tempoSpanner = mark;
+        event.spannerEnd = end;
+        event.dirty = true;
+    });
 }
 
 void InspectorPanel::commitPart(QObject *control)

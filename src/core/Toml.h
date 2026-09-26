@@ -151,7 +151,7 @@ private:
 
 /// Quote and escape `text` as a TOML basic string.
 [[nodiscard]] QByteArray emitBasicString(const QString &text);
-/// Emit a multi-line basic string: `"""\n<body>\n"""` (the body verbatim).
+/// Emit a multi-line basic string, escaping content and retaining line breaks.
 [[nodiscard]] QByteArray emitMultilineString(const QString &body);
 /// Emit an array of strings on one line: `["a", "b"]`.
 [[nodiscard]] QByteArray emitStringArrayInline(const QStringList &items);

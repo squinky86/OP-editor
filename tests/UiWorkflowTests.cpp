@@ -236,6 +236,154 @@ private Q_SLOTS:
         }
     }
 
+    void inspectorTempoMarksSaveUndoAndSynchronizeSource()
+    {
+        QTemporaryDir dir;
+        const QByteArray bytes = "title = 'Tempo editing'\ntempo_bpm = 100\n"
+            "[parts.Solo]\nnotes = \"\"\"\n"
+            "c'4@c%f\\\\rit\\\\< d'4 e'4 f'4\\\\! | c'1\n\"\"\"\n";
+        write(QDir(dir.path()), "song.toml", bytes);
+        Session session;
+        InspectorPanel inspector(&session);
+        SourcePanel source(&session);
+        auto *mark = inspector.findChild<QComboBox *>("noteTempoMark");
+        auto *end = inspector.findChild<QCheckBox *>("noteTempoEnd");
+        auto *editor = source.findChild<QPlainTextEdit *>();
+        QVERIFY(mark && end && editor);
+        QVERIFY(!mark->isEnabled() && !end->isEnabled());
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        session.setSelection({0, 0, 0});
+        QCOMPARE(mark->currentData().toString(), QStringLiteral("rit"));
+        QCOMPARE(session.currentBytes(), bytes);
+        for (const QString &name : {QStringLiteral("largo"), QStringLiteral("lento"),
+                 QStringLiteral("adagio"), QStringLiteral("andante"), QStringLiteral("moderato"),
+                 QStringLiteral("allegretto"), QStringLiteral("allegro"), QStringLiteral("vivace"),
+                 QStringLiteral("presto")}) {
+            const int index = mark->findData(name);
+            QVERIFY(index > 0);
+            mark->setCurrentIndex(index);
+            QCOMPARE(session.selectedEvent()->tempoSpanner, name);
+            QCOMPARE(session.selectedEvent()->dynamic, QStringLiteral("f"));
+            QCOMPARE(session.selectedEvent()->hairpin, QStringLiteral("crescendo"));
+            QVERIFY(session.selectedEvent()->chorusStart);
+            QCOMPARE(editor->toPlainText().toUtf8(), session.currentBytes());
+            const auto reloaded = io::loadBytes("song.toml", session.currentBytes());
+            QVERIFY(reloaded);
+            QCOMPARE(countBySeverity(validate(*reloaded), Severity::Error), 0);
+        }
+        session.setSelection({0, 0, 2});
+        QCOMPARE(mark->currentIndex(), 0);
+        mark->setCurrentIndex(mark->findData("andante"));
+        end->setChecked(true);
+        QVERIFY(session.selectedEvent()->spannerEnd);
+        const QByteArray changed = session.currentBytes();
+        session.undoStack()->undo();
+        QVERIFY(!end->isChecked());
+        session.undoStack()->redo();
+        QVERIFY(end->isChecked());
+        QCOMPARE(session.currentBytes(), changed);
+        while (session.undoStack()->canUndo())
+            session.undoStack()->undo();
+        QCOMPARE(session.currentBytes(), bytes);
+        while (session.undoStack()->canRedo())
+            session.undoStack()->redo();
+        QCOMPARE(session.currentBytes(), changed);
+        QVERIFY(session.save());
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        session.setSelection({0, 0, 2});
+        QCOMPARE(mark->currentData().toString(), QStringLiteral("andante"));
+        QVERIFY(end->isChecked());
+        editor->setPlainText(QString::fromUtf8(changed).replace("andante", "allegretto"));
+        QVERIFY(source.commitPendingEdits());
+        QCOMPARE(mark->currentData().toString(), QStringLiteral("allegretto"));
+        // Removing a start leaves the terminator in place, and can be undone.
+        mark->setCurrentIndex(0);
+        QVERIFY(session.selectedEvent()->tempoSpanner.isEmpty());
+        QVERIFY(session.selectedEvent()->spannerEnd);
+        session.undoStack()->undo();
+        QCOMPARE(mark->currentData().toString(), QStringLiteral("allegretto"));
+        session.setSelection({0, 0, -1});
+        QVERIFY(!mark->isEnabled() && !end->isEnabled());
+    }
+
+    void inspectorTempoEditMaterializesOnlyTheInheritedVoice()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, "song.toml", ttbbTempo());
+        const QByteArray overlay = "title = 'Translation'\n";
+        write(root, "song_es.toml", overlay);
+        Session session;
+        QVERIFY(session.openSong(root.filePath("song_es.toml")));
+        InspectorPanel inspector(&session);
+        session.setSelection({1, 0, 0});
+        auto *mark = inspector.findChild<QComboBox *>("noteTempoMark");
+        QVERIFY(mark);
+        QCOMPARE(mark->currentData().toString(), QStringLiteral("rit"));
+        mark->setCurrentIndex(mark->findData("allegro"));
+        QCOMPARE(session.selectedEvent()->tempoSpanner, QStringLiteral("allegro"));
+        const QByteArray changed = session.currentBytes();
+        QVERIFY(changed.contains("[parts.Lead]"));
+        QVERIFY(changed.contains("allegro"));
+        QVERIFY(!changed.contains("[parts.Second]"));
+        QVERIFY(!changed.contains("choral_type"));
+        QVERIFY(!changed.contains("tempo_bpm"));
+        QCOMPARE(session.currentBytes(QStringLiteral("en")), ttbbTempo());
+        session.undoStack()->undo();
+        QCOMPARE(session.currentBytes(), overlay);
+        QCOMPARE(mark->currentData().toString(), QStringLiteral("rit"));
+        session.undoStack()->redo();
+        QCOMPARE(session.currentBytes(), changed);
+        QVERIFY(session.save());
+        QVERIFY(session.openSong(root.filePath("song_es.toml")));
+        session.setSelection({1, 0, 0});
+        QCOMPARE(session.selectedEvent()->tempoSpanner, QStringLiteral("allegro"));
+    }
+
+    void tempoControlsFitAndRespectInvalidSourceDrafts()
+    {
+        QTemporaryDir dir;
+        write(QDir(dir.path()), "song.toml", R"TOML(title = 'Tempo marks'
+tempo_bpm = 100
+[parts.Solo]
+notes = '''c'4@c%f\allegro d'4 e'4 f'4 | r4\andante c'4 c'4 c'4\spanend'''
+)TOML");
+        QSettings().remove(QStringLiteral("workspace"));
+        MainWindow window;
+        window.openPath(dir.filePath("song.toml"));
+        window.show();
+        auto *session = window.findChild<Session *>();
+        auto *inspector = window.findChild<InspectorPanel *>();
+        auto *tabs = window.findChild<QTabWidget *>("detailsTabs");
+        auto *source = window.findChild<SourcePanel *>();
+        QVERIFY(session && inspector && tabs && source);
+        tabs->setCurrentWidget(inspector);
+        session->setSelection({0, 0, 0});
+        auto *mark = inspector->findChild<QComboBox *>("noteTempoMark");
+        auto *end = inspector->findChild<QCheckBox *>("noteTempoEnd");
+        QVERIFY(mark && end);
+        const QString review = qEnvironmentVariable("OPE_REVIEW_DIR");
+        for (const QSize &size : {QSize(760, 760), QSize(1440, 1000)}) {
+            window.resize(size);
+            QCoreApplication::processEvents();
+            QCOMPARE(window.size(), size);
+            QVERIFY(mark->isVisibleTo(&window) && end->isVisibleTo(&window));
+            QVERIFY(inspector->rect().contains(mark->mapTo(inspector, mark->rect().bottomRight())));
+            QVERIFY(inspector->rect().contains(end->mapTo(inspector, end->rect().bottomRight())));
+            if (!review.isEmpty()) {
+                QVERIFY(QDir().mkpath(review));
+                QVERIFY(window.grab().save(QDir(review).filePath(QString("tempo-%1.png").arg(size.width()))));
+            }
+        }
+        auto *editor = source->findChild<QPlainTextEdit *>();
+        editor->setPlainText("title = 'unfinished\n");
+        QVERIFY(!source->commitPendingEdits());
+        QVERIFY(!mark->isEnabled() && !end->isEnabled());
+        source->discardPendingEdits();
+        QVERIFY(mark->isEnabled() && end->isEnabled());
+        QCOMPARE(mark->currentData().toString(), QStringLiteral("allegro"));
+    }
+
     void inspectorRetainsUnknownMetadataAndEditsOnlyTheChosenField()
     {
         QTemporaryDir dir;

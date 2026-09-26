@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Supported Largo, Lento, Adagio, Andante, Moderato, Allegretto, Allegro, Vivace,
+  and Presto in note parsing, Inspector editing, score labels, and playback.
+  Step tempos hold their documented ratios and hand off to gradual changes.
+- Preserved combined dynamics, tempo marks, hairpins, and slur endings when
+  regenerating edited notes by writing suffixes in the documented order.
+- Escaped backslash notation markers correctly when rewriting multiline notes.
+
 ## 0.2.0 — TTBB and C clefs
 
 - Added alto and tenor C clefs, corrected the sounding-pitch anchor for treble

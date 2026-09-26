@@ -5,10 +5,9 @@
 // that decides whether a measure is legal.
 //
 // This is a port of OpenPsalm's `src/seed/parser.rs`, quirks included. Where the
-// Rust parser is silently permissive — an unknown duration becoming a quarter
-// note, an unrecognised `\word` swallowed into the duration string — this port
-// reproduces the behaviour *and* records a diagnostic, because the seeder will
-// import the garbage without complaint.
+// Rust parser is permissive about unknown durations, this port records a
+// diagnostic as well as the fallback. Unknown backslash markers are errors in
+// both the seeder and this editor.
 
 #pragma once
 
@@ -141,7 +140,7 @@ struct Event {
     bool codaStart = false;
     QString dynamic;       ///< without the '%'
     QString hairpin;       ///< "crescendo" | "diminuendo" | "end"
-    QString tempoSpanner;  ///< "rit" | "ritard" | "rall" | "accel" | "string" | "atempo"
+    QString tempoSpanner;  ///< gradual, step, or restore mark; see tempoMarks()
     bool spannerEnd = false;
     int dedupOffset = 0;
 
@@ -161,8 +160,8 @@ struct Event {
     /// integer division, truncating.
     [[nodiscard]] int playedTicks() const noexcept;
     /// Regenerate the token text from the parsed fields, in OPE's canonical
-    /// suffix order. The seeder's stripping loop is order-independent, so any
-    /// order parses back identically.
+    /// suffix order, keeping dynamics after ordinary flags and before the
+    /// optional starting tempo mark and outermost hairpin.
     [[nodiscard]] QString toSource() const;
     /// The token text to write: `raw` when clean, freshly emitted when dirty.
     [[nodiscard]] QString text() const { return dirty || raw.isEmpty() ? toSource() : raw; }
@@ -246,7 +245,18 @@ private:
 [[nodiscard]] QStringList recognisedDynamics();
 /// Note-on velocity for a dynamic name; unknown names give 80, as the exporter does.
 [[nodiscard]] int velocityForDynamic(QStringView name);
-/// Canonical tempo-spanner names, longest first (so `\ritard` beats `\rit`).
+struct TempoMark {
+    enum class Kind { Step, Gradual, Restore };
+    QString name;
+    QString label;
+    Kind kind;
+    double ratio;  ///< steps scale song BPM; gradual marks scale the active BPM
+};
+
+/// Supported tempo marks in Inspector order, shared by parsing and playback.
+[[nodiscard]] const QList<TempoMark> &tempoMarks();
+[[nodiscard]] const TempoMark *tempoMark(QStringView name);
+/// Canonical tempo-mark names, longest first (so `\ritard` beats `\rit`).
 [[nodiscard]] QStringList tempoSpannerNames();
 
 } // namespace ope

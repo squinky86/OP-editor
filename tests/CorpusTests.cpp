@@ -163,6 +163,8 @@ private Q_SLOTS:
                             || before.at(e).kind != after.at(e).kind
                             || before.at(e).dynamic != after.at(e).dynamic
                             || before.at(e).hairpin != after.at(e).hairpin
+                            || before.at(e).tempoSpanner != after.at(e).tempoSpanner
+                            || before.at(e).spannerEnd != after.at(e).spannerEnd
                             || before.at(e).fermata != after.at(e).fermata
                             || before.at(e).staccato != after.at(e).staccato
                             || before.at(e).accent != after.at(e).accent

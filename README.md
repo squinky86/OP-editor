@@ -32,8 +32,9 @@ For task-oriented instructions, start with
   and tenor C clefs place absolute sounding pitches without transposing them.
   New Song offers SATB, TTBB and single-voice presets; song 369 is the TTBB example.
 - **Plays the hymn.** Per-part mute, distinct T1/T2/Bar/Bass controls, and a tempo
-  override help check each voice. Tempo spans follow the authored arrangement
-  lead even when muted. See the [monitoring limits](docs/getting-started.md#playback-monitoring)
+  override help check each voice. Inspector edits gradual tempo changes and the
+  nine step marks from Largo through Presto. Tempo marks follow the authored
+  arrangement lead even when muted. See the [monitoring limits](docs/getting-started.md#playback-monitoring)
   for differences from the site's MIDI export.
 - **Keeps diffs honest.** Saving a song rewrites only the bytes you changed.
   Opening and saving any of the 200-plus songs in OP-songs without editing

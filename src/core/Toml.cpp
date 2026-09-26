@@ -739,7 +739,15 @@ QByteArray emitBasicString(const QString &text)
 QByteArray emitMultilineString(const QString &body)
 {
     QByteArray out = "\"\"\"\n";
-    out += body.toUtf8();
+    // Notes can contain backslash tempo/hairpin markers. Escape each line as
+    // basic-string content while retaining the physical notation line breaks.
+    const QStringList lines = body.split(u'\n');
+    for (qsizetype i = 0; i < lines.size(); ++i) {
+        if (i > 0)
+            out += '\n';
+        const QByteArray quoted = emitBasicString(lines.at(i));
+        out += quoted.sliced(1, quoted.size() - 2);
+    }
     if (!body.endsWith(u'\n'))
         out += "\n";
     out += "\"\"\"";

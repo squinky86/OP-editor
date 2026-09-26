@@ -443,8 +443,8 @@ QString Event::toSource() const
 
     out.append(duration.toToken());
 
-    // Canonical suffix order. The seeder's stripping loop is order-independent,
-    // so this choice only needs to be stable, not to match any particular file.
+    // The seeder consumes everything after '%' as the dynamic, except for one
+    // outer tempo mark and hairpin. Ordinary flags and \spanend must precede it.
     if (dedupOffset != 0)
         out.append(u'/' + (dedupOffset > 0 ? QStringLiteral("+") : QString())
             + QString::number(dedupOffset));
@@ -470,18 +470,6 @@ QString Event::toSource() const
         out.append(QStringLiteral("@c"));
     if (codaStart)
         out.append(QStringLiteral("@e"));
-    if (!dynamic.isEmpty())
-        out.append(u'%' + dynamic);
-    if (hairpin == QLatin1String("crescendo"))
-        out.append(QStringLiteral("\\<"));
-    else if (hairpin == QLatin1String("diminuendo"))
-        out.append(QStringLiteral("\\>"));
-    else if (hairpin == QLatin1String("end"))
-        out.append(QStringLiteral("\\!"));
-    if (!tempoSpanner.isEmpty())
-        out.append(u'\\' + tempoSpanner);
-    if (spannerEnd)
-        out.append(QStringLiteral("\\spanend"));
     if (slurEnd && beamEnd)
         out.append(QStringLiteral("])"));
     else if (dashedSlurEnd)
@@ -490,6 +478,18 @@ QString Event::toSource() const
         out.append(u')');
     else if (beamEnd)
         out.append(u']');
+    if (spannerEnd)
+        out.append(QStringLiteral("\\spanend"));
+    if (!dynamic.isEmpty())
+        out.append(u'%' + dynamic);
+    if (!tempoSpanner.isEmpty())
+        out.append(u'\\' + tempoSpanner);
+    if (hairpin == QLatin1String("crescendo"))
+        out.append(QStringLiteral("\\<"));
+    else if (hairpin == QLatin1String("diminuendo"))
+        out.append(QStringLiteral("\\>"));
+    else if (hairpin == QLatin1String("end"))
+        out.append(QStringLiteral("\\!"));
     return out;
 }
 
@@ -897,12 +897,50 @@ int velocityForDynamic(QStringView name)
     return map.value(name.toString(), 80);
 }
 
+const QList<TempoMark> &tempoMarks()
+{
+    using Kind = TempoMark::Kind;
+    // Ratios and labels mirror OpenPsalm's src/music/tempo.rs.
+    static const QList<TempoMark> marks {
+        { QStringLiteral("largo"), QStringLiteral("Largo"), Kind::Step, 0.60 },
+        { QStringLiteral("lento"), QStringLiteral("Lento"), Kind::Step, 0.70 },
+        { QStringLiteral("adagio"), QStringLiteral("Adagio"), Kind::Step, 0.75 },
+        { QStringLiteral("andante"), QStringLiteral("Andante"), Kind::Step, 0.85 },
+        { QStringLiteral("moderato"), QStringLiteral("Moderato"), Kind::Step, 1.00 },
+        { QStringLiteral("allegretto"), QStringLiteral("Allegretto"), Kind::Step, 1.15 },
+        { QStringLiteral("allegro"), QStringLiteral("Allegro"), Kind::Step, 1.30 },
+        { QStringLiteral("vivace"), QStringLiteral("Vivace"), Kind::Step, 1.45 },
+        { QStringLiteral("presto"), QStringLiteral("Presto"), Kind::Step, 1.60 },
+        { QStringLiteral("rit"), QStringLiteral("rit."), Kind::Gradual, 0.60 },
+        { QStringLiteral("ritard"), QStringLiteral("ritard."), Kind::Gradual, 0.60 },
+        { QStringLiteral("rall"), QStringLiteral("rall."), Kind::Gradual, 0.60 },
+        { QStringLiteral("accel"), QStringLiteral("accel."), Kind::Gradual, 1.40 },
+        { QStringLiteral("string"), QStringLiteral("string."), Kind::Gradual, 1.40 },
+        { QStringLiteral("atempo"), QStringLiteral("a tempo"), Kind::Restore, 1.00 },
+    };
+    return marks;
+}
+
+const TempoMark *tempoMark(QStringView name)
+{
+    for (const TempoMark &mark : tempoMarks()) {
+        if (mark.name == name)
+            return &mark;
+    }
+    return nullptr;
+}
+
 QStringList tempoSpannerNames()
 {
-    // Longest first so `\ritard` is matched before `\rit`.
-    static const QStringList names { QStringLiteral("ritard"), QStringLiteral("string"),
-        QStringLiteral("accel"), QStringLiteral("atempo"), QStringLiteral("rall"),
-        QStringLiteral("rit") };
+    static const QStringList names = [] {
+        QStringList result;
+        for (const TempoMark &mark : tempoMarks())
+            result.append(mark.name);
+        std::stable_sort(result.begin(), result.end(), [](const QString &a, const QString &b) {
+            return a.size() > b.size();
+        });
+        return result;
+    }();
     return names;
 }
 
