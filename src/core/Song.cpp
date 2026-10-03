@@ -56,6 +56,123 @@ const QStringList &canonicalPartOrder()
 
 const QStringList &knownPartKeys() { return canonicalPartOrder(); }
 
+int fieldRank(const QStringList &order, const QString &key)
+{
+    const qsizetype rank = order.indexOf(key);
+    return rank < 0 ? order.size() : rank;
+}
+
+qsizetype lineStartAfterBom(const toml::Document &source, qsizetype offset)
+{
+    const qsizetype start = source.lineStart(offset);
+    return start == 0 && source.bytes().startsWith("\xEF\xBB\xBF") ? qsizetype(3) : start;
+}
+
+/// Sort familiar table families, keeping unfamiliar subtrees and every array
+/// element with its descendants. Sorting table headers alone would reassign
+/// nested tables to a different element of an array of tables.
+QList<const toml::Table *> orderedTables(const SongDocument &doc,
+    const QList<const toml::Table *> &tables, const QStringList &prefix = {})
+{
+    for (const auto *table : tables) {
+        if (table->path == prefix && table->isArrayElement)
+            return tables;
+    }
+    QStringList preferred;
+    if (prefix.isEmpty()) {
+        preferred = { QStringLiteral("time_sig_changes"), QStringLiteral("parts"),
+            QStringLiteral("lyrics") };
+    } else if (prefix == QStringList { QStringLiteral("parts") }) {
+        for (const Part *part : doc.partsInDisplayOrder())
+            preferred.append(part->name);
+    } else if (prefix == QStringList { QStringLiteral("lyrics") }
+        || (prefix.size() == 3 && prefix.first() == QLatin1String("parts")
+            && prefix.last() == QLatin1String("lyrics"))) {
+        for (const auto *table : tables) {
+            if (table->path.size() > prefix.size())
+                preferred.append(table->path.at(prefix.size()));
+        }
+        preferred.removeDuplicates();
+        preferred = SongDocument::orderedLyricKeys(preferred);
+    } else if (prefix.size() == 2 && prefix.first() == QLatin1String("parts")) {
+        preferred = { QStringLiteral("lyrics") };
+    } else {
+        return tables;
+    }
+
+    QList<const toml::Table *> result;
+    QStringList children;
+    for (const auto *table : tables) {
+        if (table->path == prefix)
+            result.append(table);
+        else if (!children.contains(table->path.at(prefix.size())))
+            children.append(table->path.at(prefix.size()));
+    }
+    std::stable_sort(children.begin(), children.end(), [&](const QString &a, const QString &b) {
+        return fieldRank(preferred, a) < fieldRank(preferred, b);
+    });
+    for (const QString &child : children) {
+        QStringList path = prefix;
+        path.append(child);
+        QList<const toml::Table *> group;
+        for (const auto *table : tables) {
+            if (table->path.size() >= path.size() && table->path.first(path.size()) == path)
+                group.append(table);
+        }
+        result.append(orderedTables(doc, group, path));
+    }
+    return result;
+}
+
+/// Insert beside the closest existing canonical predecessor. In a previously
+/// shuffled file this still keeps related new fields together; the explicit
+/// Standardize action handles moving already-authored fields.
+qsizetype fieldAnchor(const toml::Document &source, const QList<toml::KeyValue> &pairs,
+    const QStringList &order, const QString &key, qsizetype fallback)
+{
+    const int rank = fieldRank(order, key);
+    for (int i = rank - 1; i >= 0; --i) {
+        for (const auto &pair : pairs) {
+            if (pair.key == QStringList { order.at(i) })
+                return source.lineEnd(pair.span.end);
+        }
+    }
+    for (int i = rank + 1; i < order.size(); ++i) {
+        for (const auto &pair : pairs) {
+            if (pair.key == QStringList { order.at(i) })
+                return lineStartAfterBom(source, pair.span.begin);
+        }
+    }
+    return fallback;
+}
+
+QByteArray insertionText(const SongDocument &doc, qsizetype at, QByteArray text)
+{
+    // Files without a final newline still need a separator before a new key.
+    if (at > 0 && doc.originalBytes.at(at - 1) != '\n' && !text.startsWith('\n')
+        && !(at == 3 && doc.originalBytes.startsWith("\xEF\xBB\xBF")))
+        text.prepend('\n');
+    return text;
+}
+
+qsizetype tableAnchor(const SongDocument &doc, const QStringList &path, bool array = false)
+{
+    toml::Table added;
+    added.path = path;
+    added.isArrayElement = array;
+    QList<const toml::Table *> tables;
+    for (const auto &table : doc.source.tables())
+        tables.append(&table);
+    tables.append(&added);
+    const auto ordered = orderedTables(doc, tables);
+    const qsizetype index = ordered.indexOf(&added);
+    if (index > 0)
+        return doc.source.lineEnd(ordered.at(index - 1)->span.end);
+    if (!doc.source.tables().isEmpty())
+        return lineStartAfterBom(doc.source, doc.source.tables().first().span.begin);
+    return doc.originalBytes.size();
+}
+
 QList<PhraseBreak> parseBreaks(const QStringList &entries)
 {
     QList<PhraseBreak> out;
@@ -648,12 +765,11 @@ void spliceRootField(toml::Edit &edit, const SongDocument &doc, const QString &k
         return;
     }
     if (present) {
-        // A new key: insert after the last existing root pair, or at the top of
-        // the file when there is none. Every root key must precede the first
-        // table header, or TOML would assign it to that table.
         const qsizetype anchor = doc.source.rootPairsEnd();
-        const qsizetype at = anchor > 0 ? doc.source.lineEnd(anchor) : 0;
-        edit.insert(at, toml::emitKeySegment(key) + " = " + emitted + "\n");
+        const qsizetype at = fieldAnchor(doc.source, doc.source.rootPairs(),
+            canonicalHeaderOrder(), key, anchor > 0 ? doc.source.lineEnd(anchor)
+                : lineStartAfterBom(doc.source, 0));
+        edit.insert(at, insertionText(doc, at, toml::emitKeySegment(key) + " = " + emitted + "\n"));
         return;
     }
     if (span.isValid()) {
@@ -675,8 +791,9 @@ void splicePartField(toml::Edit &edit, const SongDocument &doc, const Part &part
     }
     if (present) {
         const toml::Table *table = doc.source.table(part.tablePath);
-        const qsizetype at = table ? doc.source.lineEnd(table->span.end) : doc.originalBytes.size();
-        edit.insert(at, toml::emitKeySegment(key) + " = " + emitted + "\n");
+        const qsizetype at = table ? fieldAnchor(doc.source, table->pairs,
+            canonicalPartOrder(), key, doc.source.lineEnd(table->span.end)) : doc.originalBytes.size();
+        edit.insert(at, insertionText(doc, at, toml::emitKeySegment(key) + " = " + emitted + "\n"));
         return;
     }
     if (span.isValid()) {
@@ -717,24 +834,10 @@ QByteArray emitLyricTable(const QStringList &path, const LyricSection &section)
     return header + "text = " + toml::emitBasicString(section.rawText) + "\n";
 }
 
-/// Where a brand-new lyric table should go: beside the ones it belongs with —
-/// after the last `[parts.X.lyrics.*]` of the same part, or after that part's
-/// own table, or after the last `[lyrics.*]` for a global section. Appending
-/// everything at the end of the file would be valid TOML and an unreadable diff.
+/// New lyric tables belong with their siblings in numeric section order.
 qsizetype lyricTableAnchor(const SongDocument &doc, const QStringList &path)
 {
-    const QStringList prefix = path.first(path.size() - 1);
-    qsizetype anchor = -1;
-    for (const toml::Table *table : doc.source.tablesUnder(prefix)) {
-        if (table->path.size() == prefix.size() + 1)
-            anchor = std::max(anchor, doc.source.lineEnd(table->span.end));
-    }
-    if (anchor < 0 && prefix.size() == 3) {
-        // parts.X.lyrics.KEY with no siblings yet: sit under the part itself.
-        if (const toml::Table *part = doc.source.table(prefix.first(2)))
-            anchor = doc.source.lineEnd(part->span.end);
-    }
-    return anchor < 0 ? doc.originalBytes.size() : anchor;
+    return tableAnchor(doc, path);
 }
 
 QByteArray emitTimeSigChanges(const QList<TimeSigChange> &changes)
@@ -790,8 +893,16 @@ QByteArray serialize(const SongDocument &doc)
     stringField(QStringLiteral("title"), doc.title);
     stringField(QStringLiteral("subtitle"), doc.subtitle);
     stringField(QStringLiteral("language"), doc.declaredLanguage);
+    boolField(QStringLiteral("active"), doc.active);
+    if (doc.copyrights.dirty()) {
+        const toml::KeyValue *original = doc.source.rootPair(QStringLiteral("copyrights"));
+        const QByteArray emitted = !doc.copyrights.present() ? QByteArray()
+            : original ? emitStringArrayLike(original->value, *doc.copyrights)
+                       : toml::emitStringArrayBlock(*doc.copyrights);
+        spliceRootField(edit, doc, QStringLiteral("copyrights"), doc.copyrights.present(),
+            true, doc.copyrights.span(), emitted);
+    }
     stringField(QStringLiteral("key_signature"), doc.keySignature);
-    stringField(QStringLiteral("commentary"), doc.commentary);
     intField(QStringLiteral("time_sig_numerator"), doc.timeSigNumerator);
     intField(QStringLiteral("time_sig_denominator"), doc.timeSigDenominator);
     intField(QStringLiteral("tempo_bpm"), doc.tempoBpm);
@@ -802,31 +913,18 @@ QByteArray serialize(const SongDocument &doc)
             doc.defaultVerses.present() ? toml::emitIntArray(*doc.defaultVerses)
                                         : QByteArray());
     }
-    boolField(QStringLiteral("active"), doc.active);
-    boolField(QStringLiteral("converge_verses"), doc.convergeVerses);
     breaksField(QStringLiteral("phrase_breaks"), doc.phraseBreaks);
     breaksField(QStringLiteral("optional_phrase_breaks"), doc.optionalPhraseBreaks);
     breaksField(QStringLiteral("non_breaking_phrase_breaks"), doc.nonBreakingPhraseBreaks);
-
-    if (doc.copyrights.dirty()) {
-        QByteArray emitted;
-        if (doc.copyrights.present()) {
-            const toml::KeyValue *original = doc.source.rootPair(QStringLiteral("copyrights"));
-            // Copyright blocks are conventionally one entry per line; keep that
-            // for a list that was written inline only if it started that way.
-            emitted = original ? emitStringArrayLike(original->value, *doc.copyrights)
-                               : toml::emitStringArrayBlock(*doc.copyrights);
-        }
-        spliceRootField(edit, doc, QStringLiteral("copyrights"), doc.copyrights.present(),
-            true, doc.copyrights.span(), emitted);
-    }
+    stringField(QStringLiteral("commentary"), doc.commentary);
+    boolField(QStringLiteral("converge_verses"), doc.convergeVerses);
 
     if (doc.timeSigChanges.dirty()) {
         if (doc.timeSigChanges.present()) {
             if (doc.timeSigChanges.span().isValid()) {
                 edit.replace(doc.timeSigChanges.span(), emitTimeSigChanges(*doc.timeSigChanges));
             } else {
-                edit.insert(doc.originalBytes.size(),
+                edit.insert(tableAnchor(doc, { QStringLiteral("time_sig_changes") }, true),
                     "\n" + emitTimeSigChanges(*doc.timeSigChanges) + "\n");
             }
         } else if (doc.timeSigChanges.span().isValid()) {
@@ -842,14 +940,15 @@ QByteArray serialize(const SongDocument &doc)
     }
 
     // Parts.
-    for (const Part &part : doc.parts) {
+    for (const Part *orderedPart : doc.partsInDisplayOrder()) {
+        const Part &part = *orderedPart;
         if (part.isNew) {
             QByteArray block = "\n" + emitPartTable(part);
             for (const QString &key : SongDocument::orderedLyricKeys(part.lyrics.keys()))
                 block += "\n" + emitLyricTable(
                     { QStringLiteral("parts"), part.name, QStringLiteral("lyrics"), key },
                     part.lyrics.value(key));
-            edit.insert(doc.originalBytes.size(), block);
+            edit.insert(tableAnchor(doc, { QStringLiteral("parts"), part.name }), block);
             continue;
         }
         splicePartField(edit, doc, part, QStringLiteral("choral_type"), part.choralType.present(),
@@ -887,10 +986,11 @@ QByteArray serialize(const SongDocument &doc)
             if (pair)
                 edit.replace(pair->value.span, emitted);
             else if (table)
-                edit.insert(doc.source.lineEnd(table->span.end), "notes = " + emitted + "\n");
+                splicePartField(edit, doc, part, QStringLiteral("notes"), true, true, {}, emitted);
         }
 
-        for (auto it = part.lyrics.constBegin(); it != part.lyrics.constEnd(); ++it) {
+        for (const QString &key : SongDocument::orderedLyricKeys(part.lyrics.keys())) {
+            const auto it = part.lyrics.constFind(key);
             if (!it->dirty)
                 continue;
             const QStringList path { QStringLiteral("parts"), part.name,
@@ -903,14 +1003,17 @@ QByteArray serialize(const SongDocument &doc)
     }
 
     // Global lyrics.
-    for (auto it = doc.lyrics.constBegin(); it != doc.lyrics.constEnd(); ++it) {
+    for (const QString &key : SongDocument::orderedLyricKeys(doc.lyrics.keys())) {
+        const auto it = doc.lyrics.constFind(key);
         if (!it->dirty)
             continue;
         const QStringList path { QStringLiteral("lyrics"), it.key() };
         if (it->span.isValid())
             edit.replace(it->span, toml::emitBasicString(it->rawText));
-        else
-            edit.insert(lyricTableAnchor(doc, path), emitLyricTable(path, *it) + "\n");
+        else {
+            const qsizetype at = lyricTableAnchor(doc, path);
+            edit.insert(at, insertionText(doc, at, emitLyricTable(path, *it) + "\n"));
+        }
     }
 
     // Adjacent deleted tables share their separator. Merge them before taking
@@ -1021,19 +1124,92 @@ QByteArray serializeFresh(const SongDocument &doc)
         out += "\n";
         out += emitLyricTable({ QStringLiteral("lyrics"), key }, *it);
     };
-    for (const QString &key : doc.verseKeys())
-        emitLyric(key);
-    for (auto it = doc.lyrics.constBegin(); it != doc.lyrics.constEnd(); ++it) {
-        if (SongDocument::isChorusKey(it.key()))
-            emitLyric(it.key());
-    }
-    for (auto it = doc.lyrics.constBegin(); it != doc.lyrics.constEnd(); ++it) {
-        if (SongDocument::isCodaKey(it.key()))
-            emitLyric(it.key());
-    }
-    for (const QString &key : doc.sharedKeys())
+    for (const QString &key : SongDocument::orderedLyricKeys(doc.lyrics.keys()))
         emitLyric(key);
 
+    return out;
+}
+
+std::expected<QByteArray, LoadError> standardize(const SongDocument &doc)
+{
+    const QByteArray bytes = serialize(doc);
+    if (doc.isMergedView)
+        return bytes;
+    const auto current = loadBytes(doc.path, bytes);
+    if (!current)
+        return std::unexpected(current.error());
+    const auto &source = current->source;
+    if (source.rootPairs().isEmpty() && source.tables().isEmpty())
+        return bytes;
+    const QByteArray newline = bytes.contains("\r\n") ? QByteArray("\r\n") : QByteArray("\n");
+    const auto withoutLeadingBlanks = [](QByteArray text) {
+        while (!text.isEmpty()) {
+            const qsizetype end = text.indexOf('\n');
+            if (end < 0)
+                return text.trimmed().isEmpty() ? QByteArray() : text;
+            if (!text.first(end).trimmed().isEmpty())
+                break;
+            text.remove(0, end + 1);
+        }
+        return text;
+    };
+    qsizetype cursor = lineStartAfterBom(source, source.rootPairs().isEmpty()
+        ? source.tables().first().headerSpan.begin : source.rootPairs().first().span.begin);
+    QByteArray out = bytes.first(cursor); // File preamble, including a possible BOM.
+    const auto take = [&](toml::Span span) {
+        const qsizetype begin = lineStartAfterBom(source, span.begin);
+        const qsizetype end = source.lineEnd(span.end);
+        QByteArray block = withoutLeadingBlanks(bytes.sliced(cursor, begin - cursor))
+            + bytes.sliced(begin, end - begin);
+        cursor = end;
+        if (!block.endsWith('\n'))
+            block += newline;
+        return block;
+    };
+    const auto pairs = [&](const QList<toml::KeyValue> &entries, const QStringList &order) {
+        struct Block { QString key; QByteArray text; };
+        QList<Block> blocks;
+        for (const auto &pair : entries)
+            blocks.append({ pair.key.size() == 1 ? pair.key.front() : QString(), take(pair.span) });
+        std::stable_sort(blocks.begin(), blocks.end(), [&](const Block &a, const Block &b) {
+            return fieldRank(order, a.key) < fieldRank(order, b.key);
+        });
+        QByteArray text;
+        for (const auto &block : blocks)
+            text += block.text;
+        return text;
+    };
+    out += pairs(source.rootPairs(), canonicalHeaderOrder());
+    QMap<const toml::Table *, QByteArray> blocks;
+    QList<const toml::Table *> tables;
+    for (const auto &table : source.tables()) {
+        QByteArray block = take(table.headerSpan);
+        QStringList order;
+        if (!table.isArrayElement && table.path.size() == 2
+            && table.path.first() == QLatin1String("parts"))
+            order = canonicalPartOrder();
+        else if (table.isArrayElement && table.path == QStringList { QStringLiteral("time_sig_changes") })
+            order = { QStringLiteral("measure"), QStringLiteral("numerator"),
+                QStringLiteral("denominator"), QStringLiteral("duration") };
+        else if (table.path.first() == QLatin1String("lyrics")
+            || (table.path.size() >= 3 && table.path.first() == QLatin1String("parts")
+                && table.path.at(2) == QLatin1String("lyrics")))
+            order = { QStringLiteral("text") };
+        block += pairs(table.pairs, order);
+        blocks.insert(&table, block);
+        tables.append(&table);
+    }
+    for (const auto *table : orderedTables(*current, tables)) {
+        if (!out.isEmpty() && !out.endsWith(newline + newline) && out != QByteArray("\xEF\xBB\xBF"))
+            out += newline;
+        out += blocks.value(table);
+    }
+    const QByteArray footer = withoutLeadingBlanks(bytes.sliced(cursor));
+    if (!footer.isEmpty()) {
+        out += newline + footer;
+        if (!out.endsWith('\n'))
+            out += newline;
+    }
     return out;
 }
 

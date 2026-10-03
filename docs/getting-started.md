@@ -97,6 +97,24 @@ Edit through Score, Lyrics, Source, Song, or Inspector. The window title
 and language tab gain a dot when that language has unsaved work. Translations
 have independent dirty state and undo history.
 
+To move a song into another key, press **Convert…** beside Key in the Song
+tab, or choose **Edit ▸ Convert to another key…**. Select a target key and
+direction, then press **Transpose**. Every voice moves by the same interval,
+including chords and accidentals. Major/minor mode, rhythms, lyrics, and phrase
+breaks are preserved. The Key selector itself remains a metadata edit.
+Transposing a translation copies its inherited notes into that translation;
+transposing the base song also affects translations that inherit its notes and
+key. Undo restores the entire conversion in one step.
+
+To arrange an older file consistently, press **Standardize TOML** in Source.
+The order is identity and copyright, key/metre/tempo, verse settings, the three
+phrase-break fields, commentary and convergence, metre changes, parts in voice
+order with their lyric overrides, then global lyrics. Numbered lyrics and shared
+sections sort numerically. Comments, unknown fields, and authored values are
+retained. The button is disabled when the file is already standardized or Source
+has an uncommitted draft. Standardization is one Undo step and requires Save to
+write it to disk.
+
 Watch the Problems tab while editing. An **Error** means the song may not seed
 or may seed incorrectly. OPE allows an explicit “Save anyway” for recovery and
 expert work, but such a file is not ready to contribute. A **Warning** identifies

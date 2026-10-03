@@ -9,6 +9,7 @@
 
 #include "core/Library.h"
 #include "core/Song.h"
+#include "core/Transpose.h"
 
 #include <QDialog>
 
@@ -23,6 +24,18 @@ class QTableWidget;
 QT_END_NAMESPACE
 
 namespace ope::ui {
+
+class TransposeDialog : public QDialog {
+    Q_OBJECT
+public:
+    explicit TransposeDialog(const SongDocument &song, QWidget *parent = nullptr);
+    [[nodiscard]] QString targetKey() const;
+    [[nodiscard]] TransposeDirection direction() const;
+
+private:
+    QComboBox *m_target = nullptr;
+    QComboBox *m_direction = nullptr;
+};
 
 /// Collects what a new song needs to be seedable, and nothing more.
 class NewSongDialog : public QDialog {

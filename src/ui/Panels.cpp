@@ -171,6 +171,10 @@ HeaderPanel::HeaderPanel(Session *session, QWidget *parent) : QWidget(parent), m
     m_title = new QLineEdit(this);
     m_subtitle = new QLineEdit(this);
     m_key = new QComboBox(this);
+    m_key->setObjectName(QStringLiteral("songKeySignature"));
+    m_key->setToolTip(tr("Key signature metadata. Use Convert to transpose all notes as well."));
+    m_key->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_key->setMinimumContentsLength(1);
     for (const QString &key : validKeySignatures()) {
         m_key->addItem(key);
         m_key->addItem(key + u'm');
@@ -217,7 +221,14 @@ HeaderPanel::HeaderPanel(Session *session, QWidget *parent) : QWidget(parent), m
 
     layout->addRow(tr("Title"), m_title);
     layout->addRow(tr("Subtitle"), m_subtitle);
-    layout->addRow(tr("Key"), m_key);
+    auto *keyRow = new QHBoxLayout;
+    keyRow->addWidget(m_key, 1);
+    auto *transpose = new QPushButton(tr("Convert…"), this);
+    transpose->setObjectName(QStringLiteral("transposeSong"));
+    transpose->setToolTip(tr("Transpose every voice and change the key signature"));
+    connect(transpose, &QPushButton::clicked, this, &HeaderPanel::transposeRequested);
+    keyRow->addWidget(transpose);
+    layout->addRow(tr("Key"), keyRow);
     layout->addRow(tr("Metre"), metre);
     layout->addRow(tr("Tempo"), m_tempo);
     layout->addRow(tr("Verses"), m_verseCount);
@@ -894,11 +905,17 @@ SourcePanel::SourcePanel(Session *session, QWidget *parent) : QWidget(parent), m
     layout->setContentsMargins(4, 4, 4, 4);
     m_status = new QLabel(this);
     m_status->setWordWrap(true);
+    m_status->setMinimumWidth(1);
+    m_status->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_revert = new QPushButton(tr("Revert source draft"), this);
     m_revert->setToolTip(tr("Discard uncommitted Source text and return to the last valid model"));
     m_revert->hide();
+    m_standardize = new QPushButton(tr("Standardize TOML"), this);
+    m_standardize->setObjectName(QStringLiteral("standardizeToml"));
+    m_standardize->setToolTip(tr("Put fields, parts, and lyrics in standard order, preserving comments and values. Can be undone."));
     auto *statusRow = new QHBoxLayout;
     statusRow->addWidget(m_status, 1);
+    statusRow->addWidget(m_standardize);
     statusRow->addWidget(m_revert);
     m_text = new QPlainTextEdit(this);
     m_text->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
@@ -914,6 +931,13 @@ SourcePanel::SourcePanel(Session *session, QWidget *parent) : QWidget(parent), m
     m_commitTimer.setInterval(450);
     connect(&m_commitTimer, &QTimer::timeout, this, [this] { (void)commitPendingEdits(); });
     connect(m_revert, &QPushButton::clicked, this, &SourcePanel::discardPendingEdits);
+    connect(m_standardize, &QPushButton::clicked, this, [this] {
+        Q_EMIT editingActivated();
+        if (!commitPendingEdits())
+            return;
+        if (const auto result = m_session->standardizeToml(); !result)
+            showParseError(result.error());
+    });
     connect(m_text, &QPlainTextEdit::textChanged, this, [this] {
         if (m_loading)
             return;
@@ -950,9 +974,12 @@ void SourcePanel::refresh()
         m_loading = false;
         m_status->clear();
         m_text->setEnabled(false);
+        m_standardize->setEnabled(false);
         return;
     }
     m_text->setEnabled(true);
+    const auto standardized = io::standardize(m_session->document());
+    m_standardize->setEnabled(standardized && *standardized != m_session->currentBytes());
     const QString wanted = QString::fromUtf8(m_session->currentBytes());
     if (m_text->toPlainText() != wanted) {
         const QTextCursor cursor = m_text->textCursor();
@@ -1141,6 +1168,7 @@ void SourcePanel::setPending(bool pending)
     if (m_pending == pending)
         return;
     m_pending = pending;
+    m_standardize->setEnabled(!pending && m_session->isOpen());
     m_revert->setVisible(pending);
     Q_EMIT pendingEditsChanged(pending);
     Q_EMIT structuredEditingBlocked(pending);

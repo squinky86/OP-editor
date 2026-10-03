@@ -30,6 +30,182 @@ class SessionTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void transposeSpellsIntervalsAndOctaves_data()
+    {
+        QTest::addColumn<QString>("from");
+        QTest::addColumn<QString>("to");
+        QTest::addColumn<QString>("note");
+        QTest::addColumn<QString>("expected");
+        QTest::addColumn<int>("direction");
+        const auto row = [](const char *name, QString from, QString to, QString note,
+                             QString expected, int direction = 0) {
+            QTest::newRow(name) << from << to << note << expected << direction;
+        };
+        row("flat-to-natural", "Bb", "C", "bes", "c'");
+        row("down-across-c", "C", "B", "c'", "b");
+        row("up-instead", "C", "B", "c'", "b'", 1);
+        row("down-instead", "Bb", "C", "bes", "c", 2);
+        row("sharp-to-flat", "C#", "Db", "cis'", "des'");
+        row("b-to-c-flat", "B", "Cb", "b", "ces'");
+        row("c-flat-to-b", "Cb", "B", "ces'", "b");
+        row("minor", "Am", "Cm", "a", "c'");
+        row("chromatic-spelling", "C", "D", "ees'", "f'");
+        row("double-accidental", "C", "D", "fisis'", "gisis'");
+        row("triple-respelled", "E", "F#", "bisis'", "dis''");
+    }
+
+    void transposeSpellsIntervalsAndOctaves()
+    {
+        QFETCH(QString, from);
+        QFETCH(QString, to);
+        QFETCH(QString, note);
+        QFETCH(QString, expected);
+        QFETCH(int, direction);
+        const auto doc = io::loadBytes("song.toml", "title = 'T'\nkey_signature = '" + from.toUtf8()
+            + "'\n[parts.Lead]\nnotes = \"" + note.toUtf8() + "1\"\n");
+        QVERIFY(doc);
+        const auto result = transposeSong(*doc, *doc, to, static_cast<TransposeDirection>(direction));
+        QVERIFY2(result, result ? "" : qPrintable(result.error()));
+        QCOMPARE(result->parts.first().stream.measures().first().events.first().pitches.first().toToken(), expected);
+        const auto reloaded = io::loadBytes("song.toml", io::serialize(*result));
+        QVERIFY(reloaded);
+        QCOMPARE(reloaded->keySignature.valueOr({}), to);
+        QCOMPARE(reloaded->parts.first().stream.measures().first().events.first().pitches.first().toToken(), expected);
+    }
+
+    void transposingEveryVoicePreservesRhythmMarkingsAndUndo()
+    {
+        QTemporaryDir dir;
+        const QByteArray original = R"TOML(title = 'Transpose fixture'
+key_signature = 'Bb'
+phrase_breaks = ['2:64']
+[parts.Lead]
+notes = '''{3 bes8[(%p\< c'8 d'8])\!} <ees' g'>4~\rit <ees' g'>4\spanend r4 |
+s2 f'4!@c-.^^/2 bes4@e'''
+[parts.Bass]
+notes = 'bes,1 | ees1'
+[lyrics.1]
+text = 'one two three four'
+)TOML";
+        write(QDir(dir.path()), "song.toml", original);
+        Session session;
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        const SongDocument before = session.document();
+        const auto result = session.transposeTo("C");
+        QVERIFY2(result, result ? "" : qPrintable(result.error()));
+        const QByteArray transposed = session.currentBytes();
+        const auto parsed = io::loadBytes("song.toml", transposed);
+        QVERIFY2(parsed, parsed ? "" : qPrintable(parsed.error().formatted()));
+        for (const Part &part : before.parts) {
+            const Part *after = parsed->part(part.name);
+            QVERIFY(after);
+            QCOMPARE(after->stream.lineLayout(), part.stream.lineLayout());
+            QCOMPARE(after->stream.measureCount(), part.stream.measureCount());
+            for (int m = 0; m < part.stream.measureCount(); ++m) {
+                const auto &events = part.stream.measures().at(m).events;
+                const auto &newEvents = after->stream.measures().at(m).events;
+                QCOMPARE(newEvents.size(), events.size());
+                for (int e = 0; e < events.size(); ++e) {
+                    Event restored = newEvents.at(e);
+                    const Event &old = events.at(e);
+                    QCOMPARE(restored.playedTicks(), old.playedTicks());
+                    QCOMPARE(restored.slotIndex, old.slotIndex);
+                    QCOMPARE(restored.pitches.size(), old.pitches.size());
+                    for (int p = 0; p < old.pitches.size(); ++p)
+                        QCOMPARE(restored.pitches.at(p).midiNote(), old.pitches.at(p).midiNote() + 2);
+                    restored.pitches = old.pitches;
+                    QCOMPARE(restored.toSource(), old.toSource());
+                    QCOMPARE(restored.tuplet.has_value(), old.tuplet.has_value());
+                }
+            }
+        }
+        QCOMPARE(parsed->lyrics.value("1").rawText, before.lyrics.value("1").rawText);
+        QCOMPARE(parsed->phraseBreaks.opt(), before.phraseBreaks.opt());
+        QCOMPARE(session.undoStack()->count(), 1);
+        session.undoStack()->undo();
+        QCOMPARE(session.currentBytes(), original);
+        session.undoStack()->redo();
+        QCOMPARE(session.currentBytes(), transposed);
+        QVERIFY(session.save());
+        QCOMPARE(session.currentBytes(), transposed);
+        QVERIFY(!session.isDirty());
+    }
+
+    void transposingTranslationMaterializesOnlyNotesAndKey()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, "song.toml", ttbbSong());
+        const QByteArray overlay = "title = 'Traducción'\n[parts.Tenor1]\nnotes = 'bes2 d4 | bes2.'\n";
+        write(root, "song_es.toml", overlay);
+        Session session;
+        QVERIFY(session.openSong(root.filePath("song_es.toml")));
+        QVERIFY(session.transposeTo("C"));
+        const auto bytes = session.currentBytes();
+        QVERIFY(bytes.contains("key_signature = \"C\""));
+        QVERIFY(!bytes.contains("clef ="));
+        QVERIFY(!bytes.contains("choral_type ="));
+        QVERIFY(!bytes.contains("phrase_breaks ="));
+        QVERIFY(!bytes.contains("[lyrics."));
+        QCOMPARE(session.document().parts.size(), 4);
+        QCOMPARE(io::serialize(*session.baseDocument()), ttbbSong());
+        QCOMPARE(session.effectiveDocument().part(u"Tenor1")->stream.measures()[0].events[1].pitches[0].toToken(), QString("e"));
+        session.undoStack()->undo();
+        QCOMPARE(session.currentBytes(), overlay);
+        session.undoStack()->redo();
+        QVERIFY(session.save());
+        QVERIFY(session.openSong(root.filePath("song_es.toml")));
+        QCOMPARE(session.currentBytes(), bytes);
+        QCOMPARE(io::serialize(*session.baseDocument()), ttbbSong());
+    }
+
+    void unsafeOrNoopTranspositionDoesNotChangeTheDocument()
+    {
+        QTemporaryDir dir;
+        write(QDir(dir.path()), "song.toml", ttbbSong());
+        Session session;
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        QVERIFY(session.transposeTo("Bb"));
+        QCOMPARE(session.undoStack()->count(), 0);
+        QVERIFY(!session.transposeTo("Cm"));
+        QVERIFY(!session.transposeTo("unknown"));
+        QCOMPARE(session.currentBytes(), ttbbSong());
+        session.mutate("Invalid notation", [](SongDocument &doc) {
+            doc.part(u"Bass")->notes.set("c5");
+        });
+        const auto invalid = session.currentBytes();
+        QVERIFY(!session.transposeTo("C"));
+        QCOMPARE(session.currentBytes(), invalid);
+    }
+
+    void standardizationIsOneUndoableEditAndKeepsDiskBaseline()
+    {
+        QTemporaryDir dir;
+        write(QDir(dir.path()), "song.toml", ttbbSong());
+        Session session;
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        session.mutate("Add optional break", [](SongDocument &doc) {
+            doc.optionalPhraseBreaks.set({ { 1, 24 } });
+        });
+        const QByteArray before = session.currentBytes();
+        QVERIFY(session.standardizeToml());
+        const QByteArray standard = session.currentBytes();
+        QVERIFY(standard != before);
+        QCOMPARE(session.undoStack()->undoText(), QString("Standardize TOML"));
+        QVERIFY(session.isDirty());
+        QCOMPARE(session.diskBytes(), ttbbSong());
+        QVERIFY(session.standardizeToml());
+        QCOMPARE(session.undoStack()->count(), 2);
+        session.undoStack()->undo();
+        QCOMPARE(session.currentBytes(), before);
+        session.undoStack()->redo();
+        QCOMPARE(session.currentBytes(), standard);
+        session.mutate("Edit after ordering", [](SongDocument &doc) { doc.tempoBpm.set(120); });
+        QVERIFY(session.save());
+        QCOMPARE(session.document().tempoBpm.valueOr(0), 120);
+        QVERIFY(session.currentBytes().contains("phrase_breaks = [\"1:48\"]\noptional_phrase_breaks = [\"1:24\"]"));
+    }
+
     void inheritedTtbbLyricsCreateOnlyTheRequiredOverlayMap()
     {
         QTemporaryDir dir;

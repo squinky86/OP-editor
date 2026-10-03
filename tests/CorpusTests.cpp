@@ -74,6 +74,23 @@ private Q_SLOTS:
         QVERIFY2(failures.isEmpty(), qPrintable(failures.join(u'\n')));
     }
 
+    void standardizingEverySongPreservesMeaningAndIsIdempotent()
+    {
+        for (const QString &path : allPaths()) {
+            const auto doc = io::load(path);
+            QVERIFY2(doc, qPrintable(path));
+            const auto standard = io::standardize(*doc);
+            QVERIFY2(standard, qPrintable(path));
+            const auto parsed = io::loadBytes(path, *standard);
+            QVERIFY2(parsed, qPrintable(path));
+            QCOMPARE(io::serializeFresh(*parsed), io::serializeFresh(*doc));
+            const auto again = io::standardize(*parsed);
+            QVERIFY2(again, qPrintable(path));
+            QCOMPARE(*again, *standard);
+            QCOMPARE(io::serialize(*doc), doc->originalBytes);
+        }
+    }
+
     void addingThenRemovingAPerPartOverrideRestoresEveryFile()
     {
         // The lyrics panel's two new buttons, run over the whole corpus. Adding

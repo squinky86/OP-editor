@@ -55,6 +55,17 @@ Source edits the exact bytes directly with TOML highlighting and word wrapping;
 valid edits immediately update every structured pane, while invalid TOML pauses
 Save and structured editing until it is fixed or reverted.
 
+Use **Song ▸ Key ▸ Convert…** (or **Edit ▸ Convert to another key…**) to transpose
+all voices and the key signature together. Choose the nearest interval, up, or
+down; rhythm, lyrics, and major/minor mode are preserved. The ordinary Key
+selector edits only the key signature.
+
+New TOML fields follow a consistent order, including adjacent required,
+optional, and non-breaking phrase-break fields. **Source ▸ Standardize TOML**
+reorders an existing file's fields, parts, and lyric sections while preserving
+comments, unfamiliar fields, and value formatting. Both actions support Undo
+and take effect on disk when you Save.
+
 The documented roles are `soprano`, `alto`, `tenor`, `bass`, `tenor1`, `tenor2`
 and `baritone`. Part table names remain stable identifiers. Clefs are `treble`,
 `bass`, `treble_8` (8vb), `alto` (C4 on line 3) and `tenor` (C4 on line 4).

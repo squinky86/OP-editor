@@ -63,6 +63,7 @@ private:
     void showBrowser();
     void newSong();
     void addTranslation();
+    void transposeCurrentSong();
     void save();
     [[nodiscard]] bool saveAll();
     [[nodiscard]] bool saveLanguage(const QString &language);

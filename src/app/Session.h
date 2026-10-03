@@ -12,6 +12,7 @@
 #include "core/Playback.h"
 #include "core/Song.h"
 #include "core/Validator.h"
+#include "core/Transpose.h"
 
 #include <QHash>
 #include <QObject>
@@ -117,7 +118,11 @@ public:
     /// undo step. Invalid bytes are returned to the editor and never enter the
     /// structured model.
     [[nodiscard]] std::expected<void, LoadError> replaceSource(
-        const QString &language, const QByteArray &bytes);
+        const QString &language, const QByteArray &bytes, const QString &description = {});
+
+    [[nodiscard]] std::expected<void, LoadError> standardizeToml();
+    [[nodiscard]] std::expected<void, QString> transposeTo(const QString &targetKey,
+        TransposeDirection direction = TransposeDirection::Nearest);
 
     /// Replace the document wholesale (used by undo/redo).
     void restore(const QString &language, const SongDocument &document);

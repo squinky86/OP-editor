@@ -588,6 +588,158 @@ private Q_SLOTS:
             QStringLiteral("<p>Notes.</p>"));
     }
 
+    void newBreakLanesStayTogetherEvenInAShuffledHeader()
+    {
+        auto doc = io::loadBytes("song.toml", baseSong());
+        QVERIFY(doc);
+        doc->optionalPhraseBreaks.set({ { 1, 32 } });
+        doc->nonBreakingPhraseBreaks.set({ { 1, 48 } });
+        doc->commentary.set("Preserve this commentary");
+        const QByteArray bytes = io::serialize(*doc);
+        QVERIFY(bytes.contains("phrase_breaks = [\"2:64\"]\n"
+            "optional_phrase_breaks = [\"1:32\"]\n"
+            "non_breaking_phrase_breaks = [\"1:48\"]\n"));
+        const auto again = io::loadBytes("song.toml", bytes);
+        QVERIFY(again);
+        QCOMPARE(again->optionalPhraseBreaks.valueOr({}), QList<PhraseBreak>({ { 1, 32 } }));
+        QVERIFY(bytes.indexOf("commentary =") < bytes.indexOf("[parts."));
+    }
+
+    void generatedFieldsAndSectionsUseCanonicalOrder()
+    {
+        auto doc = io::loadBytes("song.toml", "title = \"T\"\n[parts.Soprano]\nnotes = \"c'1\"\n"
+            "[lyrics.10]\ntext = \"ten\"\n");
+        QVERIFY(doc);
+        doc->active.set(false);
+        doc->copyrights.set({ "Public domain" });
+        doc->keySignature.set("C");
+        doc->phraseBreaks.set({ { 1, 64 } });
+        doc->optionalPhraseBreaks.set({ { 1, 32 } });
+        doc->part(u"Soprano")->clef.set("treble");
+        doc->part(u"Soprano")->choralType.set("soprano");
+        SongDocument::setLyric(doc->lyrics, "2", "two");
+        SongDocument::setLyric(doc->lyrics, "1", "one");
+        SongDocument::setLyric(doc->lyrics, "s10", "template ten");
+        SongDocument::setLyric(doc->lyrics, "s2", "template two");
+        doc->timeSigChanges.set({ { 1, 2, 2, 1 } });
+        const QByteArray bytes = io::serialize(*doc);
+        QVERIFY(toml::parse(bytes));
+        QVERIFY(bytes.indexOf("active =") < bytes.indexOf("copyrights ="));
+        QVERIFY(bytes.indexOf("copyrights =") < bytes.indexOf("key_signature ="));
+        QVERIFY(bytes.indexOf("phrase_breaks =") < bytes.indexOf("optional_phrase_breaks ="));
+        QVERIFY(bytes.indexOf("[[time_sig_changes]]") < bytes.indexOf("[parts.Soprano]"));
+        QVERIFY(bytes.indexOf("choral_type =") < bytes.indexOf("clef ="));
+        QVERIFY(bytes.indexOf("clef =") < bytes.indexOf("notes ="));
+        QVERIFY(bytes.indexOf("[lyrics.1]") < bytes.indexOf("[lyrics.2]"));
+        QVERIFY(bytes.indexOf("[lyrics.2]") < bytes.indexOf("[lyrics.10]"));
+        QVERIFY(bytes.indexOf("[lyrics.s2]") < bytes.indexOf("[lyrics.s10]"));
+        const auto standard = io::standardize(*doc);
+        QVERIFY(standard);
+        const auto reloaded = io::loadBytes("song.toml", *standard);
+        QVERIFY(reloaded);
+        QCOMPARE(io::serializeFresh(*doc), io::serializeFresh(*reloaded));
+    }
+
+    void standardizationPreservesCommentsValuesAndArrayOwnership()
+    {
+        const QByteArray source = R"TOML(# File preamble
+optional_phrase_breaks = ["1:32"] # optional lane
+future = { a = 1, b = "keep" }
+# Title comment
+title  = 'Keep spacing'
+commentary = '''first
+second'''
+# Required lane
+phrase_breaks = [
+  "1:64", # end
+]
+
+# Bass comment
+[parts.Bass]
+notes = '''c,1'''
+clef = 'bass'
+choral_type = 'bass'
+future_date = 2026-09-25
+
+[lyrics.10]
+text = 'ten'
+[parts."Lead Voice".lyrics.2]
+text = 'override'
+[lyrics.2]
+text = 'two'
+# Lead comment
+[parts."Lead Voice"] # header comment
+notes = '''c'1'''
+choral_type = 'soprano'
+
+[[extensions]]
+id = 'first'
+[extensions.detail]
+value = 1
+[[time_sig_changes]]
+duration = 1
+denominator = 4
+numerator = 4
+measure = 1
+[time_sig_changes.extra]
+note = 'keep this with the first change'
+[[extensions]]
+id = 'second'
+[extensions.detail]
+value = 2
+[[time_sig_changes]]
+measure = 2
+numerator = 3
+denominator = 4
+duration = 1
+# File footer
+)TOML";
+        const auto doc = io::loadBytes("song.toml", source);
+        QVERIFY(doc);
+        const auto standard = io::standardize(*doc);
+        QVERIFY(standard);
+        QVERIFY(standard->startsWith("# File preamble\n# Title comment\ntitle  = 'Keep spacing'"));
+        QVERIFY(standard->contains("# Required lane\nphrase_breaks = [\n  \"1:64\", # end\n]\n"
+            "optional_phrase_breaks = [\"1:32\"] # optional lane\n"));
+        QVERIFY(standard->contains("future = { a = 1, b = \"keep\" }"));
+        QVERIFY(standard->contains("commentary = '''first\nsecond'''"));
+        QVERIFY(standard->contains("# Lead comment\n[parts.\"Lead Voice\"] # header comment\n"
+            "choral_type = 'soprano'\nnotes = '''c'1'''"));
+        QVERIFY(standard->contains("future_date = 2026-09-25"));
+        QVERIFY(standard->indexOf("[parts.\"Lead Voice\"]") < standard->indexOf("[parts.Bass]"));
+        QVERIFY(standard->indexOf("[parts.\"Lead Voice\".lyrics.2]") < standard->indexOf("[parts.Bass]"));
+        QVERIFY(standard->indexOf("[lyrics.2]") < standard->indexOf("[lyrics.10]"));
+        QVERIFY(standard->contains("id = 'first'\n\n[extensions.detail]\nvalue = 1\n\n"
+            "[[extensions]]\nid = 'second'\n\n[extensions.detail]\nvalue = 2"));
+        QVERIFY(standard->contains("note = 'keep this with the first change'\n\n[[time_sig_changes]]\nmeasure = 2"));
+        QVERIFY(standard->endsWith("# File footer\n"));
+        const auto reloaded = io::loadBytes("song.toml", *standard);
+        QVERIFY(reloaded);
+        QCOMPARE(*io::standardize(*reloaded), *standard);
+        QCOMPARE(reloaded->part(u"Lead Voice")->notes.opt(), doc->part(u"Lead Voice")->notes.opt());
+        QCOMPARE(reloaded->phraseBreaks.opt(), doc->phraseBreaks.opt());
+        QCOMPARE(reloaded->timeSigChanges.opt(), doc->timeSigChanges.opt());
+        QCOMPARE(io::serialize(*doc), source); // Normal saves retain authored order.
+    }
+
+    void standardizationAndInsertionsHandleMissingNewlinesAndBom()
+    {
+        auto doc = io::loadBytes("song.toml", "title = 'T'");
+        QVERIFY(doc);
+        doc->optionalPhraseBreaks.set({ { 1, 16 } });
+        QVERIFY(io::loadBytes("song.toml", io::serialize(*doc)));
+        const QByteArray bytes = QByteArray("\xEF\xBB\xBF")
+            + "tempo_bpm = 90\r\ntitle = 'T'\r\n[parts.Lead]\r\nnotes = 'c1'";
+        doc = io::loadBytes("song.toml", bytes);
+        QVERIFY(doc);
+        const auto standard = io::standardize(*doc);
+        QVERIFY(standard);
+        QVERIFY(standard->startsWith(QByteArray("\xEF\xBB\xBF") + "title = 'T'\r\ntempo_bpm = 90"));
+        doc = io::loadBytes("song.toml", *standard);
+        QVERIFY(doc);
+        QCOMPARE(*io::standardize(*doc), *standard);
+    }
+
     void defaultVersesRoundTripAndInsertBeforeTables()
     {
         QTemporaryDir dir;

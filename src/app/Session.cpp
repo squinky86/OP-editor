@@ -417,7 +417,7 @@ void Session::mutate(const QString &language, const QString &description,
 }
 
 std::expected<void, LoadError> Session::replaceSource(
-    const QString &language, const QByteArray &bytes)
+    const QString &language, const QByteArray &bytes, const QString &description)
 {
     auto found = m_documents.find(language);
     if (found == m_documents.end()) {
@@ -442,10 +442,38 @@ std::expected<void, LoadError> Session::replaceSource(
     SongDocument after = std::move(*parsed);
     *found = after;
     ensureUndoStack(language)->push(new SnapshotCommand(this, language,
-        std::move(before), std::move(after), tr("Edit TOML source")));
+        std::move(before), std::move(after), description.isEmpty() ? tr("Edit TOML source") : description));
     refresh();
     Q_EMIT documentChanged();
     Q_EMIT dirtyChanged();
+    return {};
+}
+
+std::expected<void, LoadError> Session::standardizeToml()
+{
+    if (!isOpen()) {
+        LoadError error;
+        error.message = tr("Open a song to standardize its TOML.");
+        return std::unexpected(error);
+    }
+    const auto bytes = io::standardize(document());
+    if (!bytes)
+        return std::unexpected(bytes.error());
+    const auto result = replaceSource(m_currentLanguage, *bytes, tr("Standardize TOML"));
+    if (result)
+        setSelection({}); // The authored part order may have changed.
+    return result;
+}
+
+std::expected<void, QString> Session::transposeTo(
+    const QString &targetKey, TransposeDirection direction)
+{
+    if (!isOpen())
+        return std::unexpected(tr("Open a song to transpose."));
+    const auto result = transposeSong(document(), effectiveDocument(), targetKey, direction);
+    if (!result)
+        return std::unexpected(result.error());
+    mutate(tr("Transpose to %1").arg(targetKey), [&](SongDocument &doc) { doc = *result; });
     return {};
 }
 

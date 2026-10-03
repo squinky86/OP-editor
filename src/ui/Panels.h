@@ -41,6 +41,7 @@ public:
 
 Q_SIGNALS:
     void pendingEditsChanged(bool pending);
+    void transposeRequested();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -152,6 +153,7 @@ private:
     QPlainTextEdit *m_text = nullptr;
     QLabel *m_status = nullptr;
     QPushButton *m_revert = nullptr;
+    QPushButton *m_standardize = nullptr;
     QTimer m_commitTimer;
     bool m_loading = false;
     bool m_pending = false;

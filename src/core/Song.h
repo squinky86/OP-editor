@@ -238,6 +238,11 @@ namespace io {
 /// songs and new translations.
 [[nodiscard]] QByteArray serializeFresh(const SongDocument &doc);
 
+/// Reorder the current authored bytes without regenerating their values.
+/// Comments and unknown fields/tables survive; array-of-table element order
+/// and its descendants remain intact. Repeating this is a no-op.
+[[nodiscard]] std::expected<QByteArray, LoadError> standardize(const SongDocument &doc);
+
 /// Write `bytes` to `path` atomically (temp file in the same directory + rename).
 [[nodiscard]] std::expected<void, QString> writeAtomically(
     const QString &path, const QByteArray &bytes);

@@ -7,6 +7,11 @@
   Step tempos hold their documented ratios and hand off to gradual changes.
 - Preserved combined dynamics, tempo marks, hairpins, and slur endings when
   regenerating edited notes by writing suffixes in the documented order.
+- Added whole-song key conversion with nearest, upward, and downward intervals,
+  correctly spelled pitches, translation overrides, and Undo.
+- Inserted generated TOML fields and sections in consistent order, keeping all
+  phrase-break fields together. Added Source's undoable Standardize TOML button
+  to reorder existing files while retaining comments and unfamiliar fields.
 - Escaped backslash notation markers correctly when rewriting multiline notes.
 
 ## 0.2.0 — TTBB and C clefs

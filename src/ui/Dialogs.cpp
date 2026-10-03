@@ -85,6 +85,59 @@ QComboBox *makeDenominatorBox(QWidget *parent, int value)
 
 } // namespace
 
+TransposeDialog::TransposeDialog(const SongDocument &song, QWidget *parent) : QDialog(parent)
+{
+    setWindowTitle(tr("Convert to another key"));
+    auto *layout = new QFormLayout(this);
+    const QString from = song.keySignature.valueOr(QStringLiteral("C"));
+    layout->addRow(tr("Current key"), new QLabel(from, this));
+    m_target = new QComboBox(this);
+    m_target->setObjectName(QStringLiteral("transposeTargetKey"));
+    for (const QString &key : validKeySignatures())
+        m_target->addItem(key + (from.endsWith(u'm') ? QStringLiteral("m") : QString()));
+    m_target->setCurrentText(from);
+    m_direction = new QComboBox(this);
+    m_direction->setObjectName(QStringLiteral("transposeDirection"));
+    m_direction->addItem(tr("Nearest (smallest pitch change)"), static_cast<int>(TransposeDirection::Nearest));
+    m_direction->addItem(tr("Up"), static_cast<int>(TransposeDirection::Up));
+    m_direction->addItem(tr("Down"), static_cast<int>(TransposeDirection::Down));
+    layout->addRow(tr("New key"), m_target);
+    layout->addRow(tr("Direction"), m_direction);
+    auto *summary = new QLabel(this);
+    summary->setWordWrap(true);
+    layout->addRow(summary);
+    auto *scope = new QLabel(song.isOverlay
+            ? tr("Transpose every voice in this translation. Inherited notes will be copied into this file. The base song stays unchanged.")
+            : tr("Transpose every voice in this song. Translations will inherit the change for keys and notes they do not override."), this);
+    scope->setWordWrap(true);
+    layout->addRow(scope);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+    buttons->button(QDialogButtonBox::Ok)->setText(tr("Transpose"));
+    layout->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    const auto update = [this, from, summary, buttons] {
+        const auto interval = keyTransposition(from, targetKey(), direction());
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(interval.has_value() && targetKey() != from);
+        summary->setText(!interval ? interval.error()
+            : targetKey() == from ? tr("Choose a different key. Major/minor mode is preserved.")
+            : interval->semitones == 0 ? tr("Same sounding pitches, respelled for the new key.")
+            : tr("%1 semitone(s) %2. Major/minor mode, rhythm, and lyrics are preserved.")
+                .arg(std::abs(interval->semitones)).arg(interval->semitones > 0 ? tr("up") : tr("down")));
+    };
+    connect(m_target, &QComboBox::currentIndexChanged, this, update);
+    connect(m_direction, &QComboBox::currentIndexChanged, this, update);
+    update();
+    resize(460, sizeHint().height());
+}
+
+QString TransposeDialog::targetKey() const { return m_target->currentText(); }
+
+TransposeDirection TransposeDialog::direction() const
+{
+    return static_cast<TransposeDirection>(m_direction->currentData().toInt());
+}
+
 // ------------------------------------------------------------ NewSongDialog ---
 
 NewSongDialog::NewSongDialog(Library *library, QWidget *parent)

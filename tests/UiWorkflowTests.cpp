@@ -1156,6 +1156,90 @@ notes = '''c'4@c%f\allegro d'4 e'4 f'4 | r4\andante c'4 c'4 c'4\spanend'''
         QVERIFY(editor->toPlainText().contains(QStringLiteral("Edited in Song pane")));
     }
 
+    void standardizeButtonUpdatesSourceAndSupportsUndo()
+    {
+        QTemporaryDir dir;
+        write(QDir(dir.path()), "song.toml", baseSong());
+        Session session;
+        SourcePanel source(&session);
+        auto *button = source.findChild<QPushButton *>("standardizeToml");
+        QVERIFY(button);
+        QVERIFY(!button->isEnabled());
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        QVERIFY(button->isEnabled());
+        auto *editor = source.findChild<QPlainTextEdit *>();
+        button->click();
+        QVERIFY(!button->isEnabled());
+        QCOMPARE(editor->toPlainText().toUtf8(), session.currentBytes());
+        QVERIFY(session.currentBytes().indexOf("key_signature =") < session.currentBytes().indexOf("tempo_bpm ="));
+        session.undoStack()->undo();
+        QCOMPARE(session.currentBytes(), baseSong());
+        QVERIFY(button->isEnabled());
+        editor->setPlainText("title = 'unfinished\n");
+        QVERIFY(!button->isEnabled());
+        QVERIFY(!source.commitPendingEdits());
+        QVERIFY(!button->isEnabled());
+        QCOMPARE(session.currentBytes(), baseSong());
+        source.discardPendingEdits();
+        QVERIFY(button->isEnabled());
+    }
+
+    void keyConversionDialogTransposesAndCancelsWithoutChanges()
+    {
+        QTemporaryDir dir;
+        write(QDir(dir.path()), "song.toml", baseSong());
+        QSettings().remove(QStringLiteral("workspace"));
+        MainWindow window;
+        window.openPath(dir.filePath("song.toml"));
+        window.show();
+        auto *session = window.findChild<Session *>();
+        auto *button = window.findChild<QPushButton *>("transposeSong");
+        auto *standardize = window.findChild<QPushButton *>("standardizeToml");
+        auto *key = window.findChild<QComboBox *>("songKeySignature");
+        QVERIFY(session && button && key && standardize);
+        const QString review = qEnvironmentVariable("OPE_REVIEW_DIR");
+        for (const QSize &size : { QSize(760, 760), QSize(1440, 1000) }) {
+            window.resize(size);
+            QCoreApplication::processEvents();
+            QCOMPARE(window.size(), size);
+            QVERIFY(button->isVisibleTo(&window));
+            QVERIFY(standardize->isVisibleTo(&window));
+            QVERIFY(button->rect().width() >= button->minimumSizeHint().width());
+            if (!review.isEmpty()) {
+                QVERIFY(QDir().mkpath(review));
+                QVERIFY(window.grab().save(QDir(review).filePath(QString("key-order-%1.png").arg(size.width()))));
+            }
+        }
+        QTimer::singleShot(0, &window, [&] {
+            auto *dialog = window.findChild<TransposeDialog *>();
+            QVERIFY(dialog);
+            dialog->reject();
+        });
+        button->click();
+        QCOMPARE(session->currentBytes(), baseSong());
+
+        QTimer::singleShot(0, &window, [&] {
+            auto *dialog = window.findChild<TransposeDialog *>();
+            QVERIFY(dialog);
+            auto *target = dialog->findChild<QComboBox *>("transposeTargetKey");
+            auto *buttons = dialog->findChild<QDialogButtonBox *>();
+            QVERIFY(target && buttons);
+            QVERIFY(!buttons->button(QDialogButtonBox::Ok)->isEnabled());
+            target->setCurrentText("C");
+            QVERIFY(buttons->button(QDialogButtonBox::Ok)->isEnabled());
+            if (!review.isEmpty())
+                QVERIFY(dialog->grab().save(QDir(review).filePath("transpose-dialog.png")));
+            buttons->button(QDialogButtonBox::Ok)->click();
+        });
+        button->click();
+        QCOMPARE(key->currentText(), QString("C"));
+        QCOMPARE(session->document().part(u"Soprano")->stream.measures()[0].events[0].pitches[0].toToken(), QString("g'"));
+        QVERIFY(window.findChild<SourcePanel *>()->findChild<QPlainTextEdit *>()->toPlainText().contains("g'1"));
+        session->undoStack()->undo();
+        QCOMPARE(key->currentText(), QString("Bb"));
+        QCOMPARE(session->currentBytes(), baseSong());
+    }
+
     void invalidMainWindowSourceDisablesSaveAndRaisesAProblemsError()
     {
         QTemporaryDir dir;

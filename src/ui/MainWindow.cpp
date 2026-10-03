@@ -367,6 +367,7 @@ void MainWindow::buildLayout()
         m_header->commitPendingEdits();
         m_lyrics->commitPendingEdits();
     });
+    connect(m_header, &HeaderPanel::transposeRequested, this, &MainWindow::transposeCurrentSong);
     connect(m_source, &SourcePanel::structuredEditingBlocked, this,
         &MainWindow::setStructuredEditingBlocked);
     connect(m_source, &SourcePanel::sourceErrorChanged, this,
@@ -472,6 +473,8 @@ void MainWindow::buildMenus()
         });
     editMenu->addAction(undo);
     editMenu->addAction(redo);
+    editMenu->addSeparator();
+    editMenu->addAction(tr("Convert to another &key…"), this, &MainWindow::transposeCurrentSong);
 
     auto *viewMenu = menuBar()->addMenu(tr("&View"));
     auto *phrased = viewMenu->addAction(tr("&Phrased line breaks"));
@@ -517,7 +520,9 @@ void MainWindow::buildMenus()
         box.setInformativeText(tr(
             "<b>Song dock</b><br>title, subtitle, active, copyrights, key_signature, "
             "time_sig_numerator, time_sig_denominator, tempo_bpm, verse_count, "
-            "converge_verses, commentary, and [[time_sig_changes]].<br><br>"
+            "converge_verses, commentary, and [[time_sig_changes]]. "
+            "Convert key transposes every voice together with the key signature; "
+            "the Key selector edits metadata only.<br><br>"
             "<b>Score and Lyrics panes</b><br>notes, text, phrase_breaks, "
             "optional_phrase_breaks, and non_breaking_phrase_breaks.<br><br>"
             "<b>Inspector dock</b><br>choral_type, clef, staff_number, "
@@ -535,7 +540,8 @@ void MainWindow::buildMenus()
             "The editable <b>Source pane</b> handles advanced or newly introduced TOML "
             "fields directly. Valid source changes update every structured pane; invalid "
             "TOML pauses structured editing and Save until it is fixed or reverted. "
-            "Unknown TOML is preserved byte-for-byte."));
+            "Standardize TOML orders fields and sections, keeping comments and values. "
+            "Both conversion and standardization support Undo and require Save."));
         box.setStandardButtons(QMessageBox::Ok);
         box.exec();
     });
@@ -725,6 +731,17 @@ void MainWindow::showBrowser()
     m_browserDock->show();
     m_browserDock->raise();
     m_browser->focusSearch();
+}
+
+void MainWindow::transposeCurrentSong()
+{
+    if (!m_session.isOpen() || !flushPendingEdits())
+        return;
+    TransposeDialog dialog(m_session.effectiveDocument(), this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    if (const auto result = m_session.transposeTo(dialog.targetKey(), dialog.direction()); !result)
+        QMessageBox::warning(this, tr("Convert key"), result.error());
 }
 
 void MainWindow::newSong()
