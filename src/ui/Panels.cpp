@@ -197,6 +197,15 @@ HeaderPanel::HeaderPanel(Session *session, QWidget *parent) : QWidget(parent), m
     m_converge->setToolTip(tr("converge_verses: print shared lines once instead of repeating "
                               "them under every verse. Automatic turns it on when the song "
                               "uses [lyrics.sN] sections."));
+    m_optionalBreakThreshold = new QLineEdit(this);
+    m_optionalBreakThreshold->setObjectName(QStringLiteral("optionalBreakThresholdTicks"));
+    auto *thresholdValidator = new OptionalIntValidator(m_optionalBreakThreshold);
+    thresholdValidator->setRange(1, std::numeric_limits<int>::max());
+    m_optionalBreakThreshold->setValidator(thresholdValidator);
+    m_optionalBreakThreshold->setToolTip(tr(
+        "optional_break_threshold_ticks: take an optional break once this many ticks "
+        "have passed since the last taken break (quarter = 16, 4/4 bar = 64). "
+        "Leave blank for automatic calculation, or to inherit song.toml in a translation."));
     m_timeSigChanges = new QPushButton(this);
     m_timeSigChanges->setToolTip(tr("Measures whose metre differs from the song's"));
     m_copyrights = new QPlainTextEdit(this);
@@ -234,6 +243,7 @@ HeaderPanel::HeaderPanel(Session *session, QWidget *parent) : QWidget(parent), m
     layout->addRow(tr("Verses"), m_verseCount);
     layout->addRow(tr("Metre changes"), m_timeSigChanges);
     layout->addRow(tr("Converge verses"), m_converge);
+    layout->addRow(tr("Break threshold"), m_optionalBreakThreshold);
     layout->addRow(QString(), m_active);
     layout->addRow(tr("Copyrights"), m_copyrights);
     layout->addRow(tr("Commentary"), m_commentary);
@@ -246,6 +256,8 @@ HeaderPanel::HeaderPanel(Session *session, QWidget *parent) : QWidget(parent), m
         m_pending = true;
         Q_EMIT pendingEditsChanged(true);
     };
+    connect(m_optionalBreakThreshold, &QLineEdit::textChanged, this, pending);
+    connect(m_optionalBreakThreshold, &QLineEdit::editingFinished, this, onEdit);
     connect(m_title, &QLineEdit::textChanged, this, pending);
     connect(m_subtitle, &QLineEdit::textChanged, this, pending);
     connect(m_timeNumerator, &QSpinBox::valueChanged, this, pending);
@@ -321,6 +333,12 @@ void HeaderPanel::refresh()
     m_timeNumerator->setValue(effective.timeSigNumerator.valueOr(4));
     selectTimeSignatureDenominator(m_timeDenominator, effective.timeSigDenominator.valueOr(4));
     m_tempo->setValue(effective.tempoBpm.valueOr(100));
+    m_optionalBreakThreshold->setText(doc.optionalBreakThresholdTicks.present()
+            ? QString::number(*doc.optionalBreakThresholdTicks) : QString());
+    m_optionalBreakThreshold->setPlaceholderText(doc.isOverlay
+            && effective.optionalBreakThresholdTicks.present()
+        ? tr("Inherited: %1").arg(*effective.optionalBreakThresholdTicks)
+        : tr("Automatic"));
     m_verseCount->setValue(effective.verseCount.valueOr(0));
     m_active->setChecked(effective.active.valueOr(true));
     m_converge->setCurrentIndex(!effective.convergeVerses.present() ? 0
@@ -344,6 +362,7 @@ void HeaderPanel::refresh()
         note(tr("tempo"), doc.tempoBpm.present());
         note(tr("verse count"), doc.verseCount.present());
         note(tr("phrase breaks"), doc.phraseBreaks.present());
+        note(tr("optional break ticks"), doc.optionalBreakThresholdTicks.present());
         m_inherited->setText(inherited.isEmpty()
                 ? tr("This translation overrides every header field.")
                 : tr("Inherited from song.toml: %1. Editing one here creates an override.")
@@ -376,6 +395,8 @@ void HeaderPanel::commit()
     const int verses = m_verseCount->value();
     const bool active = m_active->isChecked();
     const QVariant converge = m_converge->currentData();
+    const auto threshold = m_optionalBreakThreshold->text().trimmed().isEmpty()
+        ? std::optional<int>() : std::optional<int>(m_optionalBreakThreshold->text().toInt());
 
     // Compare against the *effective* value, but write only the fields that
     // actually moved. On a translation every untouched field must stay absent:
@@ -408,10 +429,19 @@ void HeaderPanel::commit()
                           ? std::optional<bool>(converge.toBool())
                           : std::nullopt),
             "converge_verses");
+    const bool thresholdChanged = differs(m_optionalBreakThreshold->hasAcceptableInput()
+            && m_session->document().optionalBreakThresholdTicks.opt() != threshold,
+        "optional_break_threshold_ticks");
     if (changed.isEmpty())
         return;
 
     m_session->mutate(tr("Edit song details"), [&](SongDocument &doc) {
+        if (thresholdChanged) {
+            if (threshold)
+                doc.optionalBreakThresholdTicks.set(*threshold);
+            else
+                doc.optionalBreakThresholdTicks.clear();
+        }
         if (titleChanged)
             doc.title.set(title);
         if (subtitleChanged) {

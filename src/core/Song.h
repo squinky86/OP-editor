@@ -151,6 +151,7 @@ public:
     Field<QList<PhraseBreak>> phraseBreaks;
     Field<QList<PhraseBreak>> optionalPhraseBreaks;
     Field<QList<PhraseBreak>> nonBreakingPhraseBreaks;
+    Field<int> optionalBreakThresholdTicks; ///< phrase ticks (quarter = 16); absent = automatic
     Field<QList<TimeSigChange>> timeSigChanges;
 
     QList<Part> parts;
@@ -179,6 +180,8 @@ public:
     [[nodiscard]] int expectedTicksForMeasure(int measureNumber) const;
     [[nodiscard]] int measureCount() const;
     [[nodiscard]] QList<PhraseBreak> allPhraseBreaks() const;
+    /// Required breaks plus optional candidates that reach the line threshold.
+    [[nodiscard]] QList<PhraseBreak> layoutPhraseBreaks() const;
     [[nodiscard]] QStringList verseKeys() const;   ///< numbered verses, sorted
     /// Verse numbers selected when the song page first loads. An absent field,
     /// or one with no in-range entries, means every declared verse.

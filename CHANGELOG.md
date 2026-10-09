@@ -1,7 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.2.1
 
+- Added editing, validation, translation inheritance, and lossless saving for
+  `optional_break_threshold_ticks`. Clear the field to restore automatic or
+  inherited behavior. Phrased score layout now selects optional breaks using
+  the threshold, including pickup padding and metre changes.
 - Supported Largo, Lento, Adagio, Andante, Moderato, Allegretto, Allegro, Vivace,
   and Presto in note parsing, Inspector editing, score labels, and playback.
   Step tempos hold their documented ratios and hand off to gradual changes.

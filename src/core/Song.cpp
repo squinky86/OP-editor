@@ -11,6 +11,7 @@
 #include <QSaveFile>
 
 #include <algorithm>
+#include <limits>
 
 namespace ope {
 namespace {
@@ -34,6 +35,7 @@ const QStringList &canonicalHeaderOrder()
         QStringLiteral("phrase_breaks"),
         QStringLiteral("optional_phrase_breaks"),
         QStringLiteral("non_breaking_phrase_breaks"),
+        QStringLiteral("optional_break_threshold_ticks"),
         QStringLiteral("commentary"),
         QStringLiteral("converge_verses"),
     };
@@ -389,6 +391,69 @@ QList<PhraseBreak> SongDocument::allPhraseBreaks() const
     return out;
 }
 
+QList<PhraseBreak> SongDocument::layoutPhraseBreaks() const
+{
+    // Keep this independent of allPhraseBreaks(): lyric analysis includes every
+    // candidate and non-breaking boundary, regardless of the engraving threshold.
+    QList<qint64> starts {0};
+    for (int measure = 1; measure <= measureCount(); ++measure)
+        starts.append(starts.last() + ticks::toPhraseTicks(expectedTicksForMeasure(measure)));
+    const auto cumulative = [&](const PhraseBreak &brk) -> qint64 {
+        const int index = std::max(0, brk.measure - 1);
+        return (index < starts.size() ? starts.at(index) : starts.last()) + brk.tick;
+    };
+
+    // Discount pickup padding only while every voice is still in leading spacers.
+    std::optional<qint64> leading;
+    for (const Part &item : parts) {
+        if (item.stream.measures().isEmpty())
+            continue;
+        qint64 count = 0;
+        for (const Event &event : item.stream.measures().first().events) {
+            if (!event.isSpacer())
+                break;
+            count += ticks::toPhraseTicks(event.duration.notatedTicks());
+        }
+        leading = leading ? std::min(*leading, count) : count;
+    }
+    const qint64 offset = leading.value_or(0);
+    auto required = phraseBreaks.valueOr({});
+    std::sort(required.begin(), required.end());
+    qint64 capacity = starts.size() < 2 ? 256 : starts.at(std::min<qsizetype>(4, starts.size() - 1));
+    if (optionalBreakThresholdTicks.present() && *optionalBreakThresholdTicks > 0) {
+        capacity = *optionalBreakThresholdTicks;
+    } else if (!required.isEmpty()) {
+        QList<qint64> lengths;
+        qint64 previous = offset;
+        for (const auto &brk : required) {
+            const qint64 current = cumulative(brk);
+            if (current > previous)
+                lengths.append(current - previous);
+            previous = current;
+        }
+        if (starts.last() > previous)
+            lengths.append(starts.last() - previous);
+        if (!lengths.isEmpty()) {
+            std::sort(lengths.begin(), lengths.end());
+            capacity = lengths.at(lengths.size() / 2);
+        }
+    }
+    auto candidates = required;
+    candidates.append(optionalPhraseBreaks.valueOr({}));
+    std::sort(candidates.begin(), candidates.end());
+    candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+    QList<PhraseBreak> result;
+    qint64 lastTaken = offset;
+    for (const auto &brk : candidates) {
+        const qint64 current = cumulative(brk);
+        if (required.contains(brk) || current - lastTaken >= capacity) {
+            result.append(brk);
+            lastTaken = current;
+        }
+    }
+    return result;
+}
+
 QStringList SongDocument::verseKeys() const
 {
     QStringList keys;
@@ -471,7 +536,7 @@ bool SongDocument::isDirty() const
     if (anyDirty(title, subtitle, active, declaredLanguage, keySignature, timeSigNumerator,
             timeSigDenominator, tempoBpm, verseCount, defaultVerses, copyrights, commentary,
             convergeVerses, phraseBreaks, optionalPhraseBreaks, nonBreakingPhraseBreaks,
-            timeSigChanges))
+            optionalBreakThresholdTicks, timeSigChanges))
         return true;
     for (auto it = lyrics.constBegin(); it != lyrics.constEnd(); ++it) {
         if (it->dirty)
@@ -500,7 +565,7 @@ void SongDocument::markClean()
     clean(title, subtitle, active, declaredLanguage, keySignature, timeSigNumerator,
         timeSigDenominator, tempoBpm, verseCount, defaultVerses, copyrights, commentary,
         convergeVerses, phraseBreaks, optionalPhraseBreaks, nonBreakingPhraseBreaks,
-        timeSigChanges);
+        optionalBreakThresholdTicks, timeSigChanges);
     for (auto it = lyrics.begin(); it != lyrics.end(); ++it)
         it->dirty = false;
     for (Part &item : parts) {
@@ -666,6 +731,18 @@ std::expected<SongDocument, LoadError> loadBytes(const QString &path, QByteArray
     bindString(doc.keySignature, src.rootPair(QStringLiteral("key_signature")));
     bindInt(doc.timeSigNumerator, src.rootPair(QStringLiteral("time_sig_numerator")));
     bindInt(doc.timeSigDenominator, src.rootPair(QStringLiteral("time_sig_denominator")));
+    if (const auto *threshold = src.rootPair(QStringLiteral("optional_break_threshold_ticks"))) {
+        if (threshold->value.kind != toml::ValueKind::Integer
+            || threshold->value.integer < std::numeric_limits<int>::min()
+            || threshold->value.integer > std::numeric_limits<int>::max()) {
+            LoadError error;
+            error.path = path;
+            error.message = QStringLiteral("optional_break_threshold_ticks must be a positive "
+                                           "32-bit integer (quarter note = 16 ticks)");
+            return std::unexpected(error);
+        }
+        bindInt(doc.optionalBreakThresholdTicks, threshold);
+    }
     bindInt(doc.tempoBpm, src.rootPair(QStringLiteral("tempo_bpm")));
     bindInt(doc.verseCount, src.rootPair(QStringLiteral("verse_count")));
     bindIntList(doc.defaultVerses, src.rootPair(QStringLiteral("default_verses")));
@@ -916,6 +993,7 @@ QByteArray serialize(const SongDocument &doc)
     breaksField(QStringLiteral("phrase_breaks"), doc.phraseBreaks);
     breaksField(QStringLiteral("optional_phrase_breaks"), doc.optionalPhraseBreaks);
     breaksField(QStringLiteral("non_breaking_phrase_breaks"), doc.nonBreakingPhraseBreaks);
+    intField(QStringLiteral("optional_break_threshold_ticks"), doc.optionalBreakThresholdTicks);
     stringField(QStringLiteral("commentary"), doc.commentary);
     boolField(QStringLiteral("converge_verses"), doc.convergeVerses);
 
@@ -1096,6 +1174,8 @@ QByteArray serializeFresh(const SongDocument &doc)
     if (doc.nonBreakingPhraseBreaks.present())
         line("non_breaking_phrase_breaks = "
             + toml::emitStringArrayInline(breaksToStrings(*doc.nonBreakingPhraseBreaks)));
+    if (doc.optionalBreakThresholdTicks.present())
+        line("optional_break_threshold_ticks = " + QByteArray::number(*doc.optionalBreakThresholdTicks));
     if (doc.commentary.present())
         line("commentary = " + toml::emitBasicString(*doc.commentary));
     if (doc.convergeVerses.present())
@@ -1294,6 +1374,7 @@ SongDocument mergeOverlay(const SongDocument &base, const SongDocument &overlay)
     inheritInt(merged.timeSigNumerator, base.timeSigNumerator);
     inheritInt(merged.timeSigDenominator, base.timeSigDenominator);
     inheritInt(merged.tempoBpm, base.tempoBpm);
+    inheritInt(merged.optionalBreakThresholdTicks, base.optionalBreakThresholdTicks);
     inheritInt(merged.verseCount, base.verseCount);
     if (!merged.defaultVerses.present() && base.defaultVerses.present())
         merged.defaultVerses.bind(*base.defaultVerses, {});

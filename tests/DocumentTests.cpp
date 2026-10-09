@@ -44,6 +44,114 @@ class DocumentTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void optionalBreakThresholdRoundTripsAndInherits()
+    {
+        const QByteArray original = "optional_break_threshold_ticks = 128 # keep comment\n" + baseSong();
+        auto loaded = io::loadBytes("song.toml", original);
+        QVERIFY(loaded);
+        auto doc = *loaded;
+        QCOMPARE(doc.optionalBreakThresholdTicks.valueOr(0), 128);
+        QVERIFY(!doc.unknownKeys.contains("optional_break_threshold_ticks"));
+        QCOMPARE(io::serialize(doc), original);
+        doc.optionalBreakThresholdTicks.set(96);
+        QVERIFY(doc.isDirty());
+        QByteArray expected = original;
+        expected.replace("= 128 #", "= 96 #");
+        QCOMPARE(io::serialize(doc), expected);
+        const auto fresh = io::loadBytes("song.toml", io::serializeFresh(doc));
+        QVERIFY(fresh);
+        QCOMPARE(fresh->optionalBreakThresholdTicks.valueOr(0), 96);
+        doc.markClean();
+        QVERIFY(!doc.isDirty());
+
+        auto overlay = io::loadBytes("song_es.toml", "title = 'Spanish'\n");
+        QVERIFY(overlay);
+        QCOMPARE(mergeOverlay(doc, *overlay).optionalBreakThresholdTicks.valueOr(0), 96);
+        overlay->optionalBreakThresholdTicks.set(64);
+        QCOMPARE(mergeOverlay(doc, *overlay).optionalBreakThresholdTicks.valueOr(0), 64);
+        overlay->optionalBreakThresholdTicks.clear();
+        QCOMPARE(mergeOverlay(doc, *overlay).optionalBreakThresholdTicks.valueOr(0), 96);
+
+        doc.optionalBreakThresholdTicks.clear();
+        QVERIFY(!io::serialize(doc).contains("optional_break_threshold_ticks"));
+        auto absent = io::loadBytes("song.toml", baseSong());
+        QVERIFY(absent);
+        absent->optionalBreakThresholdTicks.set(128);
+        const auto inserted = io::serialize(*absent);
+        QVERIFY(inserted.indexOf("optional_break_threshold_ticks = 128") < inserted.indexOf("[parts."));
+        const auto standardized = io::standardize(*io::loadBytes("song.toml", original));
+        QVERIFY(standardized);
+        QVERIFY(standardized->contains("optional_break_threshold_ticks = 128 # keep comment"));
+    }
+
+    void optionalBreakThresholdRejectsInvalidValues()
+    {
+        for (const QByteArray value : {"0", "-8", "1.5", "'128'", "true", "[]", "2147483648", "-2147483649"}) {
+            const auto doc = io::loadBytes("song.toml", "optional_break_threshold_ticks = " + value + "\n" + baseSong());
+            if (!doc) {
+                QVERIFY(doc.error().formatted().contains("optional_break_threshold_ticks"));
+                continue;
+            }
+            const auto findings = validate(*doc);
+            QVERIFY2(std::any_of(findings.begin(), findings.end(), [](const Finding &finding) {
+                return finding.rule == "E-OPTIONAL-BREAK-THRESHOLD" && finding.severity == Severity::Error;
+            }), value.constData());
+        }
+        for (const QByteArray value : {"1", "128", "2147483647"}) {
+            const auto doc = io::loadBytes("song.toml", "optional_break_threshold_ticks = " + value + "\n" + baseSong());
+            QVERIFY(doc);
+            QCOMPARE(countBySeverity(validate(*doc), Severity::Error), 0);
+        }
+    }
+
+    void optionalBreakLayoutUsesThresholdAndResetsOnlyAtTakenBreaks()
+    {
+        auto loaded = io::loadBytes("song.toml", R"TOML(title = "Breaks"
+optional_break_threshold_ticks = 128
+phrase_breaks = ["3:64"]
+optional_phrase_breaks = ["1:64", "2:63", "2:64", "4:64", "5:64"]
+non_breaking_phrase_breaks = ["1:32"]
+[parts.Soprano]
+notes = "c1 | c1 | c1 | c1 | c1 | c1"
+)TOML");
+        QVERIFY(loaded);
+        auto doc = *loaded;
+        const auto all = doc.allPhraseBreaks();
+        QCOMPARE(doc.layoutPhraseBreaks(), (QList<PhraseBreak>{{2, 64}, {3, 64}, {5, 64}}));
+        doc.optionalBreakThresholdTicks.set(129);
+        QCOMPARE(doc.layoutPhraseBreaks(), (QList<PhraseBreak>{{3, 64}}));
+        QCOMPARE(doc.allPhraseBreaks(), all);
+        doc.optionalBreakThresholdTicks.clear();
+        // Both required-break segments are 192 ticks.
+        QCOMPARE(doc.layoutPhraseBreaks(), (QList<PhraseBreak>{{3, 64}}));
+        doc.phraseBreaks.clear();
+        // Without required breaks, capacity is the first four measures (256).
+        QCOMPARE(doc.layoutPhraseBreaks(), (QList<PhraseBreak>{{4, 64}}));
+        doc.optionalBreakThresholdTicks.set(2147483647);
+        QVERIFY(doc.layoutPhraseBreaks().isEmpty());
+    }
+
+    void optionalBreakLayoutDiscountsPickupAndUsesChangingMetre()
+    {
+        const auto loaded = io::loadBytes("song.toml", R"TOML(title = "Pickup"
+optional_break_threshold_ticks = 80
+optional_phrase_breaks = ["2:48", "3:64"]
+[[time_sig_changes]]
+measure = 2
+numerator = 3
+denominator = 4
+[parts.Soprano]
+notes = "s2. c4 | c2. | c1"
+[parts.Alto]
+notes = "s2. e4 | e2. | e1"
+)TOML");
+        QVERIFY(loaded);
+        auto doc = *loaded;
+        QCOMPARE(doc.layoutPhraseBreaks(), (QList<PhraseBreak>{{3, 64}}));
+        doc.optionalBreakThresholdTicks.set(64);
+        QCOMPARE(doc.layoutPhraseBreaks(), (QList<PhraseBreak>{{2, 48}, {3, 64}}));
+    }
+
     void ttbbRoundTripsAndClefEditsNeverTranspose()
     {
         const auto loaded = io::loadBytes("song.toml", ttbbSong());

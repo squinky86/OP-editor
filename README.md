@@ -208,6 +208,15 @@ In the score view:
 | `Ctrl+Enter` | copy this marking to every voice sounding on the beat |
 | `Ctrl+wheel` | zoom |
 
+**Details ▸ Song ▸ Break threshold** sets `optional_break_threshold_ticks`.
+Enter a positive integer (quarter note = 16 ticks; 4/4 bar = 64). An optional
+break is taken when the time since the last taken break reaches that value.
+Leave it blank for the calculated threshold; translations inherit the base
+song's value until overridden, and clearing an override restores inheritance.
+The phrased score preview uses this selection for breaks at barlines; it still
+wraps to the window width and does not split measures at mid-measure breaks.
+Lyric analysis continues to use every phrase boundary.
+
 Phrase breaks can also be placed with the mouse, and OPE works out the `"M:T"`
 value either way:
 

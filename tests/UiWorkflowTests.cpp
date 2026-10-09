@@ -79,6 +79,82 @@ class UiWorkflowTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void optionalBreakThresholdEditingUndoAndTranslationReset()
+    {
+        QTemporaryDir temporary;
+        const QDir root(temporary.path());
+        write(root, "song.toml", baseSong());
+        write(root, "song_es.toml", "title = 'Spanish'\n");
+        Session session;
+        QVERIFY(session.openSong(root.filePath("song.toml")));
+        HeaderPanel panel(&session);
+        auto *threshold = panel.findChild<QLineEdit *>("optionalBreakThresholdTicks");
+        QVERIFY(threshold);
+        QVERIFY(threshold->text().isEmpty());
+        QCOMPARE(threshold->placeholderText(), QStringLiteral("Automatic"));
+        threshold->setText("128");
+        QVERIFY(panel.hasPendingEdits());
+        panel.commitPendingEdits();
+        QCOMPARE(session.document().optionalBreakThresholdTicks.valueOr(0), 128);
+        session.undoStack()->undo();
+        QVERIFY(threshold->text().isEmpty());
+        session.undoStack()->redo();
+        QCOMPARE(threshold->text(), QStringLiteral("128"));
+        QVERIFY(session.save());
+
+        session.setCurrentLanguage("es");
+        QVERIFY(threshold->text().isEmpty());
+        QCOMPARE(threshold->placeholderText(), QStringLiteral("Inherited: 128"));
+        auto *title = lineEditWithText(panel, "Spanish");
+        QVERIFY(title);
+        title->setText("Edited translation");
+        panel.commitPendingEdits();
+        QVERIFY(!session.document().optionalBreakThresholdTicks.present());
+        threshold->setText("96");
+        panel.commitPendingEdits();
+        QCOMPARE(session.effectiveDocument().optionalBreakThresholdTicks.valueOr(0), 96);
+        QVERIFY(session.save());
+        threshold->clear();
+        panel.commitPendingEdits();
+        QVERIFY(!session.document().optionalBreakThresholdTicks.present());
+        QCOMPARE(session.effectiveDocument().optionalBreakThresholdTicks.valueOr(0), 128);
+        session.undoStack()->undo();
+        QCOMPARE(threshold->text(), QStringLiteral("96"));
+        session.undoStack()->redo();
+        QVERIFY(session.save());
+        const auto reopened = io::load(root.filePath("song_es.toml"));
+        QVERIFY(reopened);
+        QVERIFY(!reopened->optionalBreakThresholdTicks.present());
+    }
+
+    void phrasedScoreUsesOptionalBreakThreshold()
+    {
+        QTemporaryDir temporary;
+        const QDir root(temporary.path());
+        write(root, "song.toml", R"TOML(title = "Layout"
+optional_break_threshold_ticks = 64
+optional_phrase_breaks = ["1:64", "2:64", "3:64"]
+[parts.Soprano]
+notes = "c1 | c1 | c1 | c1"
+)TOML");
+        Session session;
+        QVERIFY(session.openSong(root.filePath("song.toml")));
+        ScoreView score(&session);
+        score.resize(1800, 1000);
+        score.show();
+        score.setPhrasedLayout(true);
+        QCoreApplication::processEvents();
+        QCOMPARE(score.systems().size(), 4);
+        session.mutate("Change threshold", [](SongDocument &doc) {
+            doc.optionalBreakThresholdTicks.set(128);
+        });
+        QCoreApplication::processEvents();
+        QCOMPARE(score.systems().size(), 2);
+        session.undoStack()->undo();
+        QCoreApplication::processEvents();
+        QCOMPARE(score.systems().size(), 4);
+    }
+
     void localCatalogAcceptance()
     {
         const QString catalog = qEnvironmentVariable("OPE_ACCEPTANCE_SONGS_DIR");

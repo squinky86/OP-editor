@@ -283,17 +283,11 @@ void ScoreView::relayout()
     // Break systems at phrase breaks when asked, otherwise fill the width.
     QList<int> breakAfterMeasure;
     if (m_phrased) {
-        const auto collect = [&](const Field<QList<PhraseBreak>> &field) {
-            if (!field.present())
-                return;
-            for (const PhraseBreak &brk : *field) {
-                const int expected = doc.expectedTicksForMeasure(brk.measure);
-                if (ticks::fromPhraseTicks(brk.tick) >= expected)
-                    breakAfterMeasure.append(brk.measure - 1);
-            }
-        };
-        collect(doc.phraseBreaks);
-        collect(doc.optionalPhraseBreaks);
+        for (const PhraseBreak &brk : doc.layoutPhraseBreaks()) {
+            const int expected = doc.expectedTicksForMeasure(brk.measure);
+            if (static_cast<qint64>(brk.tick) * ticks::PerPhraseTick >= expected)
+                breakAfterMeasure.append(brk.measure - 1);
+        }
         std::sort(breakAfterMeasure.begin(), breakAfterMeasure.end());
     }
 

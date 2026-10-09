@@ -200,6 +200,11 @@ QList<Finding> validate(
                 .arg(doc.language));
     }
 
+    if (doc.optionalBreakThresholdTicks.present() && *doc.optionalBreakThresholdTicks <= 0) {
+        add(Severity::Error, QStringLiteral("E-OPTIONAL-BREAK-THRESHOLD"),
+            QStringLiteral("optional_break_threshold_ticks must be a positive integer; found %1")
+                .arg(*doc.optionalBreakThresholdTicks));
+    }
     if (doc.tempoBpm.present() && *doc.tempoBpm <= 0) {
         add(Severity::Error, QStringLiteral("E-TEMPO"),
             QStringLiteral("tempo_bpm must be positive; found %1").arg(*doc.tempoBpm));

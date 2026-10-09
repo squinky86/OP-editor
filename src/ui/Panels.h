@@ -62,6 +62,7 @@ private:
     QSpinBox *m_verseCount = nullptr;
     QCheckBox *m_active = nullptr;
     QComboBox *m_converge = nullptr;
+    QLineEdit *m_optionalBreakThreshold = nullptr;
     QPushButton *m_timeSigChanges = nullptr;
     QPlainTextEdit *m_copyrights = nullptr;
     QPlainTextEdit *m_commentary = nullptr;
