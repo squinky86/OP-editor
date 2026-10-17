@@ -1261,12 +1261,28 @@ QByteArray serializeFresh(const SongDocument &doc)
 
 std::expected<QByteArray, LoadError> standardize(const SongDocument &doc)
 {
-    const QByteArray bytes = serialize(doc);
+    QByteArray bytes = serialize(doc);
     if (doc.isMergedView)
         return bytes;
-    const auto current = loadBytes(doc.path, bytes);
+    auto current = loadBytes(doc.path, bytes);
     if (!current)
         return std::unexpected(current.error());
+    if (const auto *subtitle = current->source.rootPair(QStringLiteral("subtitle"));
+        subtitle && subtitle->value.kind == toml::ValueKind::String
+        && subtitle->value.string.isEmpty()) {
+        const qsizetype begin = lineStartAfterBom(current->source, subtitle->span.begin);
+        const qsizetype end = current->source.lineEnd(subtitle->value.span.end);
+        // Keep an inline comment as a standalone comment when removing the field.
+        const QByteArray comment = bytes.sliced(subtitle->value.span.end,
+            end - subtitle->value.span.end).trimmed();
+        toml::Edit edit;
+        edit.replace({ begin, end }, comment.isEmpty() ? QByteArray()
+            : comment + (bytes.contains("\r\n") ? "\r\n" : "\n"));
+        bytes = edit.apply(bytes);
+        current = loadBytes(doc.path, bytes);
+        if (!current)
+            return std::unexpected(current.error());
+    }
     const auto &source = current->source;
     if (source.rootPairs().isEmpty() && source.tables().isEmpty())
         return bytes;

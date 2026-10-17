@@ -748,6 +748,44 @@ notes = "s2. e4 | e2. | e1"
         QCOMPARE(io::serializeFresh(*doc), io::serializeFresh(*reloaded));
     }
 
+    void standardizationOmitsEmptySubtitles()
+    {
+        for (const QByteArray &value : { QByteArray("\"\""), QByteArray("''"),
+                 QByteArray("\"\"\"\n\"\"\""), QByteArray("'''\n'''") }) {
+            const QByteArray source = "# Preamble\ntitle = 'T'\n# Subtitle comment\n"
+                "subtitle = " + value + " # Inline comment\n[custom]\nsubtitle = ''\n";
+            const auto doc = io::loadBytes("song.toml", source);
+            QVERIFY(doc);
+            const auto standard = io::standardize(*doc);
+            QVERIFY(standard);
+            const auto reloaded = io::loadBytes("song.toml", *standard);
+            QVERIFY(reloaded);
+            QVERIFY(!reloaded->subtitle.present());
+            QVERIFY(!reloaded->source.rootPair(u"subtitle"));
+            QVERIFY(standard->contains("# Subtitle comment\n# Inline comment\n"));
+            QVERIFY(standard->contains("[custom]\nsubtitle = ''"));
+            QCOMPARE(*io::standardize(*reloaded), *standard);
+            QCOMPARE(io::serialize(*doc), source);
+        }
+        for (const QByteArray &source : { QByteArray("subtitle = ''"),
+                 QByteArray("\xEF\xBB\xBFsubtitle = ''\r\ntitle = 'T'\r\n") }) {
+            const auto doc = io::loadBytes("song.toml", source);
+            QVERIFY(doc);
+            const auto standard = io::standardize(*doc);
+            QVERIFY(standard);
+            QCOMPARE(*standard, source.startsWith("\xEF\xBB\xBF")
+                ? QByteArray("\xEF\xBB\xBFtitle = 'T'\r\n") : QByteArray());
+        }
+        for (const QByteArray &value : { QByteArray("'A subtitle'"), QByteArray("' '") }) {
+            const QByteArray source = "title = 'T'\nsubtitle = " + value + "\n";
+            const auto doc = io::loadBytes("song.toml", source);
+            QVERIFY(doc);
+            const auto standard = io::standardize(*doc);
+            QVERIFY(standard);
+            QCOMPARE(*standard, source);
+        }
+    }
+
     void standardizationPreservesCommentsValuesAndArrayOwnership()
     {
         const QByteArray source = R"TOML(# File preamble

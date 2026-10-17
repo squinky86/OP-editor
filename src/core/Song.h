@@ -242,6 +242,7 @@ namespace io {
 [[nodiscard]] QByteArray serializeFresh(const SongDocument &doc);
 
 /// Reorder the current authored bytes without regenerating their values.
+/// Empty subtitles are omitted.
 /// Comments and unknown fields/tables survive; array-of-table element order
 /// and its descendants remain intact. Repeating this is a no-op.
 [[nodiscard]] std::expected<QByteArray, LoadError> standardize(const SongDocument &doc);
