@@ -815,7 +815,8 @@ duration = 1
             "choral_type = 'soprano'\nnotes = '''c'1'''"));
         QVERIFY(standard->contains("future_date = 2026-09-25"));
         QVERIFY(standard->indexOf("[parts.\"Lead Voice\"]") < standard->indexOf("[parts.Bass]"));
-        QVERIFY(standard->indexOf("[parts.\"Lead Voice\".lyrics.2]") < standard->indexOf("[parts.Bass]"));
+        QVERIFY(standard->contains("[lyrics.2]\ntext = 'two'\n\n"
+            "[parts.\"Lead Voice\".lyrics.2]\ntext = 'override'\n\n[lyrics.10]"));
         QVERIFY(standard->indexOf("[lyrics.2]") < standard->indexOf("[lyrics.10]"));
         QVERIFY(standard->contains("id = 'first'\n\n[extensions.detail]\nvalue = 1\n\n"
             "[[extensions]]\nid = 'second'\n\n[extensions.detail]\nvalue = 2"));
@@ -828,6 +829,63 @@ duration = 1
         QCOMPARE(reloaded->phraseBreaks.opt(), doc->phraseBreaks.opt());
         QCOMPARE(reloaded->timeSigChanges.opt(), doc->timeSigChanges.opt());
         QCOMPARE(io::serialize(*doc), source); // Normal saves retain authored order.
+    }
+
+    void standardizationGroupsDefaultLyricsWithVoiceOverrides()
+    {
+        const QByteArray source = R"TOML(title = 'Sections'
+[parts.Bass]
+choral_type = 'bass'
+notes = 'c1'
+[parts.Bass.lyrics.s2]
+text = 'bass special two'
+[parts.Bass.lyrics.1]
+text = 'bass verse'
+[parts."Lead Voice"]
+choral_type = 'soprano'
+notes = "c'1"
+[parts."Lead Voice".lyrics.s1]
+text = 'lead special one'
+[parts."Lead Voice".lyrics.1]
+text = 'lead verse'
+[parts.Bass.lyrics.s10]
+text = 'override without a default'
+[lyrics.s2]
+text = 'default special two'
+# Special one default
+[lyrics.s1]
+text = '''default special one'''
+# Special one bass override
+[parts.Bass.lyrics.s1]
+text = 'bass special one' # keep inline comment
+[parts.Bass.lyrics.s1.extra]
+hint = 'stay with override'
+[lyrics.1]
+text = 'default verse'
+)TOML";
+        const auto doc = io::loadBytes("song.toml", source);
+        QVERIFY(doc);
+        const auto standard = io::standardize(*doc);
+        QVERIFY(standard);
+        const auto reloaded = io::loadBytes("song.toml", *standard);
+        QVERIFY(reloaded);
+        QStringList headers;
+        for (const auto &table : reloaded->source.tables())
+            headers.append(table.path.join(u'.'));
+        QCOMPARE(headers, QStringList({ "parts.Lead Voice", "parts.Bass", "lyrics.1",
+            "parts.Lead Voice.lyrics.1", "parts.Bass.lyrics.1", "lyrics.s1",
+            "parts.Lead Voice.lyrics.s1", "parts.Bass.lyrics.s1",
+            "parts.Bass.lyrics.s1.extra", "lyrics.s2", "parts.Bass.lyrics.s2",
+            "parts.Bass.lyrics.s10" }));
+        QVERIFY(standard->contains("# Special one default\n[lyrics.s1]\n"
+            "text = '''default special one'''"));
+        QVERIFY(standard->contains("# Special one bass override\n[parts.Bass.lyrics.s1]\n"
+            "text = 'bass special one' # keep inline comment"));
+        QCOMPARE(io::serializeFresh(*reloaded), io::serializeFresh(*doc));
+        const auto again = io::standardize(*reloaded);
+        QVERIFY(again);
+        QCOMPARE(*again, *standard);
+        QCOMPARE(io::serialize(*doc), source);
     }
 
     void standardizationAndInsertionsHandleMissingNewlinesAndBom()

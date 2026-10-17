@@ -126,6 +126,55 @@ QList<const toml::Table *> orderedTables(const SongDocument &doc,
     return result;
 }
 
+/// Present each section's default text followed by its voice overrides, while
+/// retaining complete subtrees (including array elements) and voice order.
+QList<const toml::Table *> standardizedTables(const SongDocument &doc,
+    const QList<const toml::Table *> &tables)
+{
+    QMap<QString, QList<const toml::Table *>> defaults;
+    QMap<QString, QList<const toml::Table *>> overrides;
+    QList<const toml::Table *> result;
+    qsizetype lyricPosition = 0;
+    QStringList keys;
+    for (const auto *table : orderedTables(doc, tables)) {
+        const auto &path = table->path;
+        const bool global = path.first() == QLatin1String("lyrics");
+        const bool part = path.size() >= 3 && path.first() == QLatin1String("parts")
+            && path.at(2) == QLatin1String("lyrics");
+        const qsizetype sectionDepth = global ? 2 : 4;
+        bool section = (global || part) && path.size() >= sectionDepth;
+        // Moving a section out of an array ancestor would change its owner.
+        if (section) {
+            for (const auto *ancestor : tables) {
+                if (ancestor->isArrayElement && ancestor->path.size() < sectionDepth
+                    && path.first(ancestor->path.size()) == ancestor->path) {
+                    section = false;
+                    break;
+                }
+            }
+        }
+        if (section) {
+            const QString key = path.at(sectionDepth - 1);
+            (global ? defaults : overrides)[key].append(table);
+            if (!keys.contains(key))
+                keys.append(key);
+        } else {
+            result.append(table);
+            if (path.first() == QLatin1String("time_sig_changes")
+                || path.first() == QLatin1String("parts") || global)
+                lyricPosition = result.size();
+        }
+    }
+    QList<const toml::Table *> lyrics;
+    for (const QString &key : SongDocument::orderedLyricKeys(keys)) {
+        lyrics.append(defaults.value(key));
+        lyrics.append(overrides.value(key));
+    }
+    for (const auto *table : lyrics)
+        result.insert(lyricPosition++, table);
+    return result;
+}
+
 /// Insert beside the closest existing canonical predecessor. In a previously
 /// shuffled file this still keeps related new fields together; the explicit
 /// Standardize action handles moving already-authored fields.
@@ -1279,7 +1328,7 @@ std::expected<QByteArray, LoadError> standardize(const SongDocument &doc)
         blocks.insert(&table, block);
         tables.append(&table);
     }
-    for (const auto *table : orderedTables(*current, tables)) {
+    for (const auto *table : standardizedTables(*current, tables)) {
         if (!out.isEmpty() && !out.endsWith(newline + newline) && out != QByteArray("\xEF\xBB\xBF"))
             out += newline;
         out += blocks.value(table);

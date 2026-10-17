@@ -1235,7 +1235,10 @@ notes = '''c'4@c%f\allegro d'4 e'4 f'4 | r4\andante c'4 c'4 c'4\spanend'''
     void standardizeButtonUpdatesSourceAndSupportsUndo()
     {
         QTemporaryDir dir;
-        write(QDir(dir.path()), "song.toml", baseSong());
+        const QByteArray original = baseSong()
+            + "\n[parts.Alto.lyrics.s1]\ntext = 'alto special'\n"
+              "\n[lyrics.s1]\ntext = 'default special'\n";
+        write(QDir(dir.path()), "song.toml", original);
         Session session;
         SourcePanel source(&session);
         auto *button = source.findChild<QPushButton *>("standardizeToml");
@@ -1248,14 +1251,16 @@ notes = '''c'4@c%f\allegro d'4 e'4 f'4 | r4\andante c'4 c'4 c'4\spanend'''
         QVERIFY(!button->isEnabled());
         QCOMPARE(editor->toPlainText().toUtf8(), session.currentBytes());
         QVERIFY(session.currentBytes().indexOf("key_signature =") < session.currentBytes().indexOf("tempo_bpm ="));
+        QVERIFY(session.currentBytes().contains("[lyrics.s1]\ntext = 'default special'\n\n"
+            "[parts.Alto.lyrics.s1]\ntext = 'alto special'"));
         session.undoStack()->undo();
-        QCOMPARE(session.currentBytes(), baseSong());
+        QCOMPARE(session.currentBytes(), original);
         QVERIFY(button->isEnabled());
         editor->setPlainText("title = 'unfinished\n");
         QVERIFY(!button->isEnabled());
         QVERIFY(!source.commitPendingEdits());
         QVERIFY(!button->isEnabled());
-        QCOMPARE(session.currentBytes(), baseSong());
+        QCOMPARE(session.currentBytes(), original);
         source.discardPendingEdits();
         QVERIFY(button->isEnabled());
     }
