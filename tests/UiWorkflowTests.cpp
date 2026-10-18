@@ -20,6 +20,7 @@
 #include <QDir>
 #include <QDockWidget>
 #include <QFile>
+#include <QFontDatabase>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
@@ -1265,19 +1266,32 @@ notes = '''c'4@c%f\allegro d'4 e'4 f'4 | r4\andante c'4 c'4 c'4\spanend'''
         QVERIFY(button->isEnabled());
     }
 
+    void keyConversionDialogTransposesAndCancelsWithoutChanges_data()
+    {
+        QTest::addColumn<QFont>("font");
+        QTest::newRow("system-font") << QApplication::font();
+        // Debian's minimal CI image uses DejaVu Sans. Its wider metrics exposed
+        // a minimum-width regression hidden by the developer desktop font.
+        if (QFontDatabase::families().contains(QStringLiteral("DejaVu Sans")))
+            QTest::newRow("dejavu-sans") << QFont(QStringLiteral("DejaVu Sans"), 9);
+    }
+
     void keyConversionDialogTransposesAndCancelsWithoutChanges()
     {
+        QFETCH(QFont, font);
         QTemporaryDir dir;
         write(QDir(dir.path()), "song.toml", baseSong());
         QSettings().remove(QStringLiteral("workspace"));
         MainWindow window;
+        window.setFont(font);
         window.openPath(dir.filePath("song.toml"));
         window.show();
         auto *session = window.findChild<Session *>();
         auto *button = window.findChild<QPushButton *>("transposeSong");
         auto *standardize = window.findChild<QPushButton *>("standardizeToml");
         auto *key = window.findChild<QComboBox *>("songKeySignature");
-        QVERIFY(session && button && key && standardize);
+        auto *header = window.findChild<HeaderPanel *>();
+        QVERIFY(session && button && key && standardize && header);
         const QString review = qEnvironmentVariable("OPE_REVIEW_DIR");
         for (const QSize &size : { QSize(760, 760), QSize(1440, 1000) }) {
             window.resize(size);
@@ -1286,9 +1300,13 @@ notes = '''c'4@c%f\allegro d'4 e'4 f'4 | r4\andante c'4 c'4 c'4\spanend'''
             QVERIFY(button->isVisibleTo(&window));
             QVERIFY(standardize->isVisibleTo(&window));
             QVERIFY(button->rect().width() >= button->minimumSizeHint().width());
+            QVERIFY(key->width() >= key->minimumSizeHint().width());
+            QVERIFY(header->rect().contains(QRect(button->mapTo(header, QPoint()), button->size())));
+            QVERIFY(header->rect().contains(QRect(key->mapTo(header, QPoint()), key->size())));
             if (!review.isEmpty()) {
                 QVERIFY(QDir().mkpath(review));
-                QVERIFY(window.grab().save(QDir(review).filePath(QString("key-order-%1.png").arg(size.width()))));
+                QVERIFY(window.grab().save(QDir(review).filePath(
+                    QString("key-order-%1-%2.png").arg(QTest::currentDataTag()).arg(size.width()))));
             }
         }
         QTimer::singleShot(0, &window, [&] {

@@ -83,7 +83,11 @@ private Q_SLOTS:
             QVERIFY2(standard, qPrintable(path));
             const auto parsed = io::loadBytes(path, *standard);
             QVERIFY2(parsed, qPrintable(path));
-            QCOMPARE(io::serializeFresh(*parsed), io::serializeFresh(*doc));
+            auto expected = *doc;
+            // Standardization intentionally drops an explicitly empty subtitle.
+            if (expected.subtitle.present() && expected.subtitle->isEmpty())
+                expected.subtitle.clear();
+            QCOMPARE(io::serializeFresh(*parsed), io::serializeFresh(expected));
             const auto again = io::standardize(*parsed);
             QVERIFY2(again, qPrintable(path));
             QCOMPARE(*again, *standard);

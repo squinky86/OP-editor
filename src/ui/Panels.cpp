@@ -165,7 +165,9 @@ HeaderPanel::HeaderPanel(Session *session, QWidget *parent) : QWidget(parent), m
 {
     auto *layout = new QFormLayout(this);
     layout->setLabelAlignment(Qt::AlignRight);
-    layout->setRowWrapPolicy(QFormLayout::DontWrapRows);
+    // Allow wide fields (notably Key + Convert) below their labels when the
+    // Details dock is narrow, rather than increasing the whole window's minimum width.
+    layout->setRowWrapPolicy(QFormLayout::WrapLongRows);
     layout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
 
     m_title = new QLineEdit(this);
@@ -230,14 +232,19 @@ HeaderPanel::HeaderPanel(Session *session, QWidget *parent) : QWidget(parent), m
 
     layout->addRow(tr("Title"), m_title);
     layout->addRow(tr("Subtitle"), m_subtitle);
-    auto *keyRow = new QHBoxLayout;
+    auto *keyField = new QWidget(this);
+    keyField->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+    auto *keyRow = new QHBoxLayout(keyField);
+    keyRow->setContentsMargins(0, 0, 0, 0);
+    // Keep both controls readable when the form has to wrap this field.
+    keyRow->setSizeConstraint(QLayout::SetMinimumSize);
     keyRow->addWidget(m_key, 1);
     auto *transpose = new QPushButton(tr("Convert…"), this);
     transpose->setObjectName(QStringLiteral("transposeSong"));
     transpose->setToolTip(tr("Transpose every voice and change the key signature"));
     connect(transpose, &QPushButton::clicked, this, &HeaderPanel::transposeRequested);
     keyRow->addWidget(transpose);
-    layout->addRow(tr("Key"), keyRow);
+    layout->addRow(tr("Key"), keyField);
     layout->addRow(tr("Metre"), metre);
     layout->addRow(tr("Tempo"), m_tempo);
     layout->addRow(tr("Verses"), m_verseCount);
