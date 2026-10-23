@@ -367,6 +367,7 @@ void MainWindow::buildLayout()
         m_header->commitPendingEdits();
         m_lyrics->commitPendingEdits();
     });
+    connect(m_lyrics, &LyricsPanel::editingActivated, m_header, &HeaderPanel::commitPendingEdits);
     connect(m_header, &HeaderPanel::transposeRequested, this, &MainWindow::transposeCurrentSong);
     connect(m_source, &SourcePanel::structuredEditingBlocked, this,
         &MainWindow::setStructuredEditingBlocked);

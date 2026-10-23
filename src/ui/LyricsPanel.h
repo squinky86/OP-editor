@@ -56,6 +56,8 @@ public:
     [[nodiscard]] bool hasPendingEdits() const noexcept { return !m_pendingCommits.isEmpty(); }
 
 Q_SIGNALS:
+    /// Commit other panels' drafts before changing the verse count and focus.
+    void editingActivated();
     void statusMessage(const QString &message);
     void pendingEditsChanged(bool pending);
 

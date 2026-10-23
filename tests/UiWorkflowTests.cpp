@@ -80,6 +80,80 @@ class UiWorkflowTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void addingVerseCommitsPendingSongDetails_data()
+    {
+        QTest::addColumn<bool>("copyrights");
+        QTest::addColumn<QSize>("size");
+        QTest::newRow("commentary-compact") << false << QSize(760, 760);
+        QTest::newRow("commentary-large") << false << QSize(1440, 1000);
+        QTest::newRow("copyrights-compact") << true << QSize(760, 760);
+        QTest::newRow("copyrights-large") << true << QSize(1440, 1000);
+    }
+
+    void addingVerseCommitsPendingSongDetails()
+    {
+        QFETCH(bool, copyrights);
+        QFETCH(QSize, size);
+        QTemporaryDir dir;
+        const QByteArray source = "commentary = 'Original commentary'\n" + baseSong();
+        write(QDir(dir.path()), "song.toml", source);
+        QSettings().remove(QStringLiteral("workspace"));
+        MainWindow window;
+        window.openPath(dir.filePath("song.toml"));
+        window.resize(size);
+        window.show();
+        window.selectTab(1);
+        QCoreApplication::processEvents();
+        auto *panel = window.findChild<LyricsPanel *>();
+        auto *header = window.findChild<HeaderPanel *>();
+        auto *session = window.findChild<Session *>();
+        QVERIFY(panel && header && session);
+        const auto detailText = [copyrights](const SongDocument &doc) {
+            return copyrights ? doc.copyrights.valueOr({}).join(u'\n')
+                              : doc.commentary.valueOr(QString());
+        };
+        const QString original = detailText(session->document());
+        const QString edited = original + QStringLiteral("\nPending details");
+        auto *editor = editorWithText(*header, original);
+        QVERIFY(editor);
+        editor->setFocus();
+        QVERIFY(editor->hasFocus());
+        editor->setPlainText(edited);
+        QVERIFY(header->hasPendingEdits());
+        auto *add = panel->findChild<QToolButton *>("addVerseButton");
+        QVERIFY(add);
+        // Tool buttons leave focus in the details editor. Previously, moving
+        // focus to the new verse committed the old verse count and deleted the
+        // new editor inside QWidget::setFocus().
+        QTest::mouseClick(add, Qt::LeftButton);
+        QCoreApplication::processEvents();
+        QCOMPARE(session->document().verseCount.valueOr(0), 5);
+        QVERIFY(session->document().lyrics.contains("5"));
+        QCOMPARE(detailText(session->document()), edited);
+        QVERIFY(!header->hasPendingEdits());
+        auto *newVerse = qobject_cast<QPlainTextEdit *>(panel->focusWidget());
+        QVERIFY(newVerse && newVerse->hasFocus());
+        QVERIFY(newVerse->toPlainText().isEmpty());
+        QCOMPARE(session->undoStack()->count(), 2);
+
+        session->undoStack()->undo();
+        QCOMPARE(session->document().verseCount.valueOr(0), 4);
+        QVERIFY(!session->document().lyrics.contains("5"));
+        QCOMPARE(detailText(session->document()), edited);
+        session->undoStack()->undo();
+        QCOMPARE(session->currentBytes(), source);
+        session->undoStack()->redo();
+        session->undoStack()->redo();
+        QCOMPARE(session->document().verseCount.valueOr(0), 5);
+        QCOMPARE(detailText(session->document()), edited);
+        QVERIFY(session->save());
+        const auto saved = io::load(dir.filePath("song.toml"));
+        QVERIFY(saved);
+        QCOMPARE(saved->verseCount.valueOr(0), 5);
+        QVERIFY(saved->lyrics.contains("5"));
+        QCOMPARE(detailText(*saved), edited);
+    }
+
     void optionalBreakThresholdEditingUndoAndTranslationReset()
     {
         QTemporaryDir temporary;

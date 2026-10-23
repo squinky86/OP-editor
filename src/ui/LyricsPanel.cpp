@@ -682,6 +682,10 @@ void LyricsPanel::addVerse()
 {
     if (!m_session->isOpen())
         return;
+    // A tool-button click can leave focus in the song details. Commit those
+    // drafts first: focusing the new editor must not commit a stale verse count
+    // and synchronously destroy that editor during QWidget::setFocus().
+    Q_EMIT editingActivated();
     // Flush typing before the new card rebuilds the editors.
     commitPendingEdits();
     const SongDocument &doc = m_session->effectiveDocument();
