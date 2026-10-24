@@ -24,6 +24,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
@@ -31,6 +32,7 @@
 #include <QSignalSpy>
 #include <QSplitter>
 #include <QSpinBox>
+#include <QStatusBar>
 #include <QSettings>
 #include <QSyntaxHighlighter>
 #include <QTableWidget>
@@ -80,6 +82,47 @@ class UiWorkflowTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void editMenuFixesShortMelismas()
+    {
+        QTemporaryDir dir;
+        const QByteArray original = baseSong().replace("f'1 | g'1", "c8( d8) e4 f2 | g1");
+        write(QDir(dir.path()), "song.toml", original);
+        MainWindow window;
+        auto *action = window.findChild<QAction *>("fixShortMelismas");
+        QVERIFY(action);
+        QVERIFY(!action->isEnabled());
+        bool inEditMenu = false;
+        for (QMenu *menu : window.findChildren<QMenu *>()) {
+            if (menu->title() == "&Edit")
+                inEditMenu = menu->actions().contains(action);
+        }
+        QVERIFY(inEditMenu);
+        window.openPath(dir.filePath("song.toml"));
+        QVERIFY(action->isEnabled());
+        auto *session = window.findChild<Session *>();
+        auto *source = window.findChild<SourcePanel *>();
+        QVERIFY(session && source);
+        auto *editor = source->findChild<QPlainTextEdit *>();
+        QVERIFY(editor);
+        action->trigger();
+        QVERIFY(session->currentBytes().contains("c8[ d8]"));
+        QVERIFY(editor->toPlainText().contains("c8[ d8]"));
+        QVERIFY(window.statusBar()->currentMessage().contains("Beamed 1"));
+        QCOMPARE(session->undoStack()->count(), 1);
+        action->trigger();
+        QCOMPARE(session->undoStack()->count(), 1);
+        QVERIFY(window.statusBar()->currentMessage().startsWith("No short melismas"));
+        session->undoStack()->undo();
+        QCOMPARE(session->currentBytes(), original);
+
+        editor->setPlainText("title = 'unfinished");
+        QVERIFY(!source->commitPendingEdits());
+        QVERIFY(!action->isEnabled());
+        QCOMPARE(session->currentBytes(), original);
+        source->discardPendingEdits();
+        QVERIFY(action->isEnabled());
+    }
+
     void addingVerseCommitsPendingSongDetails_data()
     {
         QTest::addColumn<bool>("copyrights");

@@ -30,6 +30,140 @@ class SessionTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void fixingShortMelismas_data()
+    {
+        QTest::addColumn<QString>("notes");
+        QTest::addColumn<QString>("expected");
+        QTest::addColumn<int>("count");
+        QTest::newRow("eighths") << "c8( d8)" << "c8[ d8]" << 1;
+        QTest::newRow("dotted-eighth") << "c8.( d16)" << "c8.[ d16]" << 1;
+        QTest::newRow("several") << "c16( d32 e32) f8( g8)" << "c16[ d32 e32] f8[ g8]" << 2;
+        QTest::newRow("chords") << "<c e>8( <d f>8)" << "<c e>8[ <d f>8]" << 1;
+        QTest::newRow("tuplets") << "{3 c8( d8 e8)}" << "{3 c8[ d8 e8] }" << 1;
+        QTest::newRow("long-note") << "c4( d8)" << "c4( d8)" << 0;
+        QTest::newRow("double-dot-too-long") << "c8..( d32)" << "c8..( d32)" << 0;
+        QTest::newRow("quarter-triplet") << "{3 c4( d4 e4)}" << "{3 c4( d4 e4) }" << 0;
+        QTest::newRow("same-pitch-needs-tie") << "c8( c8)" << "c8( c8)" << 0;
+        QTest::newRow("already-beamed") << "c8[ d8]" << "c8[ d8]" << 0;
+        QTest::newRow("cross-bar") << "c8( | d8)" << "c8( | d8)" << 0;
+        QTest::newRow("unclosed") << "c8( d8" << "c8( d8" << 0;
+        QTest::newRow("nested") << "c8( d8( e8) f8)" << "c8( d8( e8) f8)" << 0;
+        QTest::newRow("stray-close") << "c8) d8( e8)" << "c8) d8( e8)" << 0;
+        QTest::newRow("rest") << "c8( r8 d8)" << "c8( r8 d8)" << 0;
+        QTest::newRow("spacer") << "c8( s8 d8)" << "c8( s8 d8)" << 0;
+        QTest::newRow("overlapping-beam") << "c8[ d8( e8) f8]" << "c8[ d8( e8) f8]" << 0;
+        QTest::newRow("dashed-slur") << "c8-( d8-)" << "c8-( d8-)" << 0;
+        QTest::newRow("overlapping-dashed-slur") << "c8-( d8( e8) f8-)" << "c8-( d8( e8) f8-)" << 0;
+        QTest::newRow("mixed-length-groups") << "c4( d4) e8( f8)" << "c4( d4) e8[ f8]" << 1;
+        QTest::newRow("invalid-token") << "c8( d8) e5" << "c8( d8) e5" << 0;
+    }
+
+    void fixingShortMelismas()
+    {
+        QFETCH(QString, notes);
+        QFETCH(QString, expected);
+        QFETCH(int, count);
+        const QByteArray original = "title = 'Melismas'\n[parts.Lead]\nnotes = '''"
+            + notes.toUtf8() + "'''\n";
+        QTemporaryDir dir;
+        write(QDir(dir.path()), "song.toml", original);
+        Session session;
+        QCOMPARE(session.fixShortMelismas(), 0);
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        QCOMPARE(session.fixShortMelismas(), count);
+        QCOMPARE(session.document().parts.first().stream.toSource(), expected);
+        QCOMPARE(session.undoStack()->count(), count > 0 ? 1 : 0);
+        const auto after = session.currentBytes();
+        QCOMPARE(session.fixShortMelismas(), 0);
+        QCOMPARE(session.currentBytes(), after);
+        if (count > 0) {
+            session.undoStack()->undo();
+            QCOMPARE(session.currentBytes(), original);
+            session.undoStack()->redo();
+            QCOMPARE(session.currentBytes(), after);
+        } else {
+            QCOMPARE(after, original);
+        }
+    }
+
+    void fixingAllVoicesPreservesMusicLyricsAndSave()
+    {
+        QTemporaryDir dir;
+        const QByteArray original = R"TOML(title = 'Melismas'
+# Keep this comment and unfamiliar field.
+custom = 'unchanged'
+[parts.Lead]
+notes = '''c8(%p d8) e4 f2 | {3 g8( a8 b8)} c'2. |
+c8.( d16) e4 f2'''
+[parts.Bass]
+notes = 'c,8( d,8) e,4 f,2'
+[lyrics.1]
+text = 'one two three four five six seven eight'
+)TOML";
+        write(QDir(dir.path()), "song.toml", original);
+        Session session;
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        const SongDocument before = session.document();
+        QCOMPARE(session.fixShortMelismas(), 4);
+        QCOMPARE(session.undoStack()->count(), 1);
+        const QByteArray after = session.currentBytes();
+        QVERIFY(after.contains("# Keep this comment and unfamiliar field.\ncustom = 'unchanged'"));
+        const auto parsed = io::loadBytes("song.toml", after);
+        QVERIFY(parsed);
+        for (const Part &part : before.parts) {
+            const Part *updated = parsed->part(part.name);
+            QVERIFY(updated);
+            QCOMPARE(updated->stream.lineLayout(), part.stream.lineLayout());
+            for (int m = 0; m < part.stream.measureCount(); ++m) {
+                const auto &events = part.stream.measures().at(m).events;
+                const auto &newEvents = updated->stream.measures().at(m).events;
+                QCOMPARE(newEvents.size(), events.size());
+                for (int e = 0; e < events.size(); ++e) {
+                    const Event &old = events.at(e);
+                    Event restored = newEvents.at(e);
+                    QCOMPARE(restored.slotIndex, old.slotIndex);
+                    QCOMPARE(restored.playedTicks(), old.playedTicks());
+                    restored.slurStart = old.slurStart;
+                    restored.slurEnd = old.slurEnd;
+                    restored.beamStart = old.beamStart;
+                    restored.beamEnd = old.beamEnd;
+                    QCOMPARE(restored.toSource(), old.toSource());
+                }
+            }
+        }
+        QCOMPARE(parsed->lyrics.value("1").rawText, before.lyrics.value("1").rawText);
+        for (const Finding &finding : session.findings())
+            QVERIFY(finding.rule != "R1.1");
+        session.undoStack()->undo();
+        QCOMPARE(session.currentBytes(), original);
+        session.undoStack()->redo();
+        QCOMPARE(session.currentBytes(), after);
+        QVERIFY(session.save());
+        QVERIFY(!session.isDirty());
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        QCOMPARE(session.currentBytes(), after);
+    }
+
+    void fixingTranslationOnlyOverridesChangedNotes()
+    {
+        QTemporaryDir dir;
+        const QByteArray base = "title = 'Base'\n[parts.Lead]\nclef = 'treble'\nnotes = 'c8( d8)'\n"
+            "[parts.Bass]\nnotes = 'c1'\n";
+        const QByteArray overlay = "title = 'Translation'\n";
+        write(QDir(dir.path()), "song.toml", base);
+        write(QDir(dir.path()), "song_es.toml", overlay);
+        Session session;
+        QVERIFY(session.openSong(dir.filePath("song_es.toml")));
+        QCOMPARE(session.fixShortMelismas(), 1);
+        QCOMPARE(session.document().parts.size(), 1);
+        QCOMPARE(session.document().parts.first().name, QString("Lead"));
+        QCOMPARE(session.document().parts.first().stream.toSource(), QString("c8[ d8]"));
+        QVERIFY(!session.currentBytes().contains("clef"));
+        QCOMPARE(io::serialize(*session.baseDocument()), base);
+        session.undoStack()->undo();
+        QCOMPARE(session.currentBytes(), overlay);
+    }
+
     void transposeSpellsIntervalsAndOctaves_data()
     {
         QTest::addColumn<QString>("from");

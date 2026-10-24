@@ -60,6 +60,10 @@ all voices and the key signature together. Choose the nearest interval, up, or
 down; rhythm, lyrics, and major/minor mode are preserved. The ordinary Key
 selector edits only the key signature.
 
+**Edit ▸ Fix all short melismas** replaces eligible short-note slurs with beams
+across every voice in the current song or translation (the R1.1 warning).
+The batch is one Undo step and is written to disk when you Save.
+
 New TOML fields follow a consistent order, including adjacent required,
 optional, and non-breaking phrase-break fields. **Source ▸ Standardize TOML**
 reorders an existing file's fields, parts, and lyric sections while preserving

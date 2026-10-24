@@ -8,6 +8,8 @@
 #include <QFileInfo>
 #include <QUndoCommand>
 
+#include <algorithm>
+
 namespace ope {
 namespace {
 
@@ -463,6 +465,82 @@ std::expected<void, LoadError> Session::standardizeToml()
     if (result)
         setSelection({}); // The authored part order may have changed.
     return result;
+}
+
+int Session::fixShortMelismas()
+{
+    if (!isOpen())
+        return 0;
+    SongDocument result = document();
+    int fixed = 0;
+    for (const Part &part : effectiveDocument().parts) {
+        // Never regenerate tokens that the parser could not fully understand.
+        if (std::any_of(part.tokenIssues.begin(), part.tokenIssues.end(), [](const TokenIssue &issue) {
+                return issue.code != TokenIssue::Code::UndocumentedDynamic;
+            }))
+            continue;
+
+        NoteStream stream = part.stream;
+        int partFixed = 0;
+        bool inSlur = false;
+        bool inBeam = false;
+        bool inDashed = false;
+        bool malformed = false;
+        for (Measure &measure : stream.measures()) {
+            int start = -1;
+            bool eligible = false;
+            for (int e = 0; e < measure.events.size(); ++e) {
+                Event &event = measure.events[e];
+                if (event.slurStart) {
+                    malformed |= inSlur;
+                    inSlur = true;
+                    start = e;
+                    eligible = std::any_of(m_findings.begin(), m_findings.end(), [&](const Finding &finding) {
+                        return finding.rule == QStringLiteral("R1.1")
+                            && finding.partName == part.name
+                            && finding.measure == event.measureIndex + 1
+                            && finding.eventIndex == e;
+                    });
+                }
+                // Overlapping optional slurs or existing beams need manual review.
+                if (inBeam || inDashed || event.beamStart || event.beamEnd
+                    || event.dashedSlurStart || event.dashedSlurEnd || !event.isSounding())
+                    eligible = false;
+                if (event.beamStart)
+                    inBeam = true;
+                if (event.beamEnd)
+                    inBeam = false;
+                if (event.dashedSlurStart)
+                    inDashed = true;
+                if (event.dashedSlurEnd)
+                    inDashed = false;
+                if (event.slurEnd) {
+                    malformed |= !inSlur;
+                    inSlur = false;
+                    if (eligible && start >= 0 && start < e) {
+                        Event &first = measure.events[start];
+                        first.slurStart = false;
+                        first.beamStart = true;
+                        first.dirty = true;
+                        event.slurEnd = false;
+                        event.beamEnd = true;
+                        event.dirty = true;
+                        ++partFixed;
+                    }
+                    eligible = false;
+                }
+            }
+        }
+        if (partFixed > 0 && !malformed && !inSlur && !inBeam && !inDashed) {
+            fixed += partFixed;
+            Part &target = result.ensurePart(part.name);
+            target.notes.set(stream.toSource());
+            target.reparse();
+        }
+    }
+    if (fixed > 0)
+        mutate(tr("Fix all short melismas"), [&](SongDocument &doc) { doc = result; });
+    return fixed;
 }
 
 std::expected<void, QString> Session::transposeTo(

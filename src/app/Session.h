@@ -121,6 +121,9 @@ public:
         const QString &language, const QByteArray &bytes, const QString &description = {});
 
     [[nodiscard]] std::expected<void, LoadError> standardizeToml();
+    /// Beam the current song's R1.1 melismas as one undo step. In translations,
+    /// materialize only changed parts' notes; return the number of groups fixed.
+    int fixShortMelismas();
     [[nodiscard]] std::expected<void, QString> transposeTo(const QString &targetKey,
         TransposeDirection direction = TransposeDirection::Nearest);
 

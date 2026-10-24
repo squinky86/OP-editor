@@ -105,6 +105,7 @@ private:
     QLabel *m_statusSummary = nullptr;
     QAction *m_saveCurrentAction = nullptr;
     QAction *m_saveAllAction = nullptr;
+    QAction *m_fixShortMelismasAction = nullptr;
     QAction *m_downloadCorpusAction = nullptr;
     QNetworkAccessManager m_corpusNetwork;
     QNetworkReply *m_corpusHeadReply = nullptr;

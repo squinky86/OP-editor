@@ -476,6 +476,22 @@ void MainWindow::buildMenus()
     editMenu->addAction(redo);
     editMenu->addSeparator();
     editMenu->addAction(tr("Convert to another &key…"), this, &MainWindow::transposeCurrentSong);
+    m_fixShortMelismasAction = editMenu->addAction(tr("Fix all short &melismas"), this, [this] {
+        if (!m_session.isOpen() || !flushPendingEdits())
+            return;
+        const int fixed = m_session.fixShortMelismas();
+        statusBar()->showMessage(fixed > 0
+                ? tr("Beamed %n short melisma(s).", nullptr, fixed)
+                : tr("No short melismas could be automatically beamed."),
+            5000);
+    });
+    m_fixShortMelismasAction->setObjectName(QStringLiteral("fixShortMelismas"));
+    m_fixShortMelismasAction->setToolTip(
+        tr("Replace short-note slurs with beams in every voice of the current song or translation."));
+    m_fixShortMelismasAction->setEnabled(m_session.isOpen());
+    connect(&m_session, &Session::documentChanged, this, [this] {
+        m_fixShortMelismasAction->setEnabled(m_session.isOpen() && !m_source->hasPendingEdits());
+    });
 
     auto *viewMenu = menuBar()->addMenu(tr("&View"));
     auto *phrased = viewMenu->addAction(tr("&Phrased line breaks"));
@@ -715,6 +731,8 @@ void MainWindow::setStructuredEditingBlocked(bool blocked)
         m_saveCurrentAction->setEnabled(!blocked);
     if (m_saveAllAction)
         m_saveAllAction->setEnabled(!blocked);
+    if (m_fixShortMelismasAction)
+        m_fixShortMelismasAction->setEnabled(!blocked && m_session.isOpen());
     if (blocked)
         statusBar()->showMessage(
             tr("Finish or revert the Source edit before using structured editors or Save."));
