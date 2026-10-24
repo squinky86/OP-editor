@@ -82,8 +82,9 @@ struct SpliceReport {
     QList<VerseResult> verses;
 };
 
-/// Decide, per verse, whether this part's syllables form a pure tail of the
-/// target voice's — the condition the print exporters require.
+/// Check numbered-verse echoes after phrase deduplication across the document's
+/// voices. Chorus and coda lyrics are not spliced. Export voice selection and
+/// compact-staff merging can further affect which lyrics survive in print.
 [[nodiscard]] SpliceReport analyseSplice(const SongDocument &doc, const Part &part);
 
 } // namespace ope

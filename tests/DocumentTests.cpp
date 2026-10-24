@@ -401,6 +401,144 @@ notes = "s2. e4 | e2. | e1"
         QCOMPARE(doc->part(u"Baritone")->lyrics.size(), 0);
     }
 
+    void song645SplicesNumberedVersesOnly()
+    {
+        const auto doc = io::load(QStringLiteral(OPE_SOURCE_DIR "/tests/fixtures/splice-645.toml"));
+        QVERIFY(doc);
+        const auto report = analyseSplice(*doc, *doc->part(u"Bass"));
+        QCOMPARE(report.targetPartName, QStringLiteral("Soprano"));
+        QCOMPARE(report.verses.size(), 3);
+        for (int i = 0; i < report.verses.size(); ++i) {
+            QCOMPARE(report.verses.at(i).key, QString::number(i + 1));
+            QVERIFY2(report.verses.at(i).splices, qPrintable(report.verses.at(i).reason));
+        }
+        for (const auto &finding : validate(*doc))
+            QVERIFY(finding.rule != "I-SPLICE");
+    }
+
+    void spliceChecksSurvivingEchoRuns_data()
+    {
+        QTest::addColumn<QByteArray>("targetNotes");
+        QTest::addColumn<QByteArray>("sourceNotes");
+        QTest::addColumn<QByteArray>("targetText");
+        QTest::addColumn<QByteArray>("sourceText");
+        QTest::addColumn<QByteArray>("breaks");
+        QTest::addColumn<bool>("splices");
+        QTest::addColumn<QString>("reason");
+        QTest::newRow("mid-verse") << QByteArray("c2 d2") << QByteArray("c4 d8 e8 d2")
+            << QByteArray("call end") << QByteArray("call e cho end")
+            << QByteArray("['1:16', '1:32']") << true << QString();
+        QTest::newRow("dedup-offset") << QByteArray("c2 d2") << QByteArray("r8 c8/-24 d8 e8 d2")
+            << QByteArray("call end") << QByteArray("call e cho end")
+            << QByteArray("['1:16', '1:32']") << true << QString();
+        QTest::newRow("multiple-echoes")
+            << QByteArray("c2 d2 | e2 f2") << QByteArray("c4 d8 e8 d2 | e4 f8 g8 f2")
+            << QByteArray("call end call end") << QByteArray("call e cho end call e cho end")
+            << QByteArray("['1:16', '1:32', '2:16', '2:32']") << true << QString();
+        QTest::newRow("tail") << QByteArray("c2 r2") << QByteArray("c2 d2")
+            << QByteArray("call") << QByteArray("call echo")
+            << QByteArray("['1:32']") << true << QString();
+        QTest::newRow("same-tick-without-dedup-boundary")
+            << QByteArray("c2 d2") << QByteArray("c4 d8 e8 d2")
+            << QByteArray("call end") << QByteArray("call e cho end")
+            << QByteArray("[]") << false << QString("coincide");
+        QTest::newRow("single-syllable-mid-verse")
+            << QByteArray("c2 d2") << QByteArray("c4 d4 d2")
+            << QByteArray("call end") << QByteArray("call echo end")
+            << QByteArray("['1:16', '1:32']") << false << QString("at least two");
+        QTest::newRow("no-earlier-target") << QByteArray("r2 c2") << QByteArray("c4 r4 c2")
+            << QByteArray("call") << QByteArray("echo call")
+            << QByteArray("['1:32']") << false << QString("no earlier");
+        QTest::newRow("different-simultaneous-text")
+            << QByteArray("c2 d2") << QByteArray("c2 d2")
+            << QByteArray("call end") << QByteArray("call other")
+            << QByteArray("['1:32']") << false << QString("coincide");
+    }
+
+    void spliceChecksSurvivingEchoRuns()
+    {
+        QFETCH(QByteArray, targetNotes);
+        QFETCH(QByteArray, sourceNotes);
+        QFETCH(QByteArray, targetText);
+        QFETCH(QByteArray, sourceText);
+        QFETCH(QByteArray, breaks);
+        QFETCH(bool, splices);
+        QFETCH(QString, reason);
+        const auto doc = io::loadBytes("song.toml",
+            "non_breaking_phrase_breaks = " + breaks + "\n"
+            "[parts.Soprano]\nchoral_type = 'soprano'\nnotes = '" + targetNotes
+            + " | c1@c | c1@e'\n[parts.Soprano.lyrics.1]\ntext = '" + targetText
+            + "'\n[parts.Soprano.lyrics.chorus]\ntext = 'chorus'\n"
+              "[parts.Soprano.lyrics.coda]\ntext = 'coda'\n"
+              "[parts.Bass]\nchoral_type = 'bass'\nsplice_lyrics_into = 'soprano'\nnotes = '"
+            + sourceNotes + " | c1@c | c1@e'\n[parts.Bass.lyrics.1]\ntext = '" + sourceText
+            + "'\n[parts.Bass.lyrics.chorus]\ntext = 'different'\n"
+              "[parts.Bass.lyrics.coda]\ntext = 'ending'\n");
+        QVERIFY(doc);
+        const auto report = analyseSplice(*doc, *doc->part(u"Bass"));
+        QCOMPARE(report.verses.size(), 1);
+        QCOMPARE(report.verses.first().key, QStringLiteral("1"));
+        QCOMPARE(report.verses.first().splices, splices);
+        QVERIFY2(report.verses.first().reason.contains(reason), qPrintable(report.verses.first().reason));
+        const auto findings = validate(*doc);
+        QCOMPARE(std::count_if(findings.cbegin(), findings.cend(), [](const Finding &f) {
+            return f.rule == "I-SPLICE";
+        }), splices ? 0 : 1);
+    }
+
+    void suppressedAndDeduplicatedVersesNeedNoSplice()
+    {
+        auto doc = io::load(QStringLiteral(OPE_SOURCE_DIR "/tests/fixtures/splice-645.toml"));
+        QVERIFY(doc);
+        Part &bass = *doc->part(u"Bass");
+        bass.suppressVerses.set({1, 2, 3});
+        bass.suppressVersesWhen.set({" SOPRANO "});
+        QVERIFY(analyseSplice(*doc, bass).verses.isEmpty());
+        bass.suppressVersesWhen.set({"tenor1"}); // Absent voices do not suppress.
+        QCOMPARE(analyseSplice(*doc, bass).verses.size(), 3);
+        bass.suppressVerses.clear();
+        doc->part(u"Soprano")->suppressVerses.set({1, 2, 3});
+        doc->part(u"Soprano")->suppressVersesWhen.set({"bass"});
+        QVERIFY(analyseSplice(*doc, bass).verses.isEmpty());
+
+        auto duplicate = io::loadBytes("song.toml", ttbbSong());
+        QVERIFY(duplicate);
+        Part &echo = *duplicate->part(u"Baritone");
+        echo.spliceLyricsInto.set("tenor1");
+        QVERIFY(analyseSplice(*duplicate, echo).verses.isEmpty());
+    }
+
+    void convergedEchoPhrasesOnlySpliceInTheFirstVerse()
+    {
+        auto doc = io::loadBytes("song.toml", R"TOML(
+non_breaking_phrase_breaks = ['1:16', '1:32']
+converge_verses = false
+[parts.Soprano]
+choral_type = 'soprano'
+notes = 'c2 d2'
+[parts.Soprano.lyrics.1]
+text = 'call end'
+[parts.Soprano.lyrics.2]
+text = 'say end'
+[parts.Bass]
+choral_type = 'bass'
+splice_lyrics_into = 'soprano'
+notes = 'c4 d8 e8 d2'
+[parts.Bass.lyrics.1]
+text = 'call e cho end'
+[parts.Bass.lyrics.2]
+text = 'say e cho end'
+)TOML");
+        QVERIFY(doc);
+        const Part &bass = *doc->part(u"Bass");
+        QCOMPARE(analyseSplice(*doc, bass).verses.size(), 2);
+        doc->convergeVerses.set(true);
+        const auto report = analyseSplice(*doc, bass);
+        QCOMPARE(report.verses.size(), 1);
+        QCOMPARE(report.verses.first().key, QStringLiteral("1"));
+        QVERIFY(report.verses.first().splices);
+    }
+
     // -- slot counting --------------------------------------------------------
 
     void slurAndBeamContinuationsTakeNoSlot()
@@ -1085,6 +1223,53 @@ text = 'default verse'
     }
 
     // -- validation -----------------------------------------------------------
+
+    void phraseBreaksRespectBoundaryKind_data()
+    {
+        QTest::addColumn<QByteArray>("field");
+        QTest::addColumn<bool>("warn");
+        QTest::newRow("required") << QByteArray("phrase_breaks") << true;
+        QTest::newRow("optional") << QByteArray("optional_phrase_breaks") << true;
+        QTest::newRow("non-breaking") << QByteArray("non_breaking_phrase_breaks") << false;
+    }
+
+    void phraseBreaksRespectBoundaryKind()
+    {
+        QFETCH(QByteArray, field);
+        QFETCH(bool, warn);
+        const auto doc = io::loadBytes("song.toml", field + " = ['1:16']\n"
+            "[parts.Soprano]\nnotes = 'c4 d4 e2'\n"
+            "[parts.Alto]\nnotes = 'c2 d2'\n"
+            "[parts.Bass]\nnotes = 'c4( d4) e2'\n");
+        QVERIFY(doc);
+        const auto findings = validate(*doc);
+        const auto boundary = std::find_if(findings.cbegin(), findings.cend(), [](const Finding &f) {
+            return f.rule == "R9.5";
+        });
+        QCOMPARE(boundary != findings.cend(), warn);
+        if (warn) {
+            QCOMPARE(boundary->severity, Severity::Warning);
+            QVERIFY(boundary->message.contains("Alto"));
+            QVERIFY(!boundary->message.contains("Soprano"));
+        }
+        const auto melisma = std::find_if(findings.cbegin(), findings.cend(), [](const Finding &f) {
+            return f.rule == "R9.4";
+        });
+        QCOMPARE(melisma != findings.cend(), warn);
+        if (warn)
+            QCOMPARE(melisma->partName, QStringLiteral("Bass"));
+    }
+
+    void nonBreakingPhraseBreaksStillRequireValidPositions()
+    {
+        const auto doc = io::loadBytes("song.toml",
+            "non_breaking_phrase_breaks = ['1:65', '2:16']\n[parts.Soprano]\nnotes = 'c1'\n");
+        QVERIFY(doc);
+        const auto findings = validate(*doc);
+        QCOMPARE(std::count_if(findings.cbegin(), findings.cend(), [](const Finding &f) {
+            return f.rule == "E-TICK-GRID" && f.severity == Severity::Error;
+        }), 2);
+    }
 
     void measureMismatchIsReportedLikeTheSeeder()
     {

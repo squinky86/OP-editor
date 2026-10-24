@@ -23,6 +23,99 @@ QStringList splitSyllables(const QString &text)
     return out;
 }
 
+using LyricPhrase = QList<QPair<int, QString>>;
+using VersePhrases = QMap<QString, QList<LyricPhrase>>;
+
+// Mirror the print exporter's phrase fingerprints: exact text and onset ticks,
+// split at every kind of phrase boundary. Dedup offsets affect fingerprints,
+// never the alignment grid or playback.
+QMap<QString, VersePhrases> survivingVersePhrases(const SongDocument &doc)
+{
+    QList<int> measureStarts { 0 };
+    for (int m = 1; m <= doc.measureCount(); ++m)
+        measureStarts.append(measureStarts.last() + doc.expectedTicksForMeasure(m));
+    QList<int> breaks;
+    for (const PhraseBreak &brk : doc.allPhraseBreaks()) {
+        if (brk.measure >= 1 && brk.measure <= doc.measureCount())
+            breaks.append(measureStarts.at(brk.measure - 1) + ticks::fromPhraseTicks(brk.tick));
+    }
+    std::sort(breaks.begin(), breaks.end());
+    breaks.erase(std::unique(breaks.begin(), breaks.end()), breaks.end());
+
+    QSet<QString> roles;
+    for (const Part &part : doc.parts)
+        roles.insert(voicing::normalize(part.choralType.valueOr({})));
+
+    QMap<QString, QList<LyricPhrase>> claimed;
+    QMap<QString, VersePhrases> survivors;
+    for (const Part *part : doc.partsInDisplayOrder()) {
+        bool suppress = false;
+        for (const QString &role : part->suppressVersesWhen.valueOr({}))
+            suppress |= roles.contains(voicing::normalize(role));
+
+        VersePhrases original;
+        VersePhrases &remaining = survivors[part->name];
+        const PartAlignment alignment = alignPart(doc, *part);
+        for (const AttachedSection &section : alignment.sections) {
+            if (section.isChorus || section.isCoda
+                || (suppress && part->suppressVerses.valueOr({}).contains(section.verseNumber)))
+                continue;
+
+            LyricPhrase lyrics;
+            for (int i = 0; i < section.syllables.size(); ++i) {
+                const int index = section.slotOffset + i;
+                if (index >= alignment.lyricSlots.size())
+                    break; // E-SLOTS reports unattachable text separately.
+                const Slot &slot = alignment.lyricSlots.at(index);
+                const Event &event = part->stream.measures().at(slot.measureIndex)
+                                         .events.at(slot.eventIndex);
+                lyrics.append({ slot.tick + event.dedupOffset, section.syllables.at(i) });
+            }
+
+            QList<LyricPhrase> &phrases = original[section.key];
+            LyricPhrase phrase;
+            for (int i = 0; i < lyrics.size(); ++i) {
+                phrase.append(lyrics.at(i));
+                const auto boundary = std::upper_bound(breaks.cbegin(), breaks.cend(), lyrics.at(i).first);
+                if (i + 1 == lyrics.size()
+                    || (boundary != breaks.cend() && lyrics.at(i + 1).first >= *boundary)) {
+                    phrases.append(phrase);
+                    phrase.clear();
+                }
+            }
+            QList<LyricPhrase> &kept = remaining[section.key];
+            for (const LyricPhrase &fp : phrases) {
+                if (!claimed[section.key].contains(fp)) {
+                    claimed[section.key].append(fp);
+                    kept.append(fp);
+                }
+            }
+        }
+
+        // A shared phrase in all active verses prints only in the first verse
+        // when convergence is enabled. Apply this after cross-voice dedup.
+        if (doc.effectiveConvergeVerses() && original.size() > 1) {
+            QStringList keys = original.keys();
+            std::sort(keys.begin(), keys.end(), [](const QString &a, const QString &b) {
+                return a.toInt() < b.toInt();
+            });
+            const auto &first = original[keys.first()];
+            for (int p = 0; p < first.size(); ++p) {
+                const bool shared = std::all_of(std::next(keys.cbegin()), keys.cend(),
+                    [&](const QString &key) {
+                        const auto &other = original[key];
+                        return p < other.size() && other.at(p) == first.at(p);
+                    });
+                if (shared) {
+                    for (int v = 1; v < keys.size(); ++v)
+                        remaining[keys.at(v)].removeAll(first.at(p));
+                }
+            }
+        }
+    }
+    return survivors;
+}
+
 } // namespace
 
 QString PartAlignment::syllableAt(const AttachedSection &section, int slot) const
@@ -243,54 +336,55 @@ SpliceReport analyseSplice(const SongDocument &doc, const Part &part)
     }
     report.targetPartName = target->name;
 
-    const PartAlignment source = alignPart(doc, part);
-    const PartAlignment destination = alignPart(doc, *target);
-
-    // The splice only fires for a verse whose syllables are a pure tail: every
-    // one of this part's syllables must start after the target's last one.
-    for (const AttachedSection &section : source.sections) {
-        const auto match = std::find_if(destination.sections.begin(), destination.sections.end(),
-            [&](const AttachedSection &other) { return other.key == section.key; });
-        SpliceReport::VerseResult result;
-        result.key = section.key;
-        if (match == destination.sections.end()) {
-            result.splices = false;
-            result.reason = QStringLiteral("target part has no lyrics for this verse");
-            report.verses.append(result);
+    const auto survivors = survivingVersePhrases(doc);
+    const VersePhrases source = survivors.value(part.name);
+    const VersePhrases destination = survivors.value(target->name);
+    for (auto verse = source.cbegin(); verse != source.cend(); ++verse) {
+        LyricPhrase sourceLyrics;
+        for (const LyricPhrase &phrase : verse.value())
+            sourceLyrics.append(phrase);
+        LyricPhrase targetLyrics;
+        for (const LyricPhrase &phrase : destination.value(verse.key()))
+            targetLyrics.append(phrase);
+        // Suppressed/deduplicated verses have no row to splice or hand off from.
+        if (sourceLyrics.isEmpty() || targetLyrics.isEmpty())
             continue;
+
+        SpliceReport::VerseResult result;
+        result.key = verse.key();
+        QMap<int, int> echoesPerAnchor;
+        for (const auto &[tick, text] : sourceLyrics) {
+            Q_UNUSED(text);
+            int anchor = -1;
+            bool simultaneous = false;
+            for (int i = 0; i < targetLyrics.size(); ++i) {
+                if (targetLyrics.at(i).first < tick)
+                    anchor = i;
+                simultaneous |= targetLyrics.at(i).first == tick;
+            }
+            if (simultaneous) {
+                result.reason = QStringLiteral("surviving syllables at tick %1 coincide with %2's "
+                                               "lyrics; isolate echo phrases with phrase boundaries")
+                                    .arg(tick).arg(target->name);
+                break;
+            }
+            if (anchor < 0) {
+                result.reason = QStringLiteral("echo at tick %1 has no earlier syllable in %2 "
+                                               "to hand off from").arg(tick).arg(target->name);
+                break;
+            }
+            ++echoesPerAnchor[anchor];
         }
-
-        const int sourceFirstSlot = section.slotOffset;
-        const int targetLastSlot = match->slotOffset + static_cast<int>(match->syllables.size()) - 1;
-        const int sourceFirstTick = sourceFirstSlot < source.lyricSlots.size()
-            ? source.lyricSlots.at(sourceFirstSlot).tick
-            : 0;
-        const int targetLastTick = targetLastSlot >= 0 && targetLastSlot < destination.lyricSlots.size()
-            ? destination.lyricSlots.at(targetLastSlot).tick
-            : 0;
-
-        // Compare by tick rather than slot index: the two parts have their own
-        // slot numbering, and it is musical position that decides a tail.
-        int firstInterleavingTick = -1;
-        for (int slot = sourceFirstSlot;
-            slot < sourceFirstSlot + section.syllables.size() && slot < source.lyricSlots.size();
-            ++slot) {
-            if (source.lyricSlots.at(slot).tick <= targetLastTick) {
-                firstInterleavingTick = source.lyricSlots.at(slot).tick;
+        if (result.reason.isEmpty()) {
+            for (auto echo = echoesPerAnchor.cbegin(); echo != echoesPerAnchor.cend(); ++echo) {
+                if (echo.key() != targetLyrics.size() - 1 && echo.value() < 2) {
+                    result.reason = QStringLiteral("a mid-verse echo needs at least two syllables "
+                                                   "to hand back to %1").arg(target->name);
+                    break;
+                }
             }
         }
-        if (firstInterleavingTick < 0) {
-            result.splices = true;
-        } else {
-            result.splices = false;
-            result.reason = QStringLiteral(
-                "syllables at tick %1 are not after %2's last syllable (tick %3), so this verse "
-                "prints on its own row")
-                                .arg(firstInterleavingTick)
-                                .arg(target->name)
-                                .arg(targetLastTick);
-        }
-        Q_UNUSED(sourceFirstTick);
+        result.splices = result.reason.isEmpty();
         report.verses.append(result);
     }
     return report;

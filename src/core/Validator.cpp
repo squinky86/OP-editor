@@ -833,6 +833,12 @@ QList<Finding> validate(
                 continue;
             }
 
+            // Non-breaking boundaries only partition lyrics for deduplication;
+            // they can belong to a subset of voices without interrupting the
+            // notes or melismas sung by the others.
+            if (entry.field == QLatin1String("non_breaking_phrase_breaks"))
+                continue;
+
             QStringList partsWithoutBoundary;
             for (const Part *part : doc.partsInDisplayOrder()) {
                 if (measureNumber > part->stream.measureCount())
