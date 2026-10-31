@@ -217,6 +217,11 @@ Enter a positive integer (quarter note = 16 ticks; 4/4 bar = 64). An optional
 break is taken when the time since the last taken break reaches that value.
 Leave it blank for the calculated threshold; translations inherit the base
 song's value until overridden, and clearing an override restores inheritance.
+Beside the transport's tempo slider, **Tick break** shows the active threshold
+and the largest gap between required or optional breaks (including the final
+tail, excluding pickup spacers). The gap is **∞** without optional breaks.
+An override, including one inherited by a translation, turns the display red;
+the tooltip also gives the automatic threshold.
 The phrased score preview uses this selection for breaks at barlines; it still
 wraps to the window width and does not split measures at mid-measure breaks.
 Lyric analysis continues to use every phrase boundary.

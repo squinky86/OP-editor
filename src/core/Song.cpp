@@ -440,7 +440,7 @@ QList<PhraseBreak> SongDocument::allPhraseBreaks() const
     return out;
 }
 
-QList<PhraseBreak> SongDocument::layoutPhraseBreaks() const
+PhraseBreakLayout SongDocument::phraseBreakLayout() const
 {
     // Keep this independent of allPhraseBreaks(): lyric analysis includes every
     // candidate and non-breaking boundary, regardless of the engraving threshold.
@@ -469,9 +469,7 @@ QList<PhraseBreak> SongDocument::layoutPhraseBreaks() const
     auto required = phraseBreaks.valueOr({});
     std::sort(required.begin(), required.end());
     qint64 capacity = starts.size() < 2 ? 256 : starts.at(std::min<qsizetype>(4, starts.size() - 1));
-    if (optionalBreakThresholdTicks.present() && *optionalBreakThresholdTicks > 0) {
-        capacity = *optionalBreakThresholdTicks;
-    } else if (!required.isEmpty()) {
+    if (!required.isEmpty()) {
         QList<qint64> lengths;
         qint64 previous = offset;
         for (const auto &brk : required) {
@@ -487,20 +485,35 @@ QList<PhraseBreak> SongDocument::layoutPhraseBreaks() const
             capacity = lengths.at(lengths.size() / 2);
         }
     }
+    PhraseBreakLayout result;
+    result.automaticThresholdTicks = capacity;
+    if (optionalBreakThresholdTicks.present() && *optionalBreakThresholdTicks > 0)
+        capacity = *optionalBreakThresholdTicks;
+    result.thresholdTicks = capacity;
     auto candidates = required;
     candidates.append(optionalPhraseBreaks.valueOr({}));
     std::sort(candidates.begin(), candidates.end());
     candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
-    QList<PhraseBreak> result;
     qint64 lastTaken = offset;
+    qint64 previousCandidate = offset;
+    qint64 maximumGap = 0;
     for (const auto &brk : candidates) {
         const qint64 current = cumulative(brk);
+        maximumGap = std::max(maximumGap, current - previousCandidate);
+        previousCandidate = std::max(previousCandidate, current);
         if (required.contains(brk) || current - lastTaken >= capacity) {
-            result.append(brk);
+            result.breaks.append(brk);
             lastTaken = current;
         }
     }
+    if (!optionalPhraseBreaks.valueOr({}).isEmpty())
+        result.maximumOptionalGapTicks = std::max(maximumGap, starts.last() - previousCandidate);
     return result;
+}
+
+QList<PhraseBreak> SongDocument::layoutPhraseBreaks() const
+{
+    return phraseBreakLayout().breaks;
 }
 
 QStringList SongDocument::verseKeys() const

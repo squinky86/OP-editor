@@ -1249,6 +1249,8 @@ TransportBar::TransportBar(Session *session, QWidget *parent) : QWidget(parent),
     m_tempo->setValue(100);
     m_tempo->setFixedWidth(110);
     m_tempoLabel = new QLabel(QStringLiteral("100%"), this);
+    m_tickBreakLabel = new QLabel(this);
+    m_tickBreakLabel->setObjectName(QStringLiteral("tickBreakLabel"));
     m_positionLabel = new QLabel(QStringLiteral("0:00 / 0:00"), this);
 
     m_play->setToolTip(tr("Play the song through the built-in synth (Space)"));
@@ -1266,6 +1268,8 @@ TransportBar::TransportBar(Session *session, QWidget *parent) : QWidget(parent),
     layout->addWidget(new QLabel(tr("Tempo"), this));
     layout->addWidget(m_tempo);
     layout->addWidget(m_tempoLabel);
+    layout->addSpacing(12);
+    layout->addWidget(m_tickBreakLabel);
     layout->addSpacing(12);
     layout->addWidget(m_positionLabel);
 
@@ -1291,6 +1295,24 @@ TransportBar::TransportBar(Session *session, QWidget *parent) : QWidget(parent),
 void TransportBar::refresh()
 {
     const SongDocument &doc = m_session->effectiveDocument();
+
+    const PhraseBreakLayout breaks = doc.phraseBreakLayout();
+    const bool overridden = doc.optionalBreakThresholdTicks.valueOr(0) > 0;
+    m_tickBreakLabel->setText(m_session->isOpen()
+        ? tr("Tick break: %1 / %2").arg(breaks.thresholdTicks)
+              .arg(breaks.maximumOptionalGapTicks
+                      ? QString::number(*breaks.maximumOptionalGapTicks) : QStringLiteral("∞"))
+        : tr("Tick break: — / —"));
+    m_tickBreakLabel->setStyleSheet(overridden ? QStringLiteral("color: #d1242f;") : QString());
+    m_tickBreakLabel->setToolTip(tr(
+        "Break threshold / largest gap between required or optional breaks, including "
+        "the final tail. Pickup spacers are excluded. Quarter note = 16 ticks. "
+        "∞ means there are no optional breaks.")
+        + (overridden
+            ? tr("\nOverride active: %1 ticks (automatic: %2).")
+                  .arg(breaks.thresholdTicks).arg(breaks.automaticThresholdTicks)
+            : tr("\nAutomatically calculated threshold: %1 ticks.")
+                  .arg(breaks.automaticThresholdTicks)));
 
     const int current = m_verse->currentIndex();
     m_verse->blockSignals(true);

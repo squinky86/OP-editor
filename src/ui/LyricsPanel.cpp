@@ -280,7 +280,8 @@ void LyricsPanel::refresh()
 
     // Sections the song does not declare yet. Rebuilt on every document change,
     // so the one it replaces has to go with it.
-    delete m_addSection->menu();
+    if (QMenu *oldMenu = m_addSection->menu())
+        oldMenu->deleteLater();
     auto *menu = new QMenu(m_addSection);
     const auto offer = [this, menu, &doc](const QString &key, const QString &label) {
         if (doc.lyrics.contains(key))
@@ -378,9 +379,26 @@ QStringList LyricsPanel::partsUsingDefault(const QString &key) const
 
 void LyricsPanel::rebuildSections()
 {
+    std::optional<EditorRef> focused;
+    int cursorPosition = 0;
+    int cursorAnchor = 0;
+    for (const EditorRef &row : m_editors) {
+        if (row.editor->hasFocus()) {
+            focused = row;
+            cursorPosition = row.editor->textCursor().position();
+            cursorAnchor = row.editor->textCursor().anchor();
+            break;
+        }
+    }
     auto *layout = qobject_cast<QVBoxLayout *>(m_sectionHost->layout());
     while (QLayoutItem *item = layout->takeAt(0)) {
-        delete item->widget();
+        if (QWidget *card = item->widget()) {
+            // A spin box's editingFinished can rebuild these cards from inside
+            // a lyric editor's focus/mouse event. Keep the event receiver alive
+            // until Qt has finished dispatching that event.
+            card->hide();
+            card->deleteLater();
+        }
         delete item;
     }
     m_editors.clear();
@@ -416,6 +434,19 @@ void LyricsPanel::rebuildSections()
     for (const QString &key : keys)
         buildSectionCard(layout, key);
     layout->addStretch();
+    if (focused) {
+        for (const EditorRef &row : m_editors) {
+            if (row.key != focused->key || row.partName != focused->partName)
+                continue;
+            QTextCursor cursor = row.editor->textCursor();
+            const int length = row.editor->toPlainText().size();
+            cursor.setPosition(std::min(cursorAnchor, length));
+            cursor.setPosition(std::min(cursorPosition, length), QTextCursor::KeepAnchor);
+            row.editor->setTextCursor(cursor);
+            row.editor->setFocus(Qt::OtherFocusReason);
+            break;
+        }
+    }
 }
 
 void LyricsPanel::buildSectionCard(QVBoxLayout *host, const QString &key)

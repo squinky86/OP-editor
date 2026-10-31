@@ -90,6 +90,16 @@ struct PhraseBreak {
 
 enum class BreakKind { Required, Optional, NonBreaking };
 
+/// Engraving decisions and their diagnostics, in phrase ticks (quarter = 16).
+struct PhraseBreakLayout {
+    qint64 automaticThresholdTicks = 0;
+    qint64 thresholdTicks = 0; ///< active threshold, including an authored override
+    /// Longest gap with every required/optional boundary used, including the
+    /// final tail and discounting pickup spacers. Absent without optional breaks.
+    std::optional<qint64> maximumOptionalGapTicks;
+    QList<PhraseBreak> breaks;
+};
+
 struct LyricSection {
     QString rawText;
     toml::Span span;       ///< the `text = "…"` value
@@ -180,6 +190,7 @@ public:
     [[nodiscard]] int expectedTicksForMeasure(int measureNumber) const;
     [[nodiscard]] int measureCount() const;
     [[nodiscard]] QList<PhraseBreak> allPhraseBreaks() const;
+    [[nodiscard]] PhraseBreakLayout phraseBreakLayout() const;
     /// Required breaks plus optional candidates that reach the line threshold.
     [[nodiscard]] QList<PhraseBreak> layoutPhraseBreaks() const;
     [[nodiscard]] QStringList verseKeys() const;   ///< numbered verses, sorted

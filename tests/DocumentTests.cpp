@@ -117,6 +117,9 @@ notes = "c1 | c1 | c1 | c1 | c1 | c1"
         QVERIFY(loaded);
         auto doc = *loaded;
         const auto all = doc.allPhraseBreaks();
+        QCOMPARE(doc.phraseBreakLayout().automaticThresholdTicks, 192);
+        QCOMPARE(doc.phraseBreakLayout().thresholdTicks, 128);
+        QCOMPARE(doc.phraseBreakLayout().maximumOptionalGapTicks, std::optional<qint64>(64));
         QCOMPARE(doc.layoutPhraseBreaks(), (QList<PhraseBreak>{{2, 64}, {3, 64}, {5, 64}}));
         doc.optionalBreakThresholdTicks.set(129);
         QCOMPARE(doc.layoutPhraseBreaks(), (QList<PhraseBreak>{{3, 64}}));
@@ -126,8 +129,10 @@ notes = "c1 | c1 | c1 | c1 | c1 | c1"
         QCOMPARE(doc.layoutPhraseBreaks(), (QList<PhraseBreak>{{3, 64}}));
         doc.phraseBreaks.clear();
         // Without required breaks, capacity is the first four measures (256).
+        QCOMPARE(doc.phraseBreakLayout().automaticThresholdTicks, 256);
         QCOMPARE(doc.layoutPhraseBreaks(), (QList<PhraseBreak>{{4, 64}}));
         doc.optionalBreakThresholdTicks.set(2147483647);
+        QCOMPARE(doc.phraseBreakLayout().thresholdTicks, 2147483647);
         QVERIFY(doc.layoutPhraseBreaks().isEmpty());
     }
 
@@ -147,9 +152,36 @@ notes = "s2. e4 | e2. | e1"
 )TOML");
         QVERIFY(loaded);
         auto doc = *loaded;
+        QCOMPARE(doc.phraseBreakLayout().automaticThresholdTicks, 176);
+        QCOMPARE(doc.phraseBreakLayout().thresholdTicks, 80);
+        QCOMPARE(doc.phraseBreakLayout().maximumOptionalGapTicks, std::optional<qint64>(64));
         QCOMPARE(doc.layoutPhraseBreaks(), (QList<PhraseBreak>{{3, 64}}));
         doc.optionalBreakThresholdTicks.set(64);
         QCOMPARE(doc.layoutPhraseBreaks(), (QList<PhraseBreak>{{2, 48}, {3, 64}}));
+    }
+
+    void optionalBreakMetricsIncludeTailAndIgnoreNonBreakingBoundaries()
+    {
+        auto loaded = io::loadBytes("song.toml", R"TOML(title = "Gaps"
+phrase_breaks = ["1:64"]
+optional_phrase_breaks = ["3:32", "1:32", "3:32", "1:64"]
+non_breaking_phrase_breaks = ["2:64", "5:64"]
+[parts.Soprano]
+notes = "s2. c4 | c1 | c1 | c1 | c1 | c1"
+)TOML");
+        QVERIFY(loaded);
+        auto doc = *loaded;
+        // The final 224-tick tail is longer than the 96-tick middle gap.
+        QCOMPARE(doc.phraseBreakLayout().maximumOptionalGapTicks, std::optional<qint64>(224));
+        QCOMPARE(doc.phraseBreakLayout().automaticThresholdTicks, 320);
+        doc.optionalPhraseBreaks.set({});
+        QVERIFY(!doc.phraseBreakLayout().maximumOptionalGapTicks);
+        doc.optionalPhraseBreaks.clear();
+        QVERIFY(!doc.phraseBreakLayout().maximumOptionalGapTicks);
+        doc.optionalBreakThresholdTicks.set(128);
+        QCOMPARE(doc.phraseBreakLayout().thresholdTicks, 128);
+        QCOMPARE(doc.phraseBreakLayout().automaticThresholdTicks, 320);
+        QVERIFY(!doc.phraseBreakLayout().maximumOptionalGapTicks);
     }
 
     void ttbbRoundTripsAndClefEditsNeverTranspose()

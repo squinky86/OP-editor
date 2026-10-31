@@ -33,6 +33,7 @@
 #include <QSplitter>
 #include <QSpinBox>
 #include <QStatusBar>
+#include <QStyleOptionSpinBox>
 #include <QSettings>
 #include <QSyntaxHighlighter>
 #include <QTableWidget>
@@ -195,6 +196,129 @@ private Q_SLOTS:
         QCOMPARE(saved->verseCount.valueOr(0), 5);
         QVERIFY(saved->lyrics.contains("5"));
         QCOMPARE(detailText(*saved), edited);
+    }
+
+    void reducingVerseCountThenFocusingLyrics_data()
+    {
+        QTest::addColumn<QSize>("size");
+        QTest::newRow("compact") << QSize(760, 760);
+        QTest::newRow("large") << QSize(1440, 1000);
+    }
+
+    void reducingVerseCountThenFocusingLyrics()
+    {
+        QFETCH(QSize, size);
+        QTemporaryDir dir;
+        write(QDir(dir.path()), "song.toml", baseSong());
+        MainWindow window;
+        window.openPath(dir.filePath("song.toml"));
+        window.resize(size);
+        window.show();
+        window.selectTab(1);
+        QCoreApplication::processEvents();
+        auto *header = window.findChild<HeaderPanel *>();
+        auto *lyrics = window.findChild<LyricsPanel *>();
+        auto *session = window.findChild<Session *>();
+        QVERIFY(header && lyrics && session);
+        QSpinBox *verses = nullptr;
+        for (QSpinBox *spin : header->findChildren<QSpinBox *>()) {
+            if (spin->maximum() == 40)
+                verses = spin;
+        }
+        QVERIFY(verses);
+        verses->setFocus();
+        QStyleOptionSpinBox option;
+        option.initFrom(verses);
+        option.subControls = QStyle::SC_All;
+        option.buttonSymbols = verses->buttonSymbols();
+        option.stepEnabled = QAbstractSpinBox::StepUpEnabled | QAbstractSpinBox::StepDownEnabled;
+        const QPoint down = verses->style()->subControlRect(
+            QStyle::CC_SpinBox, &option, QStyle::SC_SpinBoxDown, verses).center();
+        QTest::mouseClick(verses, Qt::LeftButton, Qt::NoModifier, down);
+        QTest::mouseClick(verses, Qt::LeftButton, Qt::NoModifier, down);
+        QCOMPARE(verses->value(), 2);
+        auto *editor = editorWithText(*lyrics, "one two");
+        QVERIFY(editor);
+        // Moving focus commits the spin box and rebuilds the lyric cards while
+        // Qt is still delivering the focus/mouse event to this editor.
+        QTest::mouseClick(editor->viewport(), Qt::LeftButton);
+        QCoreApplication::processEvents();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QCOMPARE(session->document().verseCount.valueOr(0), 2);
+        QCOMPARE(session->document().lyrics.value("1").rawText, QStringLiteral("one two"));
+        editor = editorWithText(*lyrics, "one two");
+        QVERIFY(editor && editor->hasFocus());
+        session->undoStack()->undo();
+        QCOMPARE(session->document().verseCount.valueOr(0), 4);
+        session->undoStack()->redo();
+        QCOMPARE(session->document().verseCount.valueOr(0), 2);
+    }
+
+    void transportTickBreakTracksEditsOverridesAndLanguages()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, "song.toml", baseSong());
+        write(root, "song_es.toml", "title = 'Spanish'\n");
+        MainWindow window;
+        auto *transportPanel = window.findChild<TransportBar *>();
+        auto *headerPanel = window.findChild<HeaderPanel *>();
+        auto *windowSession = window.findChild<Session *>();
+        QVERIFY(transportPanel && headerPanel && windowSession);
+        TransportBar &transport = *transportPanel;
+        HeaderPanel &header = *headerPanel;
+        Session &session = *windowSession;
+        auto *label = transport.findChild<QLabel *>("tickBreakLabel");
+        auto *threshold = header.findChild<QLineEdit *>("optionalBreakThresholdTicks");
+        QVERIFY(label && threshold);
+        QCOMPARE(label->text(), QStringLiteral("Tick break: — / —"));
+        QVERIFY(session.openSong(root.filePath("song.toml")));
+        QCOMPARE(label->text(), QStringLiteral("Tick break: 128 / ∞"));
+        QVERIFY(label->styleSheet().isEmpty());
+        session.setPhraseBreak({1, 32}, BreakKind::Optional);
+        QCOMPARE(label->text(), QStringLiteral("Tick break: 128 / 96"));
+        threshold->setText("64");
+        header.commitPendingEdits();
+        QCOMPARE(label->text(), QStringLiteral("Tick break: 64 / 96"));
+        QVERIFY(label->styleSheet().contains("#d1242f"));
+        QVERIFY(label->toolTip().contains("automatic: 128"));
+        window.show();
+        auto *scroll = window.findChild<QScrollArea *>("transportScroll");
+        QVERIFY(scroll);
+        for (const QSize &size : {QSize(760, 760), QSize(1440, 1000)}) {
+            window.resize(size);
+            QCoreApplication::processEvents();
+            QCOMPARE(window.size(), size);
+            scroll->ensureWidgetVisible(label);
+            QVERIFY(label->width() >= label->sizeHint().width());
+            QVERIFY(scroll->viewport()->rect().contains(
+                QRect(label->mapTo(scroll->viewport(), QPoint()), label->size())));
+            const QString review = qEnvironmentVariable("OPE_REVIEW_DIR");
+            if (!review.isEmpty()) {
+                QVERIFY(QDir().mkpath(review));
+                QVERIFY(window.grab().save(QDir(review).filePath(
+                    QString("tick-break-%1.png").arg(size.width()))));
+            }
+        }
+        session.undoStack()->undo();
+        QCOMPARE(label->text(), QStringLiteral("Tick break: 128 / 96"));
+        QVERIFY(label->styleSheet().isEmpty());
+        session.undoStack()->redo();
+        session.setCurrentLanguage("es");
+        // An inherited override is still active and must also be red.
+        QCOMPARE(label->text(), QStringLiteral("Tick break: 64 / 96"));
+        QVERIFY(label->styleSheet().contains("#d1242f"));
+        threshold->setText("80");
+        header.commitPendingEdits();
+        QCOMPARE(label->text(), QStringLiteral("Tick break: 80 / 96"));
+        session.setCurrentLanguage("en");
+        QCOMPARE(label->text(), QStringLiteral("Tick break: 64 / 96"));
+        threshold->clear();
+        header.commitPendingEdits();
+        QCOMPARE(label->text(), QStringLiteral("Tick break: 128 / 96"));
+        QVERIFY(label->styleSheet().isEmpty());
+        session.setPhraseBreak({1, 32}, std::nullopt);
+        QCOMPARE(label->text(), QStringLiteral("Tick break: 128 / ∞"));
     }
 
     void optionalBreakThresholdEditingUndoAndTranslationReset()

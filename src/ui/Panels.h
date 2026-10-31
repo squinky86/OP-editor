@@ -200,6 +200,7 @@ private:
     QSet<QString> m_mutedParts;
     QSlider *m_tempo = nullptr;
     QLabel *m_tempoLabel = nullptr;
+    QLabel *m_tickBreakLabel = nullptr;
     QLabel *m_positionLabel = nullptr;
 };
 
