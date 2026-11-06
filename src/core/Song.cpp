@@ -38,6 +38,7 @@ const QStringList &canonicalHeaderOrder()
         QStringLiteral("optional_break_threshold_ticks"),
         QStringLiteral("commentary"),
         QStringLiteral("converge_verses"),
+        QStringLiteral("interleave_verse_lyrics"),
     };
     return order;
 }
@@ -597,7 +598,7 @@ bool SongDocument::isDirty() const
     const auto anyDirty = [](auto &&...fields) { return (fields.dirty() || ...); };
     if (anyDirty(title, subtitle, active, declaredLanguage, keySignature, timeSigNumerator,
             timeSigDenominator, tempoBpm, verseCount, defaultVerses, copyrights, commentary,
-            convergeVerses, phraseBreaks, optionalPhraseBreaks, nonBreakingPhraseBreaks,
+            convergeVerses, interleaveVerseLyrics, phraseBreaks, optionalPhraseBreaks, nonBreakingPhraseBreaks,
             optionalBreakThresholdTicks, timeSigChanges))
         return true;
     for (auto it = lyrics.constBegin(); it != lyrics.constEnd(); ++it) {
@@ -626,7 +627,7 @@ void SongDocument::markClean()
     const auto clean = [](auto &...fields) { (fields.markClean(), ...); };
     clean(title, subtitle, active, declaredLanguage, keySignature, timeSigNumerator,
         timeSigDenominator, tempoBpm, verseCount, defaultVerses, copyrights, commentary,
-        convergeVerses, phraseBreaks, optionalPhraseBreaks, nonBreakingPhraseBreaks,
+        convergeVerses, interleaveVerseLyrics, phraseBreaks, optionalPhraseBreaks, nonBreakingPhraseBreaks,
         optionalBreakThresholdTicks, timeSigChanges);
     for (auto it = lyrics.begin(); it != lyrics.end(); ++it)
         it->dirty = false;
@@ -811,6 +812,15 @@ std::expected<SongDocument, LoadError> loadBytes(const QString &path, QByteArray
     bindStringList(doc.copyrights, src.rootPair(QStringLiteral("copyrights")));
     bindString(doc.commentary, src.rootPair(QStringLiteral("commentary")));
     bindBool(doc.convergeVerses, src.rootPair(QStringLiteral("converge_verses")));
+    if (const auto *interleave = src.rootPair(QStringLiteral("interleave_verse_lyrics"))) {
+        if (interleave->value.kind != toml::ValueKind::Boolean) {
+            LoadError error;
+            error.path = path;
+            error.message = QStringLiteral("interleave_verse_lyrics must be a boolean (true or false)");
+            return std::unexpected(error);
+        }
+        bindBool(doc.interleaveVerseLyrics, interleave);
+    }
     bindBreaks(doc.phraseBreaks, src.rootPair(QStringLiteral("phrase_breaks")));
     bindBreaks(doc.optionalPhraseBreaks, src.rootPair(QStringLiteral("optional_phrase_breaks")));
     bindBreaks(
@@ -1058,6 +1068,7 @@ QByteArray serialize(const SongDocument &doc)
     intField(QStringLiteral("optional_break_threshold_ticks"), doc.optionalBreakThresholdTicks);
     stringField(QStringLiteral("commentary"), doc.commentary);
     boolField(QStringLiteral("converge_verses"), doc.convergeVerses);
+    boolField(QStringLiteral("interleave_verse_lyrics"), doc.interleaveVerseLyrics);
 
     if (doc.timeSigChanges.dirty()) {
         if (doc.timeSigChanges.present()) {
@@ -1242,6 +1253,8 @@ QByteArray serializeFresh(const SongDocument &doc)
         line("commentary = " + toml::emitBasicString(*doc.commentary));
     if (doc.convergeVerses.present())
         line(QByteArray("converge_verses = ") + (*doc.convergeVerses ? "true" : "false"));
+    if (doc.interleaveVerseLyrics.present())
+        line(QByteArray("interleave_verse_lyrics = ") + (*doc.interleaveVerseLyrics ? "true" : "false"));
 
     if (doc.timeSigChanges.present() && !doc.timeSigChanges->isEmpty()) {
         out += "\n";
@@ -1458,6 +1471,7 @@ SongDocument mergeOverlay(const SongDocument &base, const SongDocument &overlay)
         merged.defaultVerses.bind(*base.defaultVerses, {});
     inheritBool(merged.active, base.active);
     inheritBool(merged.convergeVerses, base.convergeVerses);
+    inheritBool(merged.interleaveVerseLyrics, base.interleaveVerseLyrics);
     if (!merged.copyrights.present() && base.copyrights.present())
         merged.copyrights.bind(*base.copyrights, {});
     if (!merged.phraseBreaks.present() && base.phraseBreaks.present())

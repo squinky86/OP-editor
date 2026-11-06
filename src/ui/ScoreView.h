@@ -58,12 +58,17 @@ struct MeasureBox {
     MeasureGrid grid;
 };
 
+/// An authored lyric section, still attached to its own part's timed slots.
+struct LyricRow {
+    int partIndex = 0;
+    int sectionIndex = 0;
+};
+
 /// A staff group: every part sharing one staff_number.
 struct StaffBox : voicing::Staff {
     qreal top = 0;  ///< y of the top staff line
     qreal lyricTop = 0;
-    QMap<int, int> lyricRowOffsets;  ///< one row group per distinct lyric stream
-
+    QList<LyricRow> lyricRows; ///< display order, after identical streams share rows
 };
 
 /// One horizontal band of music.
@@ -114,8 +119,7 @@ private:
     void paintStaff(QPainter &painter, const SystemBox &system, const StaffBox &staff);
     void paintPart(QPainter &painter, const SystemBox &system, const StaffBox &staff,
         int partIndex, bool forceStemUp, bool forceStemDown);
-    void paintLyrics(QPainter &painter, const SystemBox &system, const StaffBox &staff,
-        int partIndex);
+    void paintLyrics(QPainter &painter, const SystemBox &system, const StaffBox &staff);
     void paintPhraseRuler(QPainter &painter, const SystemBox &system);
     void paintMeasureProblems(QPainter &painter, const SystemBox &system);
 

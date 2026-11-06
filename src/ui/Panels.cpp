@@ -199,6 +199,18 @@ HeaderPanel::HeaderPanel(Session *session, QWidget *parent) : QWidget(parent), m
     m_converge->setToolTip(tr("converge_verses: print shared lines once instead of repeating "
                               "them under every verse. Automatic turns it on when the song "
                               "uses [lyrics.sN] sections."));
+    m_interleave = new QComboBox(this);
+    m_interleave->setObjectName(QStringLiteral("interleaveVerseLyrics"));
+    m_interleave->addItem(tr("Default (off)"), QVariant());
+    m_interleave->addItem(tr("On — by verse"), true);
+    m_interleave->addItem(tr("Off — by voice"), false);
+    m_interleave->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_interleave->setMinimumContentsLength(12);
+    m_interleave->setToolTip(tr(
+        "interleave_verse_lyrics: group score lyric rows by verse, with each verse's "
+        "lead followed by its responses. Off groups rows by voice. Default omits "
+        "the field; translations inherit song.toml unless On or Off is selected. "
+        "This controls score layout, not playback or lyric text."));
     m_optionalBreakThreshold = new QLineEdit(this);
     m_optionalBreakThreshold->setObjectName(QStringLiteral("optionalBreakThresholdTicks"));
     auto *thresholdValidator = new OptionalIntValidator(m_optionalBreakThreshold);
@@ -250,6 +262,7 @@ HeaderPanel::HeaderPanel(Session *session, QWidget *parent) : QWidget(parent), m
     layout->addRow(tr("Verses"), m_verseCount);
     layout->addRow(tr("Metre changes"), m_timeSigChanges);
     layout->addRow(tr("Converge verses"), m_converge);
+    layout->addRow(tr("Interleave verses"), m_interleave);
     layout->addRow(tr("Break threshold"), m_optionalBreakThreshold);
     layout->addRow(QString(), m_active);
     layout->addRow(tr("Copyrights"), m_copyrights);
@@ -281,6 +294,7 @@ HeaderPanel::HeaderPanel(Session *session, QWidget *parent) : QWidget(parent), m
     connect(m_verseCount, &QSpinBox::editingFinished, this, onEdit);
     connect(m_active, &QCheckBox::toggled, this, onEdit);
     connect(m_converge, &QComboBox::currentIndexChanged, this, onEdit);
+    connect(m_interleave, &QComboBox::currentIndexChanged, this, onEdit);
     connect(m_timeSigChanges, &QPushButton::clicked, this, &HeaderPanel::editTimeSigChanges);
     // A multi-line box has no editingFinished, and polling textChanged would put
     // one undo step on the stack per keystroke. Commit when focus leaves it.
@@ -351,6 +365,12 @@ void HeaderPanel::refresh()
     m_converge->setCurrentIndex(!effective.convergeVerses.present() ? 0
             : *effective.convergeVerses                             ? 1
                                                                     : 2);
+    const SongDocument *base = m_session->baseDocument();
+    m_interleave->setItemText(0, doc.isOverlay
+            ? (base && base->interleaveVerseLyrics.valueOr(false) ? tr("Inherited (on)") : tr("Inherited (off)"))
+            : tr("Default (off)"));
+    m_interleave->setCurrentIndex(!doc.interleaveVerseLyrics.present() ? 0
+            : *doc.interleaveVerseLyrics ? 1 : 2);
     m_copyrights->setPlainText(effective.copyrights.valueOr({}).join(u'\n'));
     m_commentary->setPlainText(effective.commentary.valueOr(QString()));
 
@@ -368,6 +388,7 @@ void HeaderPanel::refresh()
         note(tr("metre"), doc.timeSigNumerator.present());
         note(tr("tempo"), doc.tempoBpm.present());
         note(tr("verse count"), doc.verseCount.present());
+        note(tr("verse interleaving"), doc.interleaveVerseLyrics.present());
         note(tr("phrase breaks"), doc.phraseBreaks.present());
         note(tr("optional break ticks"), doc.optionalBreakThresholdTicks.present());
         m_inherited->setText(inherited.isEmpty()
@@ -402,6 +423,7 @@ void HeaderPanel::commit()
     const int verses = m_verseCount->value();
     const bool active = m_active->isChecked();
     const QVariant converge = m_converge->currentData();
+    const QVariant interleave = m_interleave->currentData();
     const auto threshold = m_optionalBreakThreshold->text().trimmed().isEmpty()
         ? std::optional<int>() : std::optional<int>(m_optionalBreakThreshold->text().toInt());
 
@@ -436,6 +458,10 @@ void HeaderPanel::commit()
                           ? std::optional<bool>(converge.toBool())
                           : std::nullopt),
             "converge_verses");
+    const bool interleaveChanged
+        = differs(m_session->document().interleaveVerseLyrics.opt() != (interleave.isValid()
+                          ? std::optional<bool>(interleave.toBool()) : std::nullopt),
+            "interleave_verse_lyrics");
     const bool thresholdChanged = differs(m_optionalBreakThreshold->hasAcceptableInput()
             && m_session->document().optionalBreakThresholdTicks.opt() != threshold,
         "optional_break_threshold_ticks");
@@ -492,6 +518,12 @@ void HeaderPanel::commit()
                 doc.convergeVerses.set(converge.toBool());
             else
                 doc.convergeVerses.clear();
+        }
+        if (interleaveChanged) {
+            if (interleave.isValid())
+                doc.interleaveVerseLyrics.set(interleave.toBool());
+            else
+                doc.interleaveVerseLyrics.clear();
         }
     });
 }

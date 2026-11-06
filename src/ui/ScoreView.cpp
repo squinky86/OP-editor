@@ -337,10 +337,13 @@ void ScoreView::relayout()
             m_measureToSystem.insert(m, static_cast<int>(m_systems.size()));
         }
 
-        // Each staff owns its lyric rows. Identical words at identical ticks
-        // share a row; independent echoes and rhythms remain readable.
+        // Interleaved lyrics share a block between the first two staves, as in
+        // the sheet score. Additional staves retain their own lyric blocks.
+        // The ordinary editing layout keeps each staff's lyrics below it.
+        const bool interleave = doc.interleaveVerseLyrics.valueOr(false);
         qreal staffY = y;
-        for (StaffBox staff : staffTemplate) {
+        for (int staffIndex = 0; staffIndex < staffTemplate.size(); ++staffIndex) {
+            StaffBox staff = staffTemplate.at(staffIndex);
             qreal bottom = 4 * space;
             qreal above = 0;
             if (staff.clef) {
@@ -372,32 +375,57 @@ void ScoreView::relayout()
             // Reserve more for high notes and stacked tempo/section markings.
             staff.top = staffY + std::max<qreal>(0, above - TopMarginSpaces * space);
             staff.lyricTop = staff.top + bottom + 2 * space;
-            QList<QStringList> seen;
-            int rows = 0;
-            for (int index : staff.partIndices) {
-                const PartAlignment &alignment = m_session->alignment(doc.parts.at(index).name);
-                QStringList signature;
-                int count = 0;
-                for (const AttachedSection &section : alignment.sections) {
-                    if (!showsSection(section))
-                        continue;
-                    ++count;
-                    signature.append(section.key);
-                    for (int slot = section.slotOffset;
-                         slot < section.slotOffset + section.syllables.size()
-                         && slot < alignment.lyricSlots.size(); ++slot) {
-                        const Slot &position = alignment.lyricSlots.at(slot);
-                        if (position.measureIndex >= first && position.measureIndex <= last)
-                            signature.append(QStringLiteral("%1:%2").arg(position.tick)
-                                .arg(alignment.syllableAt(section, slot)));
-                    }
-                }
-                if (count > 0 && !seen.contains(signature)) {
-                    seen.append(signature);
-                    staff.lyricRowOffsets.insert(index, rows);
-                    rows += count;
+            QList<QList<int>> lyricGroups { staff.partIndices };
+            if (interleave && staffTemplate.size() > 1) {
+                if (staffIndex == 0) {
+                    lyricGroups.append(staffTemplate.at(1).partIndices);
+                } else if (staffIndex == 1) {
+                    lyricGroups.clear();
                 }
             }
+            for (const QList<int> &lyricParts : lyricGroups) {
+                // Preserve the editing view's existing stream deduplication
+                // within each staff before changing the surviving rows' order.
+                QList<QStringList> seen;
+                for (int index : lyricParts) {
+                    const PartAlignment &alignment = m_session->alignment(doc.parts.at(index).name);
+                    QStringList signature;
+                    QList<LyricRow> partRows;
+                    for (int sectionIndex = 0; sectionIndex < alignment.sections.size(); ++sectionIndex) {
+                        const AttachedSection &section = alignment.sections.at(sectionIndex);
+                        if (!showsSection(section))
+                            continue;
+                        partRows.append({ index, sectionIndex });
+                        signature.append(section.key);
+                        for (int slot = section.slotOffset;
+                             slot < section.slotOffset + section.syllables.size()
+                             && slot < alignment.lyricSlots.size(); ++slot) {
+                            const Slot &position = alignment.lyricSlots.at(slot);
+                            if (position.measureIndex >= first && position.measureIndex <= last)
+                                signature.append(QStringLiteral("%1:%2").arg(position.tick)
+                                    .arg(alignment.syllableAt(section, slot)));
+                        }
+                    }
+                    if (!partRows.isEmpty() && !seen.contains(signature)) {
+                        seen.append(signature);
+                        staff.lyricRows.append(partRows);
+                    }
+                }
+            }
+            if (interleave) {
+                const auto rank = [&](const LyricRow &row) {
+                    const auto &section = m_session->alignment(doc.parts.at(row.partIndex).name)
+                                              .sections.at(row.sectionIndex);
+                    return std::pair(section.isChorus || section.isCoda, section.verseNumber);
+                };
+                std::stable_sort(staff.lyricRows.begin(), staff.lyricRows.end(),
+                    [&](const LyricRow &a, const LyricRow &b) {
+                        if (rank(a) != rank(b))
+                            return rank(a) < rank(b);
+                        return voicing::less(doc.parts.at(a.partIndex), doc.parts.at(b.partIndex));
+                    });
+            }
+            const qsizetype rows = staff.lyricRows.size();
             system.staves.append(staff);
             staffY = rows > 0 ? staff.lyricTop + rows * LyricRowSpaces * space + 3 * space
                              : staff.top + std::max(StaffGapSpaces * space, bottom + 3 * space);
@@ -454,8 +482,15 @@ void ScoreView::paintEvent(QPaintEvent *)
 void ScoreView::paintSystem(QPainter &painter, const SystemBox &system)
 {
     paintMeasureProblems(painter, system);
-    for (const StaffBox &staff : system.staves)
+    for (const StaffBox &staff : system.staves) {
+        painter.save();
         paintStaff(painter, system, staff);
+        painter.restore();
+    }
+    // All note positions must exist before lyrics anchored above another
+    // staff can follow that staff's own voice and rhythm.
+    for (const StaffBox &staff : system.staves)
+        paintLyrics(painter, system, staff);
     paintPhraseRuler(painter, system);
 }
 
@@ -524,10 +559,6 @@ void ScoreView::paintStaff(QPainter &painter, const SystemBox &system, const Sta
         for (int i = 0; i < staff.partIndices.size(); ++i)
             paintPart(painter, system, staff, staff.partIndices.at(i),
                 directions.at(i) == voicing::Stem::Up, directions.at(i) == voicing::Stem::Down);
-    }
-    for (int index : staff.partIndices) {
-        if (staff.lyricRowOffsets.contains(index))
-            paintLyrics(painter, system, staff, index);
     }
 }
 
@@ -854,13 +885,9 @@ void ScoreView::paintPart(QPainter &painter, const SystemBox &system, const Staf
 }
 
 void ScoreView::paintLyrics(
-    QPainter &painter, const SystemBox &system, const StaffBox &staff, int partIndex)
+    QPainter &painter, const SystemBox &system, const StaffBox &staff)
 {
     const SongDocument &doc = m_session->effectiveDocument();
-    const Part &part = doc.parts.at(partIndex);
-    const PartAlignment &alignment = m_session->alignment(part.name);
-    if (alignment.sections.isEmpty())
-        return;
 
     const qreal space = m_staffSpace;
     const QFont font = lyricFont();
@@ -869,15 +896,16 @@ void ScoreView::paintLyrics(
 
     // Which slots fall inside this system? Slots carry their measure, so the
     // question is just which measures the system covers.
-    int row = -1;
-    for (const AttachedSection &section : alignment.sections) {
-        if (!showsSection(section))
-            continue;
-        ++row;
+    for (int row = 0; row < staff.lyricRows.size(); ++row) {
+        const LyricRow &lyric = staff.lyricRows.at(row);
+        const int partIndex = lyric.partIndex;
+        const Part &part = doc.parts.at(partIndex);
+        const PartAlignment &alignment = m_session->alignment(part.name);
+        const AttachedSection &section = alignment.sections.at(lyric.sectionIndex);
         const bool active = section.isChorus || section.isCoda
             || section.verseNumber == m_verse;
         painter.setPen(active ? colorText() : QColor(0x8a, 0x8a, 0x8a));
-        const qreal y = staff.lyricTop + (staff.lyricRowOffsets.value(partIndex) + row) * LyricRowSpaces * space;
+        const qreal y = staff.lyricTop + row * LyricRowSpaces * space;
 
         for (int slot = section.slotOffset;
             slot < section.slotOffset + section.syllables.size(); ++slot) {

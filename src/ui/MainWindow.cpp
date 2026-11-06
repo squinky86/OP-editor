@@ -537,7 +537,8 @@ void MainWindow::buildMenus()
         box.setInformativeText(tr(
             "<b>Song dock</b><br>title, subtitle, active, copyrights, key_signature, "
             "time_sig_numerator, time_sig_denominator, tempo_bpm, verse_count, "
-            "converge_verses, optional_break_threshold_ticks, commentary, and [[time_sig_changes]]. "
+            "converge_verses, interleave_verse_lyrics, optional_break_threshold_ticks, commentary, "
+            "and [[time_sig_changes]]. "
             "Convert key transposes every voice together with the key signature; "
             "the Key selector edits metadata only.<br><br>"
             "<b>Score and Lyrics panes</b><br>notes, text, phrase_breaks, "

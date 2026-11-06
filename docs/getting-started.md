@@ -106,10 +106,22 @@ Transposing a translation copies its inherited notes into that translation;
 transposing the base song also affects translations that inherit its notes and
 key. Undo restores the entire conversion in one step.
 
+Use **Song → Interleave verses** for call-and-response lyrics. **On — by verse**
+writes `interleave_verse_lyrics = true`, grouping each verse's lead and response
+rows together in the score. **Off — by voice** writes `false`. **Default (off)**
+omits the field; in translations this choice shows **Inherited (on/off)** and
+follows the base song. An explicit On or Off overrides the base setting.
+Choose **View → Show all verses under the staff** to compare the row order.
+Interleaved rows from the first two staves share the space between them;
+additional staves retain their own lyric blocks. Each row follows its own
+voice's notes. The editor still shows authored lyric sections, including
+separate chorus/coda rows; OpenPsalm's sheet-score exporter handles final
+convergence and echo splicing. Lyric text and playback are unchanged.
+
 To arrange an older file consistently, press **Standardize TOML** in Source.
 The order is identity and copyright, key/metre/tempo, verse settings, the three
-phrase-break fields, commentary and convergence, metre changes, parts in voice
-order with their lyric overrides, then global lyrics. Numbered lyrics and shared
+phrase-break fields, commentary, convergence and interleaving, metre changes,
+parts in voice order with their lyric overrides, then global lyrics. Numbered lyrics and shared
 sections sort numerically. Comments, unknown fields, and authored values are
 retained. The button is disabled when the file is already standardized or Source
 has an uncommitted draft. Standardization is one Undo step and requires Save to

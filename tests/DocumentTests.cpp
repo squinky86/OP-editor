@@ -44,6 +44,98 @@ class DocumentTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void interleavedVersesRoundTripAndMerge_data()
+    {
+        QTest::addColumn<bool>("enabled");
+        QTest::newRow("enabled") << true;
+        QTest::newRow("disabled") << false;
+    }
+
+    void interleavedVersesRoundTripAndMerge()
+    {
+        QFETCH(bool, enabled);
+        const QByteArray value = enabled ? "true" : "false";
+        const QByteArray opposite = enabled ? "false" : "true";
+        const QByteArray original = "# layout preference\ninterleave_verse_lyrics = " + value
+            + " # keep this comment\nconverge_verses = false\n" + baseSong();
+        auto loaded = io::loadBytes("song.toml", original);
+        QVERIFY(loaded);
+        auto doc = *loaded;
+        QVERIFY(doc.interleaveVerseLyrics.present());
+        QCOMPARE(*doc.interleaveVerseLyrics, enabled);
+        QVERIFY(!doc.unknownKeys.contains("interleave_verse_lyrics"));
+        QVERIFY(!doc.isDirty());
+        QCOMPARE(io::serialize(doc), original);
+
+        doc.interleaveVerseLyrics.set(!enabled);
+        QVERIFY(doc.isDirty());
+        QByteArray expected = original;
+        expected.replace("interleave_verse_lyrics = " + value, "interleave_verse_lyrics = " + opposite);
+        QCOMPARE(io::serialize(doc), expected);
+        const auto edited = io::loadBytes("song.toml", io::serialize(doc));
+        QVERIFY(edited);
+        QCOMPARE(edited->interleaveVerseLyrics.opt(), std::optional<bool>(!enabled));
+        const auto fresh = io::loadBytes("song.toml", io::serializeFresh(doc));
+        QVERIFY(fresh);
+        QCOMPARE(fresh->interleaveVerseLyrics.opt(), std::optional<bool>(!enabled));
+        doc.markClean();
+        QVERIFY(!doc.isDirty());
+
+        auto overlay = io::loadBytes("song_es.toml", "title = 'Spanish'\n");
+        QVERIFY(overlay);
+        QCOMPARE(mergeOverlay(*loaded, *overlay).interleaveVerseLyrics.opt(), std::optional<bool>(enabled));
+        overlay->interleaveVerseLyrics.set(!enabled);
+        QCOMPARE(mergeOverlay(*loaded, *overlay).interleaveVerseLyrics.opt(), std::optional<bool>(!enabled));
+        overlay->interleaveVerseLyrics.clear();
+        QCOMPARE(mergeOverlay(*loaded, *overlay).interleaveVerseLyrics.opt(), std::optional<bool>(enabled));
+
+        doc.interleaveVerseLyrics.clear();
+        QVERIFY(doc.isDirty());
+        QVERIFY(!io::serialize(doc).contains("interleave_verse_lyrics"));
+        QVERIFY(!io::serializeFresh(doc).contains("interleave_verse_lyrics"));
+        const auto standardized = io::standardize(*loaded);
+        QVERIFY(standardized);
+        QVERIFY(standardized->contains("interleave_verse_lyrics = " + value + " # keep this comment"));
+        QVERIFY(standardized->indexOf("converge_verses =") < standardized->indexOf("interleave_verse_lyrics ="));
+        QVERIFY(standardized->indexOf("interleave_verse_lyrics =") < standardized->indexOf("[parts."));
+        const auto reparsed = io::loadBytes("song.toml", *standardized);
+        QVERIFY(reparsed);
+        QCOMPARE(reparsed->interleaveVerseLyrics.opt(), std::optional<bool>(enabled));
+        const auto again = io::standardize(*reparsed);
+        QVERIFY(again);
+        QCOMPARE(*again, *standardized);
+    }
+
+    void interleavedVersesDefaultAndInsertion()
+    {
+        auto loaded = io::loadBytes("song.toml", baseSong());
+        QVERIFY(loaded);
+        QVERIFY(!loaded->interleaveVerseLyrics.present());
+        QVERIFY(!loaded->interleaveVerseLyrics.valueOr(false));
+        QCOMPARE(io::serialize(*loaded), baseSong());
+        QVERIFY(!io::serializeFresh(*loaded).contains("interleave_verse_lyrics"));
+        loaded->interleaveVerseLyrics.set(true);
+        const QByteArray bytes = io::serialize(*loaded);
+        QVERIFY(bytes.contains("interleave_verse_lyrics = true\n"));
+        QVERIFY(bytes.indexOf("interleave_verse_lyrics =") < bytes.indexOf("[parts."));
+        const auto reparsed = io::loadBytes("song.toml", bytes);
+        QVERIFY(reparsed);
+        QCOMPARE(reparsed->interleaveVerseLyrics.opt(), std::optional<bool>(true));
+        loaded->interleaveVerseLyrics.clear();
+        QCOMPARE(io::serialize(*loaded), baseSong());
+    }
+
+    void interleavedVersesRejectNonBooleans()
+    {
+        for (const QByteArray value : {"'true'", "\"false\"", "1", "0", "1.5", "[]", "{}"}) {
+            const auto loaded = io::loadBytes("song_es.toml",
+                "interleave_verse_lyrics = " + value + "\n");
+            QVERIFY2(!loaded, value.constData());
+            QVERIFY(loaded.error().formatted().contains("song_es.toml"));
+            QVERIFY(loaded.error().formatted().contains("interleave_verse_lyrics must be a boolean"));
+        }
+    }
+
     void optionalBreakThresholdRoundTripsAndInherits()
     {
         const QByteArray original = "optional_break_threshold_ticks = 128 # keep comment\n" + baseSong();

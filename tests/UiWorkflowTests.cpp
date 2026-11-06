@@ -83,6 +83,189 @@ class UiWorkflowTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void interleavedVerseControlSavesOverridesAndUndo()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        write(root, "song.toml", baseSong());
+        write(root, "song_es.toml", "title = 'Spanish'\n");
+        Session session;
+        HeaderPanel panel(&session);
+        SourcePanel source(&session);
+        auto *control = panel.findChild<QComboBox *>("interleaveVerseLyrics");
+        QVERIFY(control);
+        QVERIFY(!control->isEnabled());
+        QVERIFY(session.openSong(root.filePath("song.toml")));
+        QVERIFY(control->isEnabled());
+        QCOMPARE(control->currentIndex(), 0);
+        QCOMPARE(control->currentText(), QStringLiteral("Default (off)"));
+        QCOMPARE(session.currentBytes(), baseSong());
+        control->setCurrentIndex(1);
+        QCOMPARE(session.document().interleaveVerseLyrics.opt(), std::optional<bool>(true));
+        QVERIFY(source.findChild<QPlainTextEdit *>()->toPlainText().contains("interleave_verse_lyrics = true"));
+        QCOMPARE(session.undoStack()->count(), 1);
+        session.undoStack()->undo();
+        QCOMPARE(control->currentIndex(), 0);
+        QCOMPARE(session.currentBytes(), baseSong());
+        session.undoStack()->redo();
+        QCOMPARE(control->currentIndex(), 1);
+        QVERIFY(session.save());
+        QVERIFY(!session.isDirty());
+
+        session.setCurrentLanguage("es");
+        QCOMPARE(control->currentIndex(), 0);
+        QCOMPARE(control->currentText(), QStringLiteral("Inherited (on)"));
+        auto *title = lineEditWithText(panel, "Spanish");
+        QVERIFY(title);
+        title->setText("Edited translation");
+        panel.commitPendingEdits();
+        QVERIFY(!session.document().interleaveVerseLyrics.present());
+        // Even an override matching the inherited value is an intentional edit.
+        control->setCurrentIndex(1);
+        QCOMPARE(session.document().interleaveVerseLyrics.opt(), std::optional<bool>(true));
+        control->setCurrentIndex(2);
+        QCOMPARE(session.effectiveDocument().interleaveVerseLyrics.opt(), std::optional<bool>(false));
+        QCOMPARE(control->itemText(0), QStringLiteral("Inherited (on)"));
+        QVERIFY(session.save());
+        const auto disabled = io::load(root.filePath("song_es.toml"));
+        QVERIFY(disabled);
+        QCOMPARE(disabled->interleaveVerseLyrics.opt(), std::optional<bool>(false));
+        control->setCurrentIndex(0);
+        QVERIFY(!session.document().interleaveVerseLyrics.present());
+        QVERIFY(session.effectiveDocument().interleaveVerseLyrics.valueOr(false));
+        session.undoStack()->undo();
+        QCOMPARE(control->currentIndex(), 2);
+        session.undoStack()->redo();
+        QCOMPARE(control->currentIndex(), 0);
+        QVERIFY(session.save());
+        QVERIFY(session.openSong(root.filePath("song_es.toml")));
+        QVERIFY(!session.document().interleaveVerseLyrics.present());
+        QCOMPARE(control->currentText(), QStringLiteral("Inherited (on)"));
+
+        session.setCurrentLanguage("en");
+        control->setCurrentIndex(2);
+        QVERIFY(session.save());
+        session.setCurrentLanguage("es");
+        QCOMPARE(control->currentText(), QStringLiteral("Inherited (off)"));
+        control->setCurrentIndex(1);
+        QVERIFY(session.effectiveDocument().interleaveVerseLyrics.valueOr(false));
+        QCOMPARE(control->itemText(0), QStringLiteral("Inherited (off)"));
+
+        auto *editor = source.findChild<QPlainTextEdit *>();
+        QVERIFY(editor);
+        editor->setPlainText("title = 'From source'\ninterleave_verse_lyrics = false\n");
+        QVERIFY(source.commitPendingEdits());
+        QCOMPARE(control->currentIndex(), 2);
+        const QByteArray valid = session.currentBytes();
+        editor->setPlainText("interleave_verse_lyrics = 'true'\n");
+        QVERIFY(!source.commitPendingEdits());
+        QCOMPARE(session.currentBytes(), valid);
+        QCOMPARE(control->currentIndex(), 2);
+    }
+
+    void scoreInterleavesVersesWithTheirOwnTimedVoices_data()
+    {
+        QTest::addColumn<bool>("ttbb");
+        QTest::newRow("satb") << false;
+        QTest::newRow("ttbb") << true;
+    }
+
+    void scoreInterleavesVersesWithTheirOwnTimedVoices()
+    {
+        QFETCH(bool, ttbb);
+        QTemporaryDir dir;
+        QByteArray original = interleavedSong();
+        if (ttbb) {
+            original.replace("choral_type = \"soprano\"", "choral_type = \"tenor1\"");
+            original.replace("choral_type = \"alto\"", "choral_type = \"tenor2\"");
+        }
+        write(QDir(dir.path()), "song.toml", original);
+        Session session;
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        ScoreView score(&session);
+        score.resize(1280, 960);
+        score.setShowAllVerses(true);
+        score.show();
+        QCoreApplication::processEvents();
+        const auto rowNames = [&](const StaffBox &staff) {
+            QStringList names;
+            for (const LyricRow &row : staff.lyricRows) {
+                const QString name = session.effectiveDocument().parts.at(row.partIndex).name;
+                names.append(name + u':' + session.alignment(name).sections.at(row.sectionIndex).key);
+            }
+            return names;
+        };
+        QCOMPARE(score.systems().size(), 1);
+        QCOMPARE(score.systems().first().staves.size(), 3);
+        const QStringList upper { "Soprano:1", "Soprano:2", "Soprano:10", "Soprano:chorus" };
+        const QStringList lower { "Bass:1", "Bass:2", "Bass:10", "Bass:chorus" };
+        const QStringList descant { "Descant:1", "Descant:2", "Descant:10", "Descant:chorus" };
+        QCOMPARE(rowNames(score.systems().first().staves.at(0)), upper);
+        QCOMPARE(rowNames(score.systems().first().staves.at(1)), lower);
+        QCOMPARE(rowNames(score.systems().first().staves.at(2)), descant);
+        session.mutate("Interleave verses", [](SongDocument &doc) {
+            doc.interleaveVerseLyrics.set(true);
+        });
+        const QStringList interleaved { "Soprano:1", "Bass:1", "Soprano:2", "Bass:2",
+            "Soprano:10", "Bass:10", "Soprano:chorus", "Bass:chorus" };
+        QCOMPARE(rowNames(score.systems().first().staves.at(0)), interleaved);
+        QVERIFY(score.systems().first().staves.at(1).lyricRows.isEmpty());
+        QCOMPARE(rowNames(score.systems().first().staves.at(2)), descant);
+        const auto &lead = session.alignment("Soprano");
+        const auto &response = session.alignment("Bass");
+        QCOMPARE(lead.lyricSlots.first().tick, 0);
+        QCOMPARE(response.lyricSlots.first().tick, ticks::Quarter);
+
+        // Lower-staff words must actually paint in the shared block, after all
+        // voices' note positions exist, at the response's delayed onset.
+        const QImage image = score.viewport()->grab().toImage();
+        const QString review = qEnvironmentVariable("OPE_REVIEW_DIR");
+        if (!review.isEmpty()) {
+            QVERIFY(QDir().mkpath(review));
+            QVERIFY(image.save(QDir(review).filePath(
+                QString("interleaved-score-%1.png").arg(QTest::currentDataTag()))));
+        }
+        const auto &firstStaff = score.systems().first().staves.first();
+        const auto bassNote = std::find_if(score.eventBoxes().cbegin(), score.eventBoxes().cend(),
+            [&](const EventBox &box) {
+                return session.document().parts.at(box.partIndex).name == "Bass"
+                    && box.measureIndex == 0 && box.eventIndex == 1;
+            });
+        QVERIFY(bassNote != score.eventBoxes().cend());
+        const qreal ratio = image.devicePixelRatio();
+        const qreal baseline = firstStaff.lyricTop + 2.2 * 7.5;
+        int ink = 0;
+        for (int y = qRound((baseline - 12) * ratio); y < qRound(baseline * ratio); ++y) {
+            for (int x = qRound((bassNote->head.x() - 25) * ratio);
+                 x < qRound((bassNote->head.x() + 25) * ratio); ++x) {
+                if (image.pixelColor(x, y).red() < 180)
+                    ++ink;
+            }
+        }
+        QVERIFY(ink > 10);
+
+        session.undoStack()->undo();
+        QCOMPARE(session.currentBytes(), original);
+        QCOMPARE(rowNames(score.systems().first().staves.at(0)), upper);
+        QCOMPARE(rowNames(score.systems().first().staves.at(1)), lower);
+        session.undoStack()->redo();
+        score.setPhrasedLayout(false);
+        QCOMPARE(rowNames(score.systems().first().staves.at(0)), interleaved);
+        score.setActiveVerse(2);
+        score.setShowAllVerses(false);
+        QCOMPARE(rowNames(score.systems().first().staves.at(0)),
+            QStringList({ "Soprano:2", "Bass:2", "Soprano:chorus", "Bass:chorus" }));
+        QCOMPARE(rowNames(score.systems().first().staves.at(2)),
+            QStringList({ "Descant:2", "Descant:chorus" }));
+        session.mutate("Disable interleaving", [](SongDocument &doc) {
+            doc.interleaveVerseLyrics.set(false);
+        });
+        score.setShowAllVerses(true);
+        QCOMPARE(rowNames(score.systems().first().staves.at(0)), upper);
+        QCOMPARE(rowNames(score.systems().first().staves.at(1)), lower);
+        QCOMPARE(rowNames(score.systems().first().staves.at(2)), descant);
+    }
+
     void editMenuFixesShortMelismas()
     {
         QTemporaryDir dir;
@@ -1531,8 +1714,9 @@ notes = '''c'4@c%f\allegro d'4 e'4 f'4 | r4\andante c'4 c'4 c'4\spanend'''
         auto *button = window.findChild<QPushButton *>("transposeSong");
         auto *standardize = window.findChild<QPushButton *>("standardizeToml");
         auto *key = window.findChild<QComboBox *>("songKeySignature");
+        auto *interleave = window.findChild<QComboBox *>("interleaveVerseLyrics");
         auto *header = window.findChild<HeaderPanel *>();
-        QVERIFY(session && button && key && standardize && header);
+        QVERIFY(session && button && key && interleave && standardize && header);
         const QString review = qEnvironmentVariable("OPE_REVIEW_DIR");
         for (const QSize &size : { QSize(760, 760), QSize(1440, 1000) }) {
             window.resize(size);
@@ -1542,8 +1726,11 @@ notes = '''c'4@c%f\allegro d'4 e'4 f'4 | r4\andante c'4 c'4 c'4\spanend'''
             QVERIFY(standardize->isVisibleTo(&window));
             QVERIFY(button->rect().width() >= button->minimumSizeHint().width());
             QVERIFY(key->width() >= key->minimumSizeHint().width());
+            QVERIFY(interleave->isVisibleTo(&window));
+            QVERIFY(interleave->width() >= interleave->minimumSizeHint().width());
             QVERIFY(header->rect().contains(QRect(button->mapTo(header, QPoint()), button->size())));
             QVERIFY(header->rect().contains(QRect(key->mapTo(header, QPoint()), key->size())));
+            QVERIFY(header->rect().contains(QRect(interleave->mapTo(header, QPoint()), interleave->size())));
             if (!review.isEmpty()) {
                 QVERIFY(QDir().mkpath(review));
                 QVERIFY(window.grab().save(QDir(review).filePath(

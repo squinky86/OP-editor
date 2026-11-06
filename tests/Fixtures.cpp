@@ -5,6 +5,54 @@
 
 namespace ope::fixtures {
 
+QByteArray interleavedSong()
+{
+    // Shuffled parts, a duplicate upper voice, delayed lower responses, and a
+    // third staff. Verse 10 catches lexical rather than numerical ordering.
+    return R"TOML(title = "Interleaved fixture"
+verse_count = 10
+tempo_bpm = 96
+time_sig_numerator = 4
+time_sig_denominator = 4
+[parts.Bass]
+choral_type = "bass"
+clef = "bass"
+staff_number = 2
+notes = "r4 c4 d2 | e2@c f2"
+[parts.Bass.lyrics.1]
+text = "answer one"
+[parts.Bass.lyrics.2]
+text = "answer two"
+[parts.Bass.lyrics.10]
+text = "answer ten"
+[parts.Bass.lyrics.chorus]
+text = "echo praise"
+[parts.Descant]
+choral_type = "soprano"
+clef = "treble"
+staff_number = 3
+notes = "g'2 a'2 | b'2@c c''2"
+[parts.Alto]
+choral_type = "alto"
+clef = "treble"
+staff_number = 1
+notes = "g2 a2 | b2@c c'2"
+[parts.Soprano]
+choral_type = "soprano"
+clef = "treble"
+staff_number = 1
+notes = "c'2 d'2 | e'2@c f'2"
+[lyrics.1]
+text = "call one"
+[lyrics.2]
+text = "call two"
+[lyrics.10]
+text = "call ten"
+[lyrics.chorus]
+text = "sing praise"
+)TOML";
+}
+
 QByteArray ttbbSong()
 {
     // Deliberately shuffled tables. Absolute sounding anchors, inspired by the

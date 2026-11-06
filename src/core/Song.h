@@ -158,6 +158,7 @@ public:
     Field<QStringList> copyrights;
     Field<QString> commentary;
     Field<bool> convergeVerses;
+    Field<bool> interleaveVerseLyrics; ///< absent = voice-first score lyric rows
     Field<QList<PhraseBreak>> phraseBreaks;
     Field<QList<PhraseBreak>> optionalPhraseBreaks;
     Field<QList<PhraseBreak>> nonBreakingPhraseBreaks;
