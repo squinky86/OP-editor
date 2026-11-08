@@ -30,6 +30,36 @@ class SessionTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void rowResetsCoexistWithBreaksAndCanClearAnInheritedList()
+    {
+        QTemporaryDir dir;
+        write(QDir(dir.path()), "song.toml", "non_breaking_format_resets = ['1:64']\n" + baseSong());
+        write(QDir(dir.path()), "song_es.toml", "title = 'Spanish'\n");
+        Session session;
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        session.setCurrentLanguage("es");
+        QVERIFY(session.formatResetAt({2, 0}));
+        session.togglePhraseBreak({2, 0}, BreakKind::FormatReset);
+        QVERIFY(!session.formatResetAt({1, 64}));
+        QVERIFY(session.document().nonBreakingFormatResets.present());
+        QVERIFY(session.document().nonBreakingFormatResets->isEmpty());
+        QVERIFY(session.baseDocument()->nonBreakingFormatResets->size() == 1);
+        session.undoStack()->undo();
+        QVERIFY(session.formatResetAt({1, 64}));
+        session.undoStack()->redo();
+        QVERIFY(!session.formatResetAt({1, 64}));
+        session.setPhraseBreak({1, 16}, BreakKind::Required);
+        session.toggleFormatReset({1, 16});
+        QVERIFY(session.formatResetAt({1, 16}));
+        QCOMPARE(session.phraseBreakAt({1, 16}), BreakKind::Required);
+        session.setPhraseBreak({1, 16}, BreakKind::NonBreaking);
+        QVERIFY(session.formatResetAt({1, 16}));
+        session.setPhraseBreak({1, 16}, std::nullopt);
+        QVERIFY(session.formatResetAt({1, 16}));
+        session.toggleFormatReset({1, 16});
+        QVERIFY(!session.formatResetAt({1, 16}));
+    }
+
     void fixingShortMelismas_data()
     {
         QTest::addColumn<QString>("notes");

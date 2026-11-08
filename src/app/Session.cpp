@@ -620,11 +620,20 @@ namespace {
 constexpr BreakKind AllBreakKinds[3] { BreakKind::Required, BreakKind::Optional,
     BreakKind::NonBreaking };
 
+PhraseBreak resetCoordinate(const SongDocument &doc, PhraseBreak position)
+{
+    if (position.measure < doc.measureCount()
+        && position.tick == ticks::toPhraseTicks(doc.expectedTicksForMeasure(position.measure)))
+        return { position.measure + 1, 0 };
+    return position;
+}
+
 Field<QList<PhraseBreak>> &fieldFor(SongDocument &doc, BreakKind kind)
 {
     switch (kind) {
     case BreakKind::Optional: return doc.optionalPhraseBreaks;
     case BreakKind::NonBreaking: return doc.nonBreakingPhraseBreaks;
+    case BreakKind::FormatReset: return doc.nonBreakingFormatResets;
     case BreakKind::Required: break;
     }
     return doc.phraseBreaks;
@@ -635,6 +644,7 @@ const Field<QList<PhraseBreak>> &fieldFor(const SongDocument &doc, BreakKind kin
     switch (kind) {
     case BreakKind::Optional: return doc.optionalPhraseBreaks;
     case BreakKind::NonBreaking: return doc.nonBreakingPhraseBreaks;
+    case BreakKind::FormatReset: return doc.nonBreakingFormatResets;
     case BreakKind::Required: break;
     }
     return doc.phraseBreaks;
@@ -655,6 +665,11 @@ std::optional<BreakKind> Session::phraseBreakAt(PhraseBreak position) const
 
 void Session::setPhraseBreak(PhraseBreak position, std::optional<BreakKind> kind)
 {
+    if (kind == BreakKind::FormatReset) {
+        if (!formatResetAt(position))
+            toggleFormatReset(position);
+        return;
+    }
     if (phraseBreakAt(position) == kind)
         return;
     const QString description = !kind ? tr("Remove phrase break")
@@ -687,8 +702,40 @@ void Session::setPhraseBreak(PhraseBreak position, std::optional<BreakKind> kind
 
 void Session::togglePhraseBreak(PhraseBreak position, BreakKind kind)
 {
+    if (kind == BreakKind::FormatReset) {
+        toggleFormatReset(position);
+        return;
+    }
     setPhraseBreak(position, phraseBreakAt(position) == kind ? std::nullopt
                                                              : std::optional<BreakKind>(kind));
+}
+
+bool Session::formatResetAt(PhraseBreak position) const
+{
+    const auto &doc = effectiveDocument();
+    position = resetCoordinate(doc, position);
+    const auto &field = doc.nonBreakingFormatResets;
+    return field.present() && std::any_of(field->begin(), field->end(), [&](PhraseBreak reset) {
+        return resetCoordinate(doc, reset) == position;
+    });
+}
+
+void Session::toggleFormatReset(PhraseBreak position)
+{
+    const auto &effective = effectiveDocument();
+    QList<PhraseBreak> resets = effective.nonBreakingFormatResets.valueOr({});
+    const auto canonical = resetCoordinate(effective, position);
+    const bool removed = resets.removeIf([&](PhraseBreak reset) {
+        return resetCoordinate(effective, reset) == canonical;
+    }) > 0;
+    if (!removed)
+        resets.append(position);
+    std::sort(resets.begin(), resets.end());
+    mutate(removed ? tr("Remove lyric row reset") : tr("Add lyric row reset"),
+        [resets](SongDocument &doc) {
+            // An explicit [] also clears an inherited list in a translation.
+            doc.nonBreakingFormatResets.set(resets);
+        });
 }
 
 } // namespace ope

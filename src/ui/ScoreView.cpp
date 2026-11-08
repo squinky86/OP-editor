@@ -21,7 +21,7 @@ namespace {
 constexpr qreal StaffGapSpaces = 8.0;      ///< vertical gap between staves
 constexpr qreal SystemGapSpaces = 5.0;
 constexpr qreal LyricRowSpaces = 2.2;
-constexpr qreal RulerSpaces = 4.2;
+constexpr qreal RulerSpaces = 5.5;
 constexpr qreal RightMarginSpaces = 2.0;
 constexpr qreal TopMarginSpaces = 3.0;
 
@@ -950,17 +950,18 @@ void ScoreView::paintPhraseRuler(QPainter &painter, const SystemBox &system)
         QColor color;
         QString label;
     };
-    const Lane lanes[3] = {
+    const Lane lanes[4] = {
         { &doc.phraseBreaks, QColor(0x1f, 0x6f, 0xeb), tr("required") },
         { &doc.optionalPhraseBreaks, QColor(0x99, 0x77, 0x11), tr("optional") },
         { &doc.nonBreakingPhraseBreaks, QColor(0x88, 0x88, 0x88), tr("dedup only") },
+        { &doc.nonBreakingFormatResets, QColor(0x89, 0x40, 0xa8), tr("row reset") },
     };
 
     QFont font = painter.font();
     font.setPointSizeF(space * 0.95);
     painter.setFont(font);
 
-    for (int lane = 0; lane < 3; ++lane) {
+    for (int lane = 0; lane < 4; ++lane) {
         const qreal y = baseY + lane * 1.3 * space;
         const bool hovered = lane == m_hoverLane;
         painter.setPen(hovered ? QColor(0xbb, 0xbb, 0xbb) : QColor(0xdd, 0xdd, 0xdd));
@@ -1339,16 +1340,22 @@ void ScoreView::togglePhraseBreakAtCursor(BreakKind kind)
 
     const PhraseBreak brk { selection.measureIndex + 1, ticks::toPhraseTicks(tick) };
     m_session->togglePhraseBreak(brk, kind);
-    Q_EMIT statusMessage(m_session->phraseBreakAt(brk)
-            ? tr("Phrase break %1 (after the %2 note under the cursor)")
-                  .arg(brk.toString(), part.name)
-            : tr("Phrase break %1 removed").arg(brk.toString()));
+    if (kind == BreakKind::FormatReset) {
+        Q_EMIT statusMessage(m_session->formatResetAt(brk)
+                ? tr("Lyric row reset %1 (no line break)").arg(brk.toString())
+                : tr("Lyric row reset %1 removed").arg(brk.toString()));
+    } else {
+        Q_EMIT statusMessage(m_session->phraseBreakAt(brk)
+                ? tr("Phrase break %1 (after the %2 note under the cursor)")
+                      .arg(brk.toString(), part.name)
+                : tr("Phrase break %1 removed").arg(brk.toString()));
+    }
 }
 
 int ScoreView::rulerLaneAt(const SystemBox &system, qreal y) const
 {
     const qreal space = m_staffSpace;
-    for (int lane = 0; lane < 3; ++lane) {
+    for (int lane = 0; lane < 4; ++lane) {
         const qreal centre = system.rulerTop + lane * 1.3 * space;
         if (y >= centre - 0.65 * space && y <= centre + 0.65 * space)
             return lane;
@@ -1405,11 +1412,18 @@ bool ScoreView::clickRuler(QPointF point)
     const PhraseBreak brk { measureIndex + 1, ticks::toPhraseTicks(tick) };
     const BreakKind kind = lane == 0 ? BreakKind::Required
         : lane == 1                  ? BreakKind::Optional
-                                     : BreakKind::NonBreaking;
+        : lane == 2                  ? BreakKind::NonBreaking
+                                     : BreakKind::FormatReset;
     m_session->togglePhraseBreak(brk, kind);
-    Q_EMIT statusMessage(m_session->phraseBreakAt(brk)
-            ? tr("Phrase break %1").arg(brk.toString())
-            : tr("Phrase break %1 removed").arg(brk.toString()));
+    if (kind == BreakKind::FormatReset) {
+        Q_EMIT statusMessage(m_session->formatResetAt(brk)
+                ? tr("Lyric row reset %1 (no line break)").arg(brk.toString())
+                : tr("Lyric row reset %1 removed").arg(brk.toString()));
+    } else {
+        Q_EMIT statusMessage(m_session->phraseBreakAt(brk)
+                ? tr("Phrase break %1").arg(brk.toString())
+                : tr("Phrase break %1 removed").arg(brk.toString()));
+    }
     return true;
 }
 
@@ -1540,6 +1554,10 @@ void ScoreView::keyPressEvent(QKeyEvent *event)
             modifiers & Qt::ShiftModifier ? &Event::slurEnd : &Event::slurStart);
         return;
     case Qt::Key_B:
+        if ((modifiers & Qt::ControlModifier) && (modifiers & Qt::AltModifier)) {
+            togglePhraseBreakAtCursor(BreakKind::FormatReset);
+            return;
+        }
         if (modifiers & Qt::ControlModifier) {
             togglePhraseBreakAtCursor(modifiers & Qt::ShiftModifier ? BreakKind::Optional
                                                                     : BreakKind::Required);

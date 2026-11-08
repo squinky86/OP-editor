@@ -140,6 +140,9 @@ public:
 
     /// Which lane holds a break at this position, if any.
     [[nodiscard]] std::optional<BreakKind> phraseBreakAt(PhraseBreak position) const;
+    /// Independent of the three phrase lanes; a reset may coexist with a break.
+    [[nodiscard]] bool formatResetAt(PhraseBreak position) const;
+    void toggleFormatReset(PhraseBreak position);
     /// Put `position` in `kind`, removing it from whichever lane holds it now.
     void setPhraseBreak(PhraseBreak position, std::optional<BreakKind> kind);
     /// `kind` if the position is empty or in another lane, nothing if it is

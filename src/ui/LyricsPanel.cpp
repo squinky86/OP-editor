@@ -925,9 +925,23 @@ void LyricsPanel::fillBreakRow(const QList<GridColumn> &columns, const Part &par
             item->setText(QStringLiteral("·"));
         } else {
             item->setToolTip(tr("Click to break the line after this %1 (%2).\n"
-                                "Right-click for optional and non-breaking.")
+                                "Right-click for optional, non-breaking, and row resets.")
                                  .arg(position.isRest ? tr("rest") : tr("syllable"),
                                      cell.boundary.toString()));
+        }
+        const auto resets = m_session->effectiveDocument().nonBreakingFormatResets.valueOr({});
+        QStringList resetLabels;
+        for (const PhraseBreak &reset : resets) {
+            if (reset.measure == cell.boundary.measure
+                && reset.tick > ticks::toPhraseTicks(position.tickInMeasure)
+                && reset.tick <= cell.boundary.tick)
+                resetLabels.append(reset.toString());
+        }
+        if (!resetLabels.isEmpty()) {
+            item->setText(item->text() + QStringLiteral(" ◇"));
+            item->setToolTip(item->toolTip() + tr("\nLyric row reset at %1; no line break. "
+                "Edit in the score's row reset lane, or right-click at a boundary.")
+                .arg(resetLabels.join(QStringLiteral(", "))));
         }
         m_grid->setItem(0, column, item);
     }
@@ -1018,6 +1032,15 @@ void LyricsPanel::showBreakMenu(int column, QPoint where)
     none->setChecked(!current);
     connect(none, &QAction::triggered, this,
         [this, target] { setPhraseBreakKeepingGridPosition(target, std::nullopt); });
+    menu.addSeparator();
+    QAction *reset = menu.addAction(tr("non_breaking_format_resets (reuse lyric rows)"));
+    reset->setCheckable(true);
+    reset->setChecked(m_session->formatResetAt(target));
+    connect(reset, &QAction::triggered, this, [this, target] {
+        m_phraseBreakEditInProgress = true;
+        m_session->toggleFormatReset(target);
+        m_phraseBreakEditInProgress = false;
+    });
     menu.exec(where);
 }
 

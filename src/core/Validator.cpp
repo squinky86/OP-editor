@@ -808,6 +808,7 @@ QList<Finding> validate(
         collect(doc.phraseBreaks, QStringLiteral("phrase_breaks"));
         collect(doc.optionalPhraseBreaks, QStringLiteral("optional_phrase_breaks"));
         collect(doc.nonBreakingPhraseBreaks, QStringLiteral("non_breaking_phrase_breaks"));
+        collect(doc.nonBreakingFormatResets, QStringLiteral("non_breaking_format_resets"));
 
         for (const BreakEntry &entry : entries) {
             const int measureNumber = entry.brk.measure;
@@ -821,8 +822,7 @@ QList<Finding> validate(
                 continue;
             }
             const int measureTicks = doc.expectedTicksForMeasure(measureNumber);
-            const int internal = ticks::fromPhraseTicks(entry.brk.tick);
-            if (internal > measureTicks) {
+            if (entry.brk.tick < 0 || entry.brk.tick > ticks::toPhraseTicks(measureTicks)) {
                 add(Severity::Error, QStringLiteral("E-TICK-GRID"),
                     QStringLiteral("%1 \"%2\" is past the end of measure %3 (%4 ticks of %5)")
                         .arg(entry.field, entry.brk.toString())
@@ -833,10 +833,12 @@ QList<Finding> validate(
                 continue;
             }
 
+            const int internal = ticks::fromPhraseTicks(entry.brk.tick);
             // Non-breaking boundaries only partition lyrics for deduplication;
             // they can belong to a subset of voices without interrupting the
             // notes or melismas sung by the others.
-            if (entry.field == QLatin1String("non_breaking_phrase_breaks"))
+            if (entry.field == QLatin1String("non_breaking_phrase_breaks")
+                || entry.field == QLatin1String("non_breaking_format_resets"))
                 continue;
 
             QStringList partsWithoutBoundary;

@@ -65,7 +65,7 @@ across every voice in the current song or translation (the R1.1 warning).
 The batch is one Undo step and is written to disk when you Save.
 
 New TOML fields follow a consistent order, including adjacent required,
-optional, and non-breaking phrase-break fields. **Source ▸ Standardize TOML**
+optional, and non-breaking phrase-break fields, plus `non_breaking_format_resets`. **Source ▸ Standardize TOML**
 reorders an existing file's fields, parts, and lyric sections while preserving
 comments, unfamiliar fields, and value formatting. Both actions support Undo
 and take effect on disk when you Save.
@@ -209,6 +209,7 @@ In the score view:
 | `Ins` / `Del` | insert / delete a note |
 | `Ctrl+B` | phrase break at the cursor (OPE computes the `"M:T"` value) |
 | `Ctrl+Shift+B` / `Alt+B` | optional / non-breaking phrase break |
+| `Ctrl+Alt+B` | lyric row reset at the cursor (no line break) |
 | `Ctrl+Enter` | copy this marking to every voice sounding on the beat |
 | `Ctrl+wheel` | zoom |
 
@@ -229,14 +230,22 @@ Lyric analysis continues to use every phrase boundary.
 Phrase breaks can also be placed with the mouse, and OPE works out the `"M:T"`
 value either way:
 
-- **Score ▸ the three ruler lanes** under each system — click a lane to toggle a
-  break there. The click snaps to the nearest note boundary, and a dotted ghost
+- **Score ▸ the four ruler lanes** under each system — click a lane to toggle a
+  required, optional, dedup-only break, or lyric row reset there. The click snaps to the nearest note boundary, and a dotted ghost
   shows where it will land before you commit to it.
 - **Lyrics ▸ Alignment ▸ the `break` row** — click to break the line after that
-  syllable or rest, right-click for the optional and non-breaking lanes. This is
+  syllable or rest, right-click for optional, non-breaking, and an independent
+  lyric row reset. A diamond marks resets. This is
   the view that answers "which word does this break follow?", and it hatches a
   break that falls between the displayed voice's notes instead of between two
   of its syllables.
+
+A lyric row reset may share a position with a phrase break. Removing the last
+inherited reset writes `[]`, so a translation can disable this behavior. The
+first reset enables row reuse in OpenPsalm's PDF/SVG/LilyPond score engraver;
+subsequent resets allow new voice assignments while retaining whole words and
+held syllables. OPE's score remains a per-voice editing view; use the local
+OpenPsalm preview to inspect the final shared rows.
 
 Anywhere:
 

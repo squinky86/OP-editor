@@ -83,6 +83,38 @@ class UiWorkflowTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void formatResetShortcutAndFourthRulerLaneAreIndependent()
+    {
+        QTemporaryDir dir;
+        write(QDir(dir.path()), "song.toml", baseSong());
+        Session session;
+        QVERIFY(session.openSong(dir.filePath("song.toml")));
+        ScoreView score(&session);
+        score.resize(1100, 800);
+        score.show();
+        session.setSelection({0, 0, 0});
+        QCoreApplication::processEvents();
+        QTest::keyClick(&score, Qt::Key_B, Qt::ControlModifier | Qt::AltModifier);
+        const auto resets = session.effectiveDocument().nonBreakingFormatResets.valueOr({});
+        QCOMPARE(resets.size(), 1);
+        QVERIFY(!session.phraseBreakAt(resets.first()));
+        QTest::keyClick(&score, Qt::Key_B, Qt::ControlModifier);
+        QCOMPARE(session.phraseBreakAt(resets.first()), BreakKind::Required);
+        QTest::keyClick(&score, Qt::Key_B, Qt::ControlModifier | Qt::AltModifier);
+        QVERIFY(!session.formatResetAt(resets.first()));
+        QCOMPARE(session.phraseBreakAt(resets.first()), BreakKind::Required);
+        QCoreApplication::processEvents();
+        const auto system = score.systems().first();
+        const auto measure = system.measures.first();
+        // First tick, fourth lane; default staff-space size is 7.5 pixels.
+        const QPoint point(qRound(measure.x + 1), qRound(system.rulerTop + 3 * 1.3 * 7.5));
+        QVERIFY(score.viewport()->rect().contains(point));
+        QTest::mouseClick(score.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        QVERIFY(session.formatResetAt({1, 0}));
+        QTest::mouseClick(score.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        QVERIFY(!session.formatResetAt({1, 0}));
+    }
+
     void interleavedVerseControlSavesOverridesAndUndo()
     {
         QTemporaryDir dir;

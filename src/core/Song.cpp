@@ -35,6 +35,7 @@ const QStringList &canonicalHeaderOrder()
         QStringLiteral("phrase_breaks"),
         QStringLiteral("optional_phrase_breaks"),
         QStringLiteral("non_breaking_phrase_breaks"),
+        QStringLiteral("non_breaking_format_resets"),
         QStringLiteral("optional_break_threshold_ticks"),
         QStringLiteral("commentary"),
         QStringLiteral("converge_verses"),
@@ -598,7 +599,7 @@ bool SongDocument::isDirty() const
     const auto anyDirty = [](auto &&...fields) { return (fields.dirty() || ...); };
     if (anyDirty(title, subtitle, active, declaredLanguage, keySignature, timeSigNumerator,
             timeSigDenominator, tempoBpm, verseCount, defaultVerses, copyrights, commentary,
-            convergeVerses, interleaveVerseLyrics, phraseBreaks, optionalPhraseBreaks, nonBreakingPhraseBreaks,
+            convergeVerses, interleaveVerseLyrics, phraseBreaks, optionalPhraseBreaks, nonBreakingPhraseBreaks, nonBreakingFormatResets,
             optionalBreakThresholdTicks, timeSigChanges))
         return true;
     for (auto it = lyrics.constBegin(); it != lyrics.constEnd(); ++it) {
@@ -627,7 +628,7 @@ void SongDocument::markClean()
     const auto clean = [](auto &...fields) { (fields.markClean(), ...); };
     clean(title, subtitle, active, declaredLanguage, keySignature, timeSigNumerator,
         timeSigDenominator, tempoBpm, verseCount, defaultVerses, copyrights, commentary,
-        convergeVerses, interleaveVerseLyrics, phraseBreaks, optionalPhraseBreaks, nonBreakingPhraseBreaks,
+        convergeVerses, interleaveVerseLyrics, phraseBreaks, optionalPhraseBreaks, nonBreakingPhraseBreaks, nonBreakingFormatResets,
         optionalBreakThresholdTicks, timeSigChanges);
     for (auto it = lyrics.begin(); it != lyrics.end(); ++it)
         it->dirty = false;
@@ -825,6 +826,28 @@ std::expected<SongDocument, LoadError> loadBytes(const QString &path, QByteArray
     bindBreaks(doc.optionalPhraseBreaks, src.rootPair(QStringLiteral("optional_phrase_breaks")));
     bindBreaks(
         doc.nonBreakingPhraseBreaks, src.rootPair(QStringLiteral("non_breaking_phrase_breaks")));
+
+    if (const auto *resets = src.rootPair(QStringLiteral("non_breaking_format_resets"))) {
+        QList<PhraseBreak> parsedResets;
+        bool valid = resets->value.kind == toml::ValueKind::Array;
+        for (const auto &value : resets->value.items) {
+            const auto coordinate = value.kind == toml::ValueKind::String
+                ? PhraseBreak::fromString(value.string) : std::nullopt;
+            if (!coordinate || coordinate->measure < 1 || coordinate->tick < 0) {
+                valid = false;
+                break;
+            }
+            parsedResets.append(*coordinate);
+        }
+        if (!valid) {
+            LoadError error;
+            error.path = path;
+            error.message = QStringLiteral("non_breaking_format_resets must be an array of M:T "
+                                           "strings (measure >= 1, tick >= 0; quarter = 16)");
+            return std::unexpected(error);
+        }
+        doc.nonBreakingFormatResets.bind(parsedResets, resets->value.span);
+    }
 
     if (!doc.isOverlay)
         doc.language = doc.declaredLanguage.valueOr(QStringLiteral("en"));
@@ -1065,6 +1088,7 @@ QByteArray serialize(const SongDocument &doc)
     breaksField(QStringLiteral("phrase_breaks"), doc.phraseBreaks);
     breaksField(QStringLiteral("optional_phrase_breaks"), doc.optionalPhraseBreaks);
     breaksField(QStringLiteral("non_breaking_phrase_breaks"), doc.nonBreakingPhraseBreaks);
+    breaksField(QStringLiteral("non_breaking_format_resets"), doc.nonBreakingFormatResets);
     intField(QStringLiteral("optional_break_threshold_ticks"), doc.optionalBreakThresholdTicks);
     stringField(QStringLiteral("commentary"), doc.commentary);
     boolField(QStringLiteral("converge_verses"), doc.convergeVerses);
@@ -1247,6 +1271,9 @@ QByteArray serializeFresh(const SongDocument &doc)
     if (doc.nonBreakingPhraseBreaks.present())
         line("non_breaking_phrase_breaks = "
             + toml::emitStringArrayInline(breaksToStrings(*doc.nonBreakingPhraseBreaks)));
+    if (doc.nonBreakingFormatResets.present())
+        line("non_breaking_format_resets = "
+            + toml::emitStringArrayInline(breaksToStrings(*doc.nonBreakingFormatResets)));
     if (doc.optionalBreakThresholdTicks.present())
         line("optional_break_threshold_ticks = " + QByteArray::number(*doc.optionalBreakThresholdTicks));
     if (doc.commentary.present())
@@ -1480,6 +1507,8 @@ SongDocument mergeOverlay(const SongDocument &base, const SongDocument &overlay)
         merged.optionalPhraseBreaks.bind(*base.optionalPhraseBreaks, {});
     if (!merged.nonBreakingPhraseBreaks.present() && base.nonBreakingPhraseBreaks.present())
         merged.nonBreakingPhraseBreaks.bind(*base.nonBreakingPhraseBreaks, {});
+    if (!merged.nonBreakingFormatResets.present() && base.nonBreakingFormatResets.present())
+        merged.nonBreakingFormatResets.bind(*base.nonBreakingFormatResets, {});
     if (!merged.timeSigChanges.present() && base.timeSigChanges.present())
         merged.timeSigChanges.bind(*base.timeSigChanges, {});
 

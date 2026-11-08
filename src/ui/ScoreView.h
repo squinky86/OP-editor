@@ -136,7 +136,7 @@ private:
     [[nodiscard]] const EventBox *hitTest(QPointF point, bool cycle = false) const;
     [[nodiscard]] int measureAtX(const SystemBox &system, qreal x) const;
     /// Which phrase-ruler lane `y` falls in (0 required, 1 optional, 2
-    /// non-breaking), or -1 for none.
+    /// non-breaking, 3 lyric row reset), or -1 for none.
     [[nodiscard]] int rulerLaneAt(const SystemBox &system, qreal y) const;
     /// Resolve a point in a ruler lane to the break it would place: the lane,
     /// the measure, and the nearest note boundary in internal ticks. Returns

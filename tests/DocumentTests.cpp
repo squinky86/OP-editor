@@ -44,6 +44,56 @@ class DocumentTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void formatResetsRoundTripMergeAndRemainIndependentOfPhrasing()
+    {
+        const QByteArray original = "non_breaking_format_resets = ['1:16', '1:64'] # keep\n" + baseSong();
+        auto loaded = io::loadBytes("song.toml", original);
+        QVERIFY(loaded);
+        QVERIFY(!loaded->unknownKeys.contains("non_breaking_format_resets"));
+        QCOMPARE(io::serialize(*loaded), original);
+        const auto layout = loaded->layoutPhraseBreaks();
+        const auto prose = loaded->allPhraseBreaks();
+        auto overlay = io::loadBytes("song_es.toml", "title = 'Spanish'\n");
+        QVERIFY(overlay);
+        QCOMPARE(mergeOverlay(*loaded, *overlay).nonBreakingFormatResets.opt(), loaded->nonBreakingFormatResets.opt());
+        overlay->nonBreakingFormatResets.set({});
+        QVERIFY(mergeOverlay(*loaded, *overlay).nonBreakingFormatResets->isEmpty());
+        QVERIFY(io::serialize(*overlay).contains("non_breaking_format_resets = []"));
+        loaded->nonBreakingFormatResets.set({{1, 32}});
+        QVERIFY(loaded->isDirty());
+        QCOMPARE(loaded->layoutPhraseBreaks(), layout);
+        QCOMPARE(loaded->allPhraseBreaks(), prose);
+        for (const auto &bytes : {io::serialize(*loaded), io::serializeFresh(*loaded)}) {
+            auto again = io::loadBytes("song.toml", bytes);
+            QVERIFY(again);
+            QCOMPARE(again->nonBreakingFormatResets.valueOr({}), (QList<PhraseBreak>{{1, 32}}));
+        }
+        const auto standardized = io::standardize(*loaded);
+        QVERIFY(standardized);
+        auto again = io::loadBytes("song.toml", *standardized);
+        QVERIFY(again);
+        QCOMPARE(again->nonBreakingFormatResets.opt(), loaded->nonBreakingFormatResets.opt());
+        loaded->markClean();
+        QVERIFY(!loaded->isDirty());
+    }
+
+    void formatResetsRejectMalformedCoordinatesAndValidateMeter()
+    {
+        for (const QByteArray &value : {QByteArray("'1:16'"), QByteArray("[1]"), QByteArray("['oops']"),
+                 QByteArray("['0:1']"), QByteArray("['1:-1']"), QByteArray("['1:9999999999999']")}) {
+            auto result = io::loadBytes("song.toml", "non_breaking_format_resets = " + value + "\n" + baseSong());
+            QVERIFY(!result);
+            QVERIFY(result.error().formatted().contains("non_breaking_format_resets"));
+        }
+        const auto doc = io::loadBytes("song.toml", "non_breaking_format_resets = ['1:49', '2:0']\n"
+            "time_sig_numerator = 3\ntime_sig_denominator = 4\n[parts.Soprano]\nnotes = 'c2.'\n");
+        QVERIFY(doc);
+        const auto findings = validate(*doc);
+        QCOMPARE(std::count_if(findings.begin(), findings.end(), [](const Finding &f) {
+            return f.rule == "E-TICK-GRID" && f.message.contains("non_breaking_format_resets");
+        }), 2);
+    }
+
     void interleavedVersesRoundTripAndMerge_data()
     {
         QTest::addColumn<bool>("enabled");
@@ -1355,6 +1405,7 @@ text = 'default verse'
         QTest::newRow("required") << QByteArray("phrase_breaks") << true;
         QTest::newRow("optional") << QByteArray("optional_phrase_breaks") << true;
         QTest::newRow("non-breaking") << QByteArray("non_breaking_phrase_breaks") << false;
+        QTest::newRow("row-reset") << QByteArray("non_breaking_format_resets") << false;
     }
 
     void phraseBreaksRespectBoundaryKind()

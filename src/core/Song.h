@@ -88,7 +88,7 @@ struct PhraseBreak {
     static std::optional<PhraseBreak> fromString(QStringView text);
 };
 
-enum class BreakKind { Required, Optional, NonBreaking };
+enum class BreakKind { Required, Optional, NonBreaking, FormatReset };
 
 /// Engraving decisions and their diagnostics, in phrase ticks (quarter = 16).
 struct PhraseBreakLayout {
@@ -162,6 +162,7 @@ public:
     Field<QList<PhraseBreak>> phraseBreaks;
     Field<QList<PhraseBreak>> optionalPhraseBreaks;
     Field<QList<PhraseBreak>> nonBreakingPhraseBreaks;
+    Field<QList<PhraseBreak>> nonBreakingFormatResets; ///< printed row reassignment, no line break
     Field<int> optionalBreakThresholdTicks; ///< phrase ticks (quarter = 16); absent = automatic
     Field<QList<TimeSigChange>> timeSigChanges;
 
