@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1
+## 0.2.0 — 2026-11-11
 
 - Added editing, validation, translation inheritance, and lossless saving for
   `optional_break_threshold_ticks`. Clear the field to restore automatic or
@@ -17,9 +17,22 @@
   phrase-break fields together. Added Source's undoable Standardize TOML button
   to reorder existing files while retaining comments and unfamiliar fields.
 - Escaped backslash notation markers correctly when rewriting multiline notes.
-
-## 0.2.0 — TTBB and C clefs
-
+- Added interleaved verse lyrics to the score and Song controls, including
+  translation inheritance and lossless round-tripping.
+- Added `non_breaking_format_resets` to restart phrase formatting without a
+  forced line break, with score and Lyrics editing, validation, and Undo.
+- Added an undoable Edit action to beam all eligible short melismas in the
+  current song or translation.
+- Added verse creation in Lyrics and fixed crashes when adding verses or
+  changing verse counts with pending edits.
+- Fixed a use-after-free in the phrase-break shortcut's status message, found
+  by the release sanitizer check.
+- Improved tick-break diagnostics and corrected echo splice analysis and
+  non-breaking phrase validation.
+- Kept the source cursor stable during validation, corrected adjacent lyric
+  override reverts, and improved compact Song form sizing with Debian fonts.
+- Kept standardized lyric overrides beside their defaults and omitted empty
+  subtitles when standardizing TOML.
 - Added alto and tenor C clefs, corrected the sounding-pitch anchor for treble
   8vb, and supported Tenor I, Tenor II and Baritone roles throughout the editor.
   All clef edits preserve absolute sounding pitch; song 369 needs no further
@@ -38,6 +51,10 @@
   website; a muted authored lead retains global tempo ownership.
 - Added standalone TTBB core, widget, playback, audio, CLI, contribution and
   download tests, plus an explicitly enabled local catalog acceptance check.
+
+Known catalog limitations: `\pocorit` in song 817 is not yet supported. The
+existing note regeneration mismatches in songs 238 (Tenor) and 251 (Alto) also
+remain. Unchanged saves preserve the original bytes in all 859 checked files.
 
 ## 0.1.0 — first beta
 
