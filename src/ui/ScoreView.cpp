@@ -1339,6 +1339,8 @@ void ScoreView::togglePhraseBreakAtCursor(BreakKind kind)
         tick += measure.events.at(e).playedTicks();
 
     const PhraseBreak brk { selection.measureIndex + 1, ticks::toPhraseTicks(tick) };
+    // Toggling rebuilds the effective document and invalidates part references.
+    const QString partName = part.name;
     m_session->togglePhraseBreak(brk, kind);
     if (kind == BreakKind::FormatReset) {
         Q_EMIT statusMessage(m_session->formatResetAt(brk)
@@ -1347,7 +1349,7 @@ void ScoreView::togglePhraseBreakAtCursor(BreakKind kind)
     } else {
         Q_EMIT statusMessage(m_session->phraseBreakAt(brk)
                 ? tr("Phrase break %1 (after the %2 note under the cursor)")
-                      .arg(brk.toString(), part.name)
+                      .arg(brk.toString(), partName)
                 : tr("Phrase break %1 removed").arg(brk.toString()));
     }
 }

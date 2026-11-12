@@ -98,8 +98,12 @@ private Q_SLOTS:
         const auto resets = session.effectiveDocument().nonBreakingFormatResets.valueOr({});
         QCOMPARE(resets.size(), 1);
         QVERIFY(!session.phraseBreakAt(resets.first()));
+        QSignalSpy status(&score, &ScoreView::statusMessage);
         QTest::keyClick(&score, Qt::Key_B, Qt::ControlModifier);
         QCOMPARE(session.phraseBreakAt(resets.first()), BreakKind::Required);
+        QCOMPARE(status.size(), 1);
+        QCOMPARE(status.first().first().toString(),
+            QStringLiteral("Phrase break 1:64 (after the Soprano note under the cursor)"));
         QTest::keyClick(&score, Qt::Key_B, Qt::ControlModifier | Qt::AltModifier);
         QVERIFY(!session.formatResetAt(resets.first()));
         QCOMPARE(session.phraseBreakAt(resets.first()), BreakKind::Required);
