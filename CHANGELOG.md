@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Added `\pocorit` from the updated song TOML format, including song 817:
+  lossless parsing and editing, the **poco rit.** Inspector choice and score
+  label, and playback slowing to 80% of the active tempo before restoring the
+  song tempo after the note marked `\spanend`.
+
 ## 0.2.0 — 2026-11-11
 
 - Added editing, validation, translation inheritance, and lossless saving for
@@ -52,7 +59,7 @@
 - Added standalone TTBB core, widget, playback, audio, CLI, contribution and
   download tests, plus an explicitly enabled local catalog acceptance check.
 
-Known catalog limitations: `\pocorit` in song 817 is not yet supported. The
+Known catalog limitations in 0.2.0: `\pocorit` in song 817 was unsupported. The
 existing note regeneration mismatches in songs 238 (Tenor) and 251 (Alto) also
 remain. Unchanged saves preserve the original bytes in all 859 checked files.
 

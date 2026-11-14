@@ -202,6 +202,11 @@ tempo map. Markers on another part are reported and do not take over playback.
 Ramps use the website's eight MIDI tempo steps, reach the target on the final
 note's onset, and restore the song tempo after that note.
 
+The gradual mark **poco rit.** (`\pocorit`), used in song 817, slows to 80% of
+the active tempo. Ordinary `\rit`, `\ritard`, and `\rall` slow to 60%;
+`\accel` and `\string` speed up to 140%. These marks appear in italics above
+the staff. A preceding step mark supplies the active tempo for the slowdown.
+
 Select a note, rest, or spacer and use **Inspector → Tempo mark** to add a
 gradual change, **a tempo**, or one of the new step marks. Step marks appear
 as bold words above the staff and immediately hold a percentage of the song's

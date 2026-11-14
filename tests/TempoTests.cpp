@@ -28,6 +28,71 @@ class TempoTests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void pocoRitKeepsSlursAndDynamics()
+    {
+        const auto *mark = tempoMark(u"pocorit");
+        QVERIFY(mark);
+        QCOMPARE(mark->label, QStringLiteral("poco rit."));
+        QCOMPARE(mark->kind, TempoMark::Kind::Gradual);
+        // Both suffix orders are accepted by the upstream seeder.
+        for (const QString &token : {QStringLiteral("e''2.(\\pocorit%p"),
+                 QStringLiteral("e''2.\\pocorit(%p")}) {
+            QList<TokenIssue> issues;
+            const auto stream = NoteStream::parse(token, &issues);
+            QVERIFY2(issues.isEmpty(), qPrintable(token));
+            Event event = stream.measures().first().events.first();
+            QCOMPARE(event.duration, (Duration{2, 1}));
+            QCOMPARE(event.playedTicks(), 144);
+            QCOMPARE(event.tempoSpanner, QStringLiteral("pocorit"));
+            QCOMPARE(event.dynamic, QStringLiteral("p"));
+            QVERIFY(event.slurStart);
+            QCOMPARE(event.text(), token);
+            event.pitches[0].step = u'F';
+            event.dirty = true;
+            const auto again = NoteStream::parse(event.text(), &issues);
+            QVERIFY2(issues.isEmpty(), qPrintable(event.text()));
+            const Event &edited = again.measures().first().events.first();
+            QCOMPARE(edited.pitches, event.pitches);
+            QCOMPARE(edited.duration, event.duration);
+            QCOMPARE(edited.tempoSpanner, event.tempoSpanner);
+            QCOMPARE(edited.dynamic, event.dynamic);
+            QVERIFY(edited.slurStart);
+        }
+    }
+
+    void song817PreservesPocoRitWhenSavedAndEdited()
+    {
+        // OP-songs 6829d09: the complete SATB song, with its original TOML escapes.
+        auto doc = io::load(QStringLiteral(OPE_SOURCE_DIR "/tests/fixtures/tempo-817.toml"));
+        QVERIFY(doc);
+        QCOMPARE(io::serialize(*doc), doc->originalBytes);
+        QCOMPARE(countBySeverity(validate(*doc), Severity::Error), 0);
+        Part *soprano = doc->part(u"Soprano");
+        QVERIFY(soprano);
+        QCOMPARE(soprano->stream.measureCount(), 13);
+        Event &start = soprano->stream.measures()[11].events[0];
+        QCOMPARE(start.tempoSpanner, QStringLiteral("pocorit"));
+        QCOMPARE(start.duration, (Duration{2, 1}));
+        QVERIFY(start.slurStart);
+        QCOMPARE(soprano->stream.measures()[11].playedTicks(), 192);
+        QVERIFY(soprano->stream.measures()[12].events[1].spannerEnd);
+
+        start.pitches[0].step = u'F';
+        start.dirty = true;
+        const QByteArray edited = io::serialize(*doc);
+        QVERIFY(edited.contains("f''2.(\\\\pocorit"));
+        const auto reloaded = io::loadBytes("song.toml", edited);
+        QVERIFY(reloaded);
+        QCOMPARE(io::serialize(*reloaded), edited);
+        QCOMPARE(countBySeverity(validate(*reloaded), Severity::Error), 0);
+        const Event &actual = reloaded->part(u"Soprano")->stream.measures()[11].events[0];
+        QCOMPARE(actual.pitches, start.pitches);
+        QCOMPARE(actual.duration, start.duration);
+        QCOMPARE(actual.tempoSpanner, start.tempoSpanner);
+        QVERIFY(actual.slurStart);
+        QVERIFY(reloaded->part(u"Soprano")->stream.measures()[12].events[1].spannerEnd);
+    }
+
     void stepMarks_data()
     {
         QTest::addColumn<QString>("name");
@@ -157,7 +222,7 @@ private Q_SLOTS:
     {
         for (const QString &token : {QStringLiteral("c'2\\alegro"), QStringLiteral("r2\\prestoo"),
                  QStringLiteral("s2\\andantino"), QStringLiteral("<c' e'>2\\allegrettto"),
-                 QStringLiteral("c'2%f\\alegro")}) {
+                 QStringLiteral("c'2%f\\alegro"), QStringLiteral("c'2\\pocoritt")}) {
             const auto doc = io::loadBytes("song.toml", song("c'1 | " + token + " c'2"));
             QVERIFY(doc);
             const auto findings = validate(*doc);
@@ -172,6 +237,7 @@ private Q_SLOTS:
     {
         QTest::addColumn<QString>("notes");
         QTest::addColumn<QList<double>>("durations");
+        QTest::addColumn<int>("bpm");
         // Golden quarter-note durations from the upstream MIDI contract:
         // 130 BPM = 461538 us, 85 BPM = 705882 us; gradual spans use eight
         // rounded microsecond events at 1/8 of the span to the end-note onset.
@@ -179,38 +245,51 @@ private Q_SLOTS:
         constexpr double andante = 0.705882;
         QTest::newRow("held across measures")
             << QStringLiteral("c4 c4\\allegro c4 c4 | c1")
-            << QList<double>{0.6, allegro, allegro, allegro, 4 * allegro};
+            << QList<double>{0.6, allegro, allegro, allegro, 4 * allegro} << 100;
         QTest::newRow("spanend restores after note")
             << QStringLiteral("c4\\allegro c4 c4\\spanend c4")
-            << QList<double>{allegro, allegro, allegro, 0.6};
+            << QList<double>{allegro, allegro, allegro, 0.6} << 100;
         QTest::newRow("a tempo restores at onset")
             << QStringLiteral("c4\\allegro c4\\atempo c4 c4")
-            << QList<double>{allegro, 0.6, 0.6, 0.6};
+            << QList<double>{allegro, 0.6, 0.6, 0.6} << 100;
         QTest::newRow("replace step")
             << QStringLiteral("c4\\allegro c4\\andante c4 c4")
-            << QList<double>{allegro, andante, andante, andante};
+            << QList<double>{allegro, andante, andante, andante} << 100;
         QTest::newRow("mark on terminator takes over at onset")
             << QStringLiteral("c4\\allegro c4 c4\\spanend\\andante c4")
-            << QList<double>{allegro, allegro, andante, andante};
+            << QList<double>{allegro, allegro, andante, andante} << 100;
         QTest::newRow("rit starts at held tempo")
             << QStringLiteral("c4\\allegro c4\\rit c4 c4\\spanend | c1")
-            << QList<double>{allegro, 0.50079375, 0.640427, 0.769231, 2.4};
+            << QList<double>{allegro, 0.50079375, 0.640427, 0.769231, 2.4} << 100;
         QTest::newRow("rit after explicit step ending starts at base tempo")
             << QStringLiteral("c4\\allegro c4\\spanend\\rit c4 c4\\spanend | c1")
-            << QList<double>{allegro, 0.651032, 0.832555, 1.0, 2.4};
+            << QList<double>{allegro, 0.651032, 0.832555, 1.0, 2.4} << 100;
         QTest::newRow("historical spanend atempo keeps final slow note")
             << QStringLiteral("c4\\rit c4 c4\\spanend\\atempo c4")
-            << QList<double>{0.651032, 0.832555, 1.0, 0.6};
+            << QList<double>{0.651032, 0.832555, 1.0, 0.6} << 100;
         QTest::newRow("gradual ending hands off to step at onset")
             << QStringLiteral("c4\\rit c4 c4\\spanend\\andante c4")
-            << QList<double>{0.651032, 0.832555, andante, andante};
+            << QList<double>{0.651032, 0.832555, andante, andante} << 100;
+        QTest::newRow("poco rit slows to eighty percent then restores")
+            << QStringLiteral("c4 c4\\pocorit c4 c4\\spanend | c1")
+            << QList<double>{0.6, 0.62390325, 0.696384, 0.75, 2.4} << 100;
+        QTest::newRow("poco rit starts at held tempo")
+            << QStringLiteral("c4\\allegro c4\\pocorit c4 c4\\spanend | c1")
+            << QList<double>{allegro, 0.47992525, 0.53568025, 0.576923, 2.4} << 100;
+        QTest::newRow("poco rit rounds song 817 target to 77 BPM")
+            << QStringLiteral("c4 c4\\pocorit c4 c4\\spanend | c1")
+            << QList<double>{0.625, 0.64962325, 0.72417925, 0.779221, 2.5} << 96;
+        QTest::newRow("poco rit respects BPM floor")
+            << QStringLiteral("c4 c4\\pocorit c4 c4\\spanend | c1")
+            << QList<double>{3.0, 3.0, 3.0, 3.0, 12.0} << 20;
     }
 
     void tempoTransitions()
     {
         QFETCH(QString, notes);
         QFETCH(QList<double>, durations);
-        const auto doc = io::loadBytes("song.toml", song(notes));
+        QFETCH(int, bpm);
+        const auto doc = io::loadBytes("song.toml", song(notes, bpm));
         QVERIFY(doc);
         QCOMPARE(countBySeverity(validate(*doc), Severity::Error), 0);
         const auto plan = buildPlan(*doc);

@@ -778,7 +778,7 @@ notes = "c1 | c1 | c1 | c1"
         QTemporaryDir dir;
         const QByteArray bytes = "title = 'Tempo editing'\ntempo_bpm = 100\n"
             "[parts.Solo]\nnotes = \"\"\"\n"
-            "c'4@c%f\\\\rit\\\\< d'4 e'4 f'4\\\\! | c'1\n\"\"\"\n";
+            "c'4@c%f\\\\pocorit\\\\< d'4 e'4 f'4\\\\! | c'1\n\"\"\"\n";
         write(QDir(dir.path()), "song.toml", bytes);
         Session session;
         InspectorPanel inspector(&session);
@@ -790,12 +790,13 @@ notes = "c1 | c1 | c1 | c1"
         QVERIFY(!mark->isEnabled() && !end->isEnabled());
         QVERIFY(session.openSong(dir.filePath("song.toml")));
         session.setSelection({0, 0, 0});
-        QCOMPARE(mark->currentData().toString(), QStringLiteral("rit"));
+        QCOMPARE(mark->currentData().toString(), QStringLiteral("pocorit"));
+        QCOMPARE(mark->currentText(), QStringLiteral("poco rit."));
         QCOMPARE(session.currentBytes(), bytes);
         for (const QString &name : {QStringLiteral("largo"), QStringLiteral("lento"),
                  QStringLiteral("adagio"), QStringLiteral("andante"), QStringLiteral("moderato"),
                  QStringLiteral("allegretto"), QStringLiteral("allegro"), QStringLiteral("vivace"),
-                 QStringLiteral("presto")}) {
+                 QStringLiteral("presto"), QStringLiteral("pocorit")}) {
             const int index = mark->findData(name);
             QVERIFY(index > 0);
             mark->setCurrentIndex(index);
@@ -830,15 +831,15 @@ notes = "c1 | c1 | c1 | c1"
         session.setSelection({0, 0, 2});
         QCOMPARE(mark->currentData().toString(), QStringLiteral("andante"));
         QVERIFY(end->isChecked());
-        editor->setPlainText(QString::fromUtf8(changed).replace("andante", "allegretto"));
+        editor->setPlainText(QString::fromUtf8(changed).replace("andante", "pocorit"));
         QVERIFY(source.commitPendingEdits());
-        QCOMPARE(mark->currentData().toString(), QStringLiteral("allegretto"));
+        QCOMPARE(mark->currentData().toString(), QStringLiteral("pocorit"));
         // Removing a start leaves the terminator in place, and can be undone.
         mark->setCurrentIndex(0);
         QVERIFY(session.selectedEvent()->tempoSpanner.isEmpty());
         QVERIFY(session.selectedEvent()->spannerEnd);
         session.undoStack()->undo();
-        QCOMPARE(mark->currentData().toString(), QStringLiteral("allegretto"));
+        QCOMPARE(mark->currentData().toString(), QStringLiteral("pocorit"));
         session.setSelection({0, 0, -1});
         QVERIFY(!mark->isEnabled() && !end->isEnabled());
     }
@@ -880,10 +881,10 @@ notes = "c1 | c1 | c1 | c1"
     void tempoControlsFitAndRespectInvalidSourceDrafts()
     {
         QTemporaryDir dir;
-        write(QDir(dir.path()), "song.toml", R"TOML(title = 'Tempo marks'
-tempo_bpm = 100
+        write(QDir(dir.path()), "song.toml", R"TOML(title = 'Poco rit. ending from song 817'
+tempo_bpm = 96
 [parts.Solo]
-notes = '''c'4@c%f\allegro d'4 e'4 f'4 | r4\andante c'4 c'4 c'4\spanend'''
+notes = '''e''2.(\pocorit d''4) | c''2~ c''4\spanend s4'''
 )TOML");
         QSettings().remove(QStringLiteral("workspace"));
         MainWindow window;
@@ -918,7 +919,7 @@ notes = '''c'4@c%f\allegro d'4 e'4 f'4 | r4\andante c'4 c'4 c'4\spanend'''
         QVERIFY(!mark->isEnabled() && !end->isEnabled());
         source->discardPendingEdits();
         QVERIFY(mark->isEnabled() && end->isEnabled());
-        QCOMPARE(mark->currentData().toString(), QStringLiteral("allegro"));
+        QCOMPARE(mark->currentData().toString(), QStringLiteral("pocorit"));
     }
 
     void inspectorRetainsUnknownMetadataAndEditsOnlyTheChosenField()

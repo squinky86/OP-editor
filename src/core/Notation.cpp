@@ -913,6 +913,7 @@ const QList<TempoMark> &tempoMarks()
         { QStringLiteral("presto"), QStringLiteral("Presto"), Kind::Step, 1.60 },
         { QStringLiteral("rit"), QStringLiteral("rit."), Kind::Gradual, 0.60 },
         { QStringLiteral("ritard"), QStringLiteral("ritard."), Kind::Gradual, 0.60 },
+        { QStringLiteral("pocorit"), QStringLiteral("poco rit."), Kind::Gradual, 0.80 },
         { QStringLiteral("rall"), QStringLiteral("rall."), Kind::Gradual, 0.60 },
         { QStringLiteral("accel"), QStringLiteral("accel."), Kind::Gradual, 1.40 },
         { QStringLiteral("string"), QStringLiteral("string."), Kind::Gradual, 1.40 },
